@@ -1,0 +1,474 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>渠道管理亮色预览</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: #faf9f5;
+        color: #141413;
+        font-family:
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+      }
+
+      main {
+        max-width: 1180px;
+        margin: 0 auto;
+        padding: 24px;
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+
+      h1 {
+        font-size: 22px;
+        line-height: 1.25;
+        font-family: Georgia, "Times New Roman", serif;
+        font-weight: 500;
+      }
+
+      .subtitle {
+        margin-top: 8px;
+        color: #6c6a64;
+        font-size: 14px;
+      }
+
+      .preview-grid {
+        display: grid;
+        grid-template-columns: minmax(320px, 420px) minmax(520px, 1fr);
+        gap: 20px;
+        margin-top: 20px;
+        align-items: start;
+      }
+
+      .panel {
+        overflow: hidden;
+        border: 1px solid #e6dfd8;
+        border-radius: 12px;
+        background: #faf9f5;
+        box-shadow: 0 1px 3px rgba(20, 20, 19, 0.08);
+      }
+
+      .panel-header {
+        border-bottom: 1px solid #e6dfd8;
+        padding: 12px 14px;
+        background: #f5f0e8;
+        font-weight: 700;
+      }
+
+      .panel-body {
+        padding: 14px;
+      }
+
+      .side-panel-frame {
+        min-height: 680px;
+        border: 1px solid #e6dfd8;
+        border-radius: 18px;
+        background: #faf9f5;
+        overflow: hidden;
+      }
+
+      .app-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        border-bottom: 1px solid #e6dfd8;
+        padding: 12px;
+      }
+
+      .app-title {
+        font-family: Georgia, "Times New Roman", serif;
+        font-weight: 500;
+      }
+
+      .button {
+        border: 1px solid #e6dfd8;
+        border-radius: 8px;
+        background: #faf9f5;
+        padding: 6px 10px;
+        color: #141413;
+        font-size: 13px;
+      }
+
+      .button-primary {
+        border-color: #cc785c;
+        background: #cc785c;
+        color: #ffffff;
+      }
+
+      .channel-list,
+      .form-card,
+      .model-card,
+      .table {
+        border: 1px solid #e6dfd8;
+        border-radius: 12px;
+        background: #faf9f5;
+      }
+
+      .channel-item {
+        padding: 10px 12px;
+        border-bottom: 1px solid #ebe6df;
+      }
+
+      .channel-item:last-child {
+        border-bottom: 0;
+      }
+
+      .channel-item.active {
+        border-left: 3px solid #cc785c;
+        background: #efe9de;
+      }
+
+      .muted {
+        color: #6c6a64;
+        font-size: 12px;
+      }
+
+      .form-grid {
+        display: grid;
+        gap: 8px;
+      }
+
+      .wide-form-grid {
+        grid-template-columns: 1fr 1fr;
+      }
+
+      .input {
+        width: 100%;
+        border: 1px solid #e6dfd8;
+        border-radius: 8px;
+        background: #faf9f5;
+        padding: 8px 10px;
+        color: #141413;
+      }
+
+      .section-label {
+        margin: 14px 0 8px;
+        color: #6c6a64;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+
+      .model-card {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin-top: 8px;
+        padding: 10px;
+        transition: border-color 420ms ease;
+      }
+
+      .model-card.success {
+        border-color: #5db872;
+      }
+
+      .model-id {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 14px;
+        font-weight: 600;
+      }
+
+      .model-actions {
+        display: flex;
+        flex-shrink: 0;
+        gap: 6px;
+      }
+
+      .model-combobox {
+        display: grid;
+        gap: 6px;
+        margin-top: 8px;
+        border: 1px solid #e6dfd8;
+        border-radius: 12px;
+        background: #f5f0e8;
+        padding: 8px;
+      }
+
+      .model-option {
+        border: 0;
+        border-radius: 8px;
+        background: #faf9f5;
+        padding: 8px 10px;
+        color: #141413;
+        text-align: left;
+      }
+
+      .model-option.disabled {
+        background: #e6dfd8;
+        color: #6c6a64;
+      }
+
+      .wide-layout {
+        display: grid;
+        gap: 16px;
+        width: 80%;
+        margin: 0 auto;
+      }
+
+      .settings-tabs {
+        display: flex;
+        gap: 8px;
+        overflow-x: auto;
+        scrollbar-width: none;
+      }
+
+      .settings-tabs::-webkit-scrollbar {
+        display: none;
+      }
+
+      .tab-item {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-shrink: 0;
+        border: 1px solid #e6dfd8;
+        border-radius: 8px;
+        background: #faf9f5;
+        padding: 10px 11px;
+        color: #6c6a64;
+        text-align: left;
+        font-size: 14px;
+      }
+
+      .tab-item.active {
+        background: #181715;
+        border-color: #181715;
+        color: #faf9f5;
+        font-weight: 700;
+      }
+
+      .tab-badge {
+        border-radius: 999px;
+        background: #efe9de;
+        padding: 2px 7px;
+        color: #6c6a64;
+        font-size: 12px;
+      }
+
+      .wide-content-shell {
+        max-width: 560px;
+      }
+
+      .notes {
+        margin-top: 20px;
+        border: 1px solid #e6dfd8;
+        border-radius: 12px;
+        background: #f5f0e8;
+        padding: 16px;
+      }
+
+      .options {
+        display: flex;
+        gap: 12px;
+        margin-top: 16px;
+        flex-wrap: wrap;
+      }
+
+      .option {
+        cursor: pointer;
+        border: 1px solid #e6dfd8;
+        border-radius: 12px;
+        background: #faf9f5;
+        padding: 12px;
+        min-width: 220px;
+      }
+
+      .option:hover {
+        border-color: #cc785c;
+        background: #efe9de;
+      }
+
+      @media (max-width: 900px) {
+        .preview-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>渠道管理响应式设计，Claude 暖色编辑风格</h1>
+      <p class="subtitle">
+        面向 Chrome Side Panel：暖奶油画布、珊瑚强调、边界清晰、窄宽度可用，宽面板时提升信息密度。
+      </p>
+
+      <section class="preview-grid">
+        <article class="panel">
+          <div class="panel-header">窄面板：顶部 Tab 横向滚动，单列堆叠</div>
+          <div class="panel-body">
+            <div class="side-panel-frame">
+              <div class="app-header">
+                <div class="app-title">Browser AI Assistant</div>
+                <button class="button">设置</button>
+              </div>
+              <div style="padding: 12px">
+                <div style="width:80%;margin:0 auto">
+                  <h2 style="font-size:16px;margin-bottom:8px">设置</h2>
+                  <nav class="settings-tabs" aria-label="设置导航" style="margin-bottom:12px">
+                    <button class="tab-item active">渠道管理 <span class="tab-badge">3</span></button>
+                    <button class="tab-item">提取规则 <span class="tab-badge">2</span></button>
+                    <button class="tab-item">同步设置</button>
+                    <button class="tab-item">界面偏好</button>
+                  </nav>
+                  <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px">
+                    <strong>模型渠道</strong>
+                    <button class="button">新增渠道</button>
+                  </div>
+                  <div class="channel-list">
+                    <div class="channel-item active">
+                      <strong>OpenAI 官方</strong>
+                      <div class="muted">OpenAI Chat · 2 个模型</div>
+                    </div>
+                    <div class="channel-item">
+                      <strong>Anthropic 官方</strong>
+                      <div class="muted">Anthropic · 1 个模型</div>
+                    </div>
+                  </div>
+
+                  <div class="form-card" style="margin-top: 12px; padding: 12px">
+                    <div style="display:flex;justify-content:space-between;align-items:center">
+                      <h2 style="font-size:16px">OpenAI 官方</h2>
+                      <button class="button-primary button">保存</button>
+                    </div>
+                    <div class="form-grid" style="margin-top: 10px">
+                      <input class="input" value="渠道名称：OpenAI 官方" />
+                      <input class="input" value="端点类型：OpenAI Chat" />
+                      <input class="input" value="Endpoint：https://api.openai.com/v1/chat/completions" />
+                      <input class="input" value="API Key：••••••••" />
+                    </div>
+                    <div class="section-label">模型</div>
+                    <div class="model-combobox">
+                      <input class="input" value="搜索模型：gpt" />
+                      <button class="model-option disabled">已添加 GPT-4.1 <span class="muted">gpt-4.1</span></button>
+                      <button class="model-option">GPT-4.1 mini <span class="muted">gpt-4.1-mini</span></button>
+                    </div>
+                    <div class="model-card success">
+                      <span class="model-id">gpt-4.1</span>
+                      <span class="model-actions">
+                        <button class="button">测试</button>
+                        <button class="button">删除</button>
+                      </span>
+                    </div>
+                    <div class="model-card">
+                      <span class="model-id">gpt-4.1-mini</span>
+                      <span class="model-actions">
+                        <button class="button">测试</button>
+                        <button class="button">删除</button>
+                      </span>
+                    </div>
+                    <button class="button" style="margin-top: 10px; width: 100%">添加模型</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-header">较宽面板：仍使用顶部 Tab，与内容左侧对齐</div>
+          <div class="panel-body">
+            <div class="wide-layout">
+              <h2 style="font-size:16px">设置</h2>
+              <nav class="settings-tabs" aria-label="设置导航">
+                <button class="tab-item active">渠道管理 <span class="tab-badge">3</span></button>
+                <button class="tab-item">提取规则 <span class="tab-badge">2</span></button>
+                <button class="tab-item">同步设置</button>
+                <button class="tab-item">界面偏好</button>
+              </nav>
+
+              <div class="wide-content-shell">
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px">
+                  <strong>模型渠道</strong>
+                  <button class="button">新增渠道</button>
+                </div>
+                <div class="channel-list">
+                  <div class="channel-item active">
+                    <strong>OpenAI 官方</strong>
+                    <div class="muted">OpenAI Chat · 2 个模型</div>
+                  </div>
+                  <div class="channel-item">
+                    <strong>Anthropic 官方</strong>
+                    <div class="muted">Anthropic · 1 个模型</div>
+                  </div>
+                </div>
+
+                <div class="form-card" style="margin-top: 12px; padding: 12px">
+                  <div style="display:flex;justify-content:space-between;align-items:center">
+                    <h2 style="font-size:16px">OpenAI 官方</h2>
+                    <button class="button-primary button">保存</button>
+                  </div>
+                  <div class="form-grid" style="margin-top: 10px">
+                    <input class="input" value="渠道名称：OpenAI 官方" />
+                    <input class="input" value="端点类型：OpenAI Chat" />
+                    <input class="input" value="Endpoint：https://api.openai.com/v1/chat/completions" />
+                    <input class="input" value="API Key：••••••••" />
+                  </div>
+                  <div class="section-label">模型</div>
+                  <div class="model-combobox">
+                    <input class="input" value="搜索模型：mini" />
+                    <button class="model-option">GPT-4.1 mini <span class="muted">gpt-4.1-mini</span></button>
+                  </div>
+                  <div class="model-card success">
+                    <span class="model-id">gpt-4.1</span>
+                    <span class="model-actions">
+                      <button class="button">测试</button>
+                      <button class="button">删除</button>
+                    </span>
+                  </div>
+                  <div class="model-card">
+                    <span class="model-id">gpt-4.1-mini</span>
+                    <span class="model-actions">
+                      <button class="button">测试</button>
+                      <button class="button">删除</button>
+                    </span>
+                  </div>
+                  <button class="button" style="margin-top: 10px; width: 100%">添加模型</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </article>
+      </section>
+
+      <section class="notes">
+        <h2 style="font-size:16px">调整原则</h2>
+        <p class="subtitle">
+          视觉遵循 Claude 设计规范：暖奶油画布、珊瑚主按钮、暖黑文本和克制的深色 Tab。设置页不再区分宽窄面板，始终使用顶部 Tab；设置内容区域宽度始终为整体宽度的 80%，Tab 与当前设置内容左侧对齐，面板过窄时横向滚动且隐藏滚动条。渠道管理沿用窄式卡片布局；远端模型列表使用可搜索下拉框，支持输入模型名称或 ID 过滤；已添加模型列表只显示 model_id，并在同一行提供模型连通性测试和删除操作；测试成功时仅当前模型行淡入绿色边框，5 秒后淡出恢复。对话区模型下拉显示为“渠道 / 模型”。
+        </p>
+        <div class="options">
+          <div class="option" data-choice="approve-light" onclick="this.style.borderColor='#cc785c';this.style.background='#efe9de'">
+            <strong>A：这个暖色响应式方向对</strong>
+            <div class="muted">继续写规格并实现。</div>
+          </div>
+          <div class="option" data-choice="revise-light" onclick="this.style.borderColor='#cc785c';this.style.background='#efe9de'">
+            <strong>B：还需要调整</strong>
+            <div class="muted">告诉我想改哪里。</div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
+

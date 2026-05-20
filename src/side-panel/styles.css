@@ -1,0 +1,123 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --color-primary: #cc785c;
+  --color-primary-active: #a9583e;
+  --color-primary-disabled: #e6dfd8;
+  --color-ink: #141413;
+  --color-body: #3d3d3a;
+  --color-muted: #6c6a64;
+  --color-muted-soft: #8e8b82;
+  --color-hairline: #e6dfd8;
+  --color-hairline-soft: #ebe6df;
+  --color-canvas: #faf9f5;
+  --color-surface-soft: #f5f0e8;
+  --color-surface-card: #efe9de;
+  --color-surface-dark: #181715;
+  --color-surface-dark-elevated: #252320;
+  --color-on-primary: #ffffff;
+  --color-on-dark: #faf9f5;
+  --color-warning: #d4a017;
+  --color-error: #c64545;
+  --color-success: #5db872;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-canvas);
+  color: var(--color-body);
+  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+@layer components {
+  .app-shell {
+    @apply min-h-screen;
+    background: var(--color-canvas);
+    color: var(--color-ink);
+  }
+
+  .app-header {
+    @apply flex items-center justify-between p-4;
+    border-bottom: 1px solid var(--color-hairline);
+  }
+
+  .app-title {
+    @apply text-lg font-medium;
+    color: var(--color-ink);
+    font-family: Georgia, "Times New Roman", serif;
+  }
+
+  .ui-panel {
+    @apply rounded-lg p-3 sm:p-4;
+    background: color-mix(in srgb, var(--color-canvas) 86%, white);
+    border: 1px solid var(--color-hairline);
+  }
+
+  .ui-card {
+    @apply rounded-lg p-3;
+    background: var(--color-surface-card);
+    border: 1px solid var(--color-hairline);
+  }
+
+  .model-connectivity-card {
+    transition: border-color 420ms ease;
+  }
+
+  .ui-input {
+    @apply rounded-md px-2 py-2 outline-none transition;
+    background: var(--color-canvas);
+    border: 1px solid var(--color-hairline);
+    color: var(--color-ink);
+  }
+
+  .ui-input:focus {
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 15%, transparent);
+  }
+
+  .ui-button-primary {
+    @apply rounded-md px-4 py-2 text-sm font-medium transition disabled:cursor-not-allowed;
+    background: var(--color-primary);
+    color: var(--color-on-primary);
+  }
+
+  .ui-button-primary:active {
+    background: var(--color-primary-active);
+  }
+
+  .ui-button-primary:disabled {
+    background: var(--color-primary-disabled);
+    color: var(--color-muted);
+  }
+
+  .ui-button-secondary {
+    @apply rounded-md px-3 py-2 text-sm font-medium transition;
+    background: var(--color-canvas);
+    border: 1px solid var(--color-hairline);
+    color: var(--color-ink);
+  }
+
+  .ui-button-secondary:hover {
+    background: var(--color-surface-soft);
+  }
+
+  .ui-muted {
+    color: var(--color-muted);
+  }
+
+  .settings-tabs-scroll {
+    scrollbar-width: none;
+  }
+
+  .settings-tabs-scroll::-webkit-scrollbar {
+    display: none;
+  }
+}
