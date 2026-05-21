@@ -1,5 +1,6 @@
 import { normalizeText, truncateText } from "../shared/utils/text";
 import type { ExtractionRule } from "../shared/types";
+import { getSelectorLines } from "../shared/extractionRules/validation";
 
 export interface ExtractPageTextInput {
   url: string;
@@ -11,10 +12,11 @@ export interface ExtractPageTextResult {
   text: string;
   truncated: boolean;
   usedFallback: boolean;
+  matchedRuleId?: string;
 }
 
 export function extractPageText(input: ExtractPageTextInput): ExtractPageTextResult {
-  const matchedRule = input.rules.find((rule) => matchUrl(rule.urlPattern, input.url));
+  const matchedRule = [...input.rules].sort((left, right) => left.sortOrder - right.sortOrder).find((rule) => matchUrl(rule.urlPattern, input.url));
   const extractedText = matchedRule ? extractBySelectors(matchedRule.selectorsText) : "";
   const usedFallback = extractedText.length === 0;
   const rawText = usedFallback ? extractGlobalText() : extractedText;
@@ -24,6 +26,7 @@ export function extractPageText(input: ExtractPageTextInput): ExtractPageTextRes
   return {
     ...truncated,
     usedFallback,
+    matchedRuleId: matchedRule?.id,
   };
 }
 
@@ -36,10 +39,7 @@ function matchUrl(pattern: string, url: string): boolean {
 }
 
 function extractBySelectors(selectorsText: string): string {
-  const selectors = selectorsText
-    .split(/\r?\n/)
-    .map((selector) => selector.trim())
-    .filter(Boolean);
+  const selectors = getSelectorLines(selectorsText);
   const parts: string[] = [];
 
   for (const selector of selectors) {
@@ -55,7 +55,7 @@ function extractBySelectors(selectorsText: string): string {
 function extractByCss(selector: string): string {
   try {
     const nodes = Array.from(document.querySelectorAll(selector));
-    return normalizeText(nodes.map((node) => node.textContent ?? "").join(" "));
+    return normalizeText(nodes.map((node) => extractVisibleTextFromNode(node)).join(" "));
   } catch {
     return "";
   }
@@ -67,7 +67,10 @@ function extractByXPath(xpath: string): string {
     const parts: string[] = [];
 
     for (let index = 0; index < result.snapshotLength; index += 1) {
-      parts.push(result.snapshotItem(index)?.textContent ?? "");
+      const node = result.snapshotItem(index);
+      if (node) {
+        parts.push(extractVisibleTextFromNode(node));
+      }
     }
 
     return normalizeText(parts.join(" "));
@@ -77,21 +80,45 @@ function extractByXPath(xpath: string): string {
 }
 
 function extractGlobalText(): string {
-  return extractTextFromNode(document.documentElement);
+  return extractVisibleTextFromNode(document.body);
 }
 
-function extractTextFromNode(root: Node): string {
+function extractVisibleTextFromNode(root: Node): string {
+  if (shouldSkipNode(root)) {
+    return "";
+  }
+
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   const parts: string[] = [];
   let currentNode = walker.nextNode();
 
   while (currentNode) {
-    const text = normalizeText(currentNode.textContent ?? "");
-    if (text) {
-      parts.push(text);
+    if (!shouldSkipNode(currentNode)) {
+      const text = normalizeText(currentNode.textContent ?? "");
+      if (text) {
+        parts.push(text);
+      }
     }
     currentNode = walker.nextNode();
   }
 
   return normalizeText(parts.join(" "));
+}
+
+function shouldSkipNode(node: Node): boolean {
+  const element = node.nodeType === Node.ELEMENT_NODE ? (node as Element) : node.parentElement;
+  if (!element) {
+    return true;
+  }
+
+  if (!document.body.contains(element)) {
+    return true;
+  }
+
+  return Boolean(element.closest("script, style, template, noscript, [hidden], [aria-hidden='true']")) || isElementHidden(element);
+}
+
+function isElementHidden(element: Element): boolean {
+  const style = window.getComputedStyle(element);
+  return style.display === "none" || style.visibility === "hidden" || style.opacity === "0";
 }

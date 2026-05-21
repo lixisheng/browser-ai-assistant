@@ -17,7 +17,7 @@ export class BrowserAssistantDatabase extends Dexie {
       modelConfigs: "id, channelName, endpointType, updatedAt",
       modelProviders: "id, name, endpointType, updatedAt",
       providerModels: "id, providerId, displayName, updatedAt",
-      extractionRules: "id, urlPattern, updatedAt",
+      extractionRules: "id, sortOrder, urlPattern, updatedAt",
       chatSessions: "id, sortOrder, updatedAt",
       appSettings: "key, updatedAt",
     });

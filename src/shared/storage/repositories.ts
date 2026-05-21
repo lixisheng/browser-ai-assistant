@@ -45,7 +45,31 @@ export async function saveExtractionRule(rule: ExtractionRule): Promise<void> {
 }
 
 export async function getExtractionRules(): Promise<ExtractionRule[]> {
-  return db.extractionRules.orderBy("updatedAt").toArray();
+  return db.extractionRules.orderBy("sortOrder").toArray();
+}
+
+export async function deleteExtractionRule(ruleId: string): Promise<void> {
+  await db.extractionRules.delete(ruleId);
+}
+
+export async function moveExtractionRule(ruleId: string, direction: "up" | "down"): Promise<void> {
+  await db.transaction("rw", db.extractionRules, async () => {
+    const rules = await getExtractionRules();
+    const currentIndex = rules.findIndex((rule) => rule.id === ruleId);
+    const targetIndex = direction === "up" ? currentIndex - 1 : currentIndex + 1;
+
+    if (currentIndex < 0 || targetIndex < 0 || targetIndex >= rules.length) {
+      return;
+    }
+
+    const now = Date.now();
+    const currentRule = rules[currentIndex];
+    const targetRule = rules[targetIndex];
+    await Promise.all([
+      db.extractionRules.put({ ...currentRule, sortOrder: targetRule.sortOrder, updatedAt: now }),
+      db.extractionRules.put({ ...targetRule, sortOrder: currentRule.sortOrder, updatedAt: now }),
+    ]);
+  });
 }
 
 export async function saveChatSession(session: ChatSession): Promise<void> {

@@ -1,4 +1,13 @@
 import { handleModelCatalogMessage, type ModelCatalogMessage } from "./modelCatalogMessageHandler";
+import { handlePageContextMessage, type PageContextExtractMessage } from "./pageContextMessageHandler";
+import {
+  handleCurrentTabUrlMessage,
+  handleUrlPatternGenerationMessage,
+  type CurrentTabUrlMessage,
+  type UrlPatternGenerationMessage,
+} from "./urlPatternGenerationMessageHandler";
+
+const DEBUG_PREFIX = "[提取规则 AI 生成诊断]";
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.create({
@@ -36,7 +45,67 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   void openSidePanel(tab?.id);
 });
 
-chrome.runtime.onMessage.addListener((message: ModelCatalogMessage, _sender, sendResponse) => {
+type RuntimeMessage = ModelCatalogMessage | PageContextExtractMessage | UrlPatternGenerationMessage | CurrentTabUrlMessage;
+
+chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResponse) => {
+  if (message.type === "extractionRule.generateUrlPatterns") {
+    console.debug(`${DEBUG_PREFIX} background 入口收到 runtime 消息`, {
+      type: message.type,
+      debugRequestId: message.debugRequestId,
+      providerId: message.provider?.id,
+      modelId: message.model?.id,
+      url: message.url,
+    });
+  }
+
+  if (message.type === "extractionRule.generateUrlPatterns") {
+    void handleUrlPatternGenerationMessage(message)
+      .then((response) => {
+        console.debug(`${DEBUG_PREFIX} background 入口发送 runtime 响应`, {
+          debugRequestId: message.debugRequestId,
+          response,
+        });
+        sendResponse(response);
+      })
+      .catch((error) => {
+        console.error(`${DEBUG_PREFIX} background 入口处理生成消息异常`, {
+          debugRequestId: message.debugRequestId,
+          error,
+        });
+        sendResponse({
+          ok: false,
+          message: error instanceof Error ? `AI 生成失败：${error.message}` : "AI 生成失败",
+        });
+      });
+    return true;
+  }
+
+  if (message.type === "extractionRule.getCurrentTabUrl") {
+    console.debug(`${DEBUG_PREFIX} background 入口收到当前标签页 URL 请求`, {
+      debugRequestId: message.debugRequestId,
+    });
+    void handleCurrentTabUrlMessage(message)
+      .then((response) => {
+        console.debug(`${DEBUG_PREFIX} background 入口返回当前标签页 URL`, {
+          debugRequestId: message.debugRequestId,
+          response,
+        });
+        sendResponse(response);
+      })
+      .catch((error) => {
+        sendResponse({
+          ok: false,
+          message: error instanceof Error ? error.message : "未找到当前活动页面 URL",
+        });
+      });
+    return true;
+  }
+
+  if (message.type === "pageContext.extract") {
+    void handlePageContextMessage(message).then(sendResponse);
+    return true;
+  }
+
   if (message.type !== "modelCatalog.list" && message.type !== "modelCatalog.test") {
     return false;
   }

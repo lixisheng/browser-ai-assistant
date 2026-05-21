@@ -2,8 +2,21 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { App } from "../../../src/side-panel/App";
 import { useAppStore } from "../../../src/side-panel/state/appStore";
-import { clearDatabase, saveModelProvider, saveProviderModel } from "../../../src/shared/storage/repositories";
-import type { ModelProvider, ProviderModel } from "../../../src/shared/types";
+import { clearDatabase, saveExtractionRule, saveModelProvider, saveProviderModel } from "../../../src/shared/storage/repositories";
+import type { ExtractionRule, ModelProvider, ProviderModel } from "../../../src/shared/types";
+
+function createExtractionRule(partial: Partial<ExtractionRule>): ExtractionRule {
+  return {
+    id: "rule-1",
+    alias: "正文区域",
+    urlPattern: "https://example.com/.*",
+    selectorsText: "main",
+    sortOrder: 1,
+    createdAt: 1,
+    updatedAt: 1,
+    ...partial,
+  };
+}
 
 describe("App", () => {
   beforeEach(() => {
@@ -76,8 +89,8 @@ describe("App", () => {
 
     await user.click(screen.getByRole("tab", { name: "提取规则" }));
 
-    expect(screen.getByLabelText("URL 正则")).toBeInTheDocument();
-    expect(screen.getByLabelText("CSS/XPath")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "新增规则" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("CSS/XPath 列表")).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("tab", { name: "同步设置" }));
 
@@ -111,6 +124,12 @@ describe("App", () => {
     const user = userEvent.setup();
     const sendMessage = vi
       .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        text: "",
+        truncated: false,
+        usedFallback: true,
+      })
       .mockResolvedValueOnce({
         ok: true,
         models: [
@@ -187,6 +206,12 @@ describe("App", () => {
       .fn()
       .mockResolvedValueOnce({
         ok: true,
+        text: "",
+        truncated: false,
+        usedFallback: true,
+      })
+      .mockResolvedValueOnce({
+        ok: true,
         models: [
           { id: "gpt-4.1", displayName: "GPT-4.1" },
           { id: "gpt-4.1-mini", displayName: "GPT-4.1 mini" },
@@ -221,7 +246,7 @@ describe("App", () => {
 
     await user.click(screen.getByRole("button", { name: "测试模型连通性 gpt-4.1-mini" }));
 
-    expect(sendMessage).toHaveBeenCalledTimes(3);
+    expect(sendMessage).toHaveBeenCalledTimes(4);
     resolveFirstTest({ ok: true, message: "模型测试通过" });
   });
 
@@ -273,5 +298,175 @@ describe("App", () => {
 
     expect(await screen.findByRole("button", { name: /本地渠道/ })).toBeInTheDocument();
     expect(screen.getAllByText("gpt-local").length).toBeGreaterThan(0);
+  });
+
+  it("提取规则列表紧凑展示，命中当前页的规则顶置高亮并点击后展开编辑", async () => {
+    const user = userEvent.setup();
+    const sendMessage = vi.fn().mockResolvedValue({
+      ok: true,
+      url: "https://example.com/article",
+      text: "正文内容",
+      truncated: false,
+      usedFallback: false,
+      matchedRuleId: "rule-match",
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage,
+      },
+    });
+    await saveExtractionRule(createExtractionRule({ id: "rule-other", alias: "其他站点", urlPattern: "https://other.example.com/.*", sortOrder: 1 }));
+    await saveExtractionRule(createExtractionRule({ id: "rule-match", alias: "当前正文", selectorsText: "article\nmain", sortOrder: 2 }));
+
+    render(<App />);
+    await screen.findByText("已匹配规则：当前正文");
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    await user.click(screen.getByRole("tab", { name: "提取规则" }));
+
+    const ruleButtons = screen.getAllByRole("button", { name: /https:\/\// });
+    expect(ruleButtons[0]).toHaveTextContent("当前正文");
+    expect(ruleButtons[0].closest("article")).toHaveClass("border-[var(--color-primary)]");
+    expect(screen.queryByLabelText("CSS/XPath 列表")).not.toBeInTheDocument();
+
+    await user.click(ruleButtons[0]);
+
+    expect(screen.getByLabelText("规则别名")).toHaveDisplayValue("当前正文");
+    expect(screen.getByLabelText("URL 正则")).toHaveDisplayValue("https://example.com/.*");
+    expect(screen.getByLabelText("CSS/XPath 列表")).toHaveDisplayValue("article\nmain");
+  });
+
+  it("新增提取规则必须显式保存且校验失败不落库", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    await user.click(screen.getByRole("tab", { name: "提取规则" }));
+    await user.click(screen.getByRole("button", { name: "新增规则" }));
+
+    await user.clear(screen.getByLabelText("URL 正则"));
+    fireEvent.change(screen.getByLabelText("URL 正则"), { target: { value: "[" } });
+    await user.clear(screen.getByLabelText("CSS/XPath 列表"));
+    await user.type(screen.getByLabelText("CSS/XPath 列表"), "main");
+    await user.click(screen.getByRole("button", { name: "保存规则" }));
+
+    expect(screen.getByText("URL 正则格式不正确")).toBeInTheDocument();
+
+    await user.clear(screen.getByLabelText("URL 正则"));
+    fireEvent.change(screen.getByLabelText("URL 正则"), { target: { value: "https://example\\.com/.*" } });
+    await user.click(screen.getByRole("button", { name: "保存规则" }));
+
+    expect(await screen.findByRole("button", { name: /https:\/\/example\\\.com\/\.\*/ })).toBeInTheDocument();
+  });
+
+  it("点击 AI 生成后先选择模型，再展示 URL 正则候选并可填充输入框", async () => {
+    const user = userEvent.setup();
+    const provider: ModelProvider = {
+      id: "provider-ai",
+      name: "AI 渠道",
+      endpointType: "openai_chat",
+      endpointUrl: "https://api.example.com/v1/chat/completions",
+      apiKey: "sk-ai",
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const model: ProviderModel = {
+      id: "model-ai",
+      providerId: "provider-ai",
+      displayName: "AI 模型",
+      modelId: "gpt-test",
+      temperature: 0.7,
+      maxTokens: 1024,
+      systemPrompt: "你是网页助手",
+      isTitleModel: false,
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const sendMessage = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        url: "https://example.com/news/123?from=home",
+        text: "",
+        truncated: false,
+        usedFallback: true,
+      });
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify([
+                "https://example\\.com/news/123",
+                "https://example\\.com/news/\\d+",
+                "https://example\\.com/news/.*",
+                "https://example\\.com/.*",
+                "https://.*",
+              ]),
+            },
+          },
+        ],
+      }),
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage,
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    await user.click(screen.getByRole("tab", { name: "提取规则" }));
+    await user.click(screen.getByRole("button", { name: "新增规则" }));
+    await user.type(screen.getByLabelText("CSS/XPath 列表"), "main");
+    await user.click(screen.getByRole("button", { name: "AI 生成" }));
+
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("选择用于生成的模型")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "AI 渠道 / AI 模型" }));
+
+    expect(await screen.findByRole("button", { name: "https://example\\.com/news/\\d+" })).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.com/v1/chat/completions",
+      expect.objectContaining({
+        method: "POST",
+      }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "https://example\\.com/news/\\d+" }));
+
+    expect(screen.getByLabelText("URL 正则")).toHaveDisplayValue("https://example\\.com/news/\\d+");
+  });
+
+  it("对话页展示当前页上下文状态、截断提示和可折叠预览", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage: vi.fn().mockResolvedValue({
+          ok: true,
+          url: "https://example.com/article",
+          text: "这是一段提取后的页面正文",
+          truncated: true,
+          usedFallback: false,
+          matchedRuleId: "rule-1",
+        }),
+      },
+    });
+    await saveExtractionRule(createExtractionRule({ id: "rule-1", alias: "正文规则" }));
+
+    render(<App />);
+
+    expect(await screen.findByText("已匹配规则：正文规则")).toBeInTheDocument();
+    expect(screen.getByText("内容已截断，请细化 CSS/XPath")).toBeInTheDocument();
+    const summary = screen.getByText("查看上下文");
+    expect(summary).toHaveClass("select-none");
+    await user.click(summary);
+
+    expect(screen.getByText("这是一段提取后的页面正文")).toBeInTheDocument();
   });
 });

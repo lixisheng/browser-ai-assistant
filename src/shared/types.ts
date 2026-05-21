@@ -36,8 +36,10 @@ export interface ModelConfig extends ProviderModel {
 
 export interface ExtractionRule {
   id: string;
+  alias: string;
   urlPattern: string;
   selectorsText: string;
+  sortOrder: number;
   createdAt: number;
   updatedAt: number;
 }

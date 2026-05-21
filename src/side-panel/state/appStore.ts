@@ -1,14 +1,23 @@
 import { create, type StoreApi } from "zustand";
 import type { RemoteModelInfo } from "../../shared/models/modelCatalog";
 import {
+  deleteExtractionRule,
   deleteModelProvider,
   deleteProviderModel,
+  getExtractionRules,
   getModelProviders,
   getProviderModels,
+  moveExtractionRule,
+  saveExtractionRule,
   saveModelProvider,
   saveProviderModel,
 } from "../../shared/storage/repositories";
-import type { EndpointType, ModelProvider, ProviderModel } from "../../shared/types";
+import { DEFAULT_CONTEXT_MAX_LENGTH } from "../../shared/constants";
+import { validateExtractionRuleDraft } from "../../shared/extractionRules/validation";
+import { generateUrlPatternsWithModel } from "../../shared/extractionRules/urlPatternGeneration";
+import type { EndpointType, ExtractionRule, ModelProvider, ProviderModel } from "../../shared/types";
+
+const DEBUG_PREFIX = "[提取规则 AI 生成诊断]";
 
 interface RequestFailure {
   message: string;
@@ -26,9 +35,21 @@ interface ModelConnectivityState {
   error?: string;
 }
 
+interface PageContextState {
+  loading: boolean;
+  url?: string;
+  text: string;
+  truncated: boolean;
+  usedFallback: boolean;
+  matchedRuleId?: string;
+  error?: string;
+}
+
 interface AppState {
   providers: ModelProvider[];
   models: ProviderModel[];
+  extractionRules: ExtractionRule[];
+  pageContext: PageContextState;
   remoteModels: Record<string, RemoteModelInfo[]>;
   channelOperations: Record<string, ChannelOperationState>;
   modelConnectivity: Record<string, ModelConnectivityState>;
@@ -44,6 +65,12 @@ interface AppState {
   deleteProvider: (providerId: string) => void;
   deleteModel: (modelId: string) => void;
   loadChannelConfig: () => Promise<void>;
+  loadExtractionRules: () => Promise<void>;
+  saveRuleDraft: (ruleId: string | undefined, draft: Pick<ExtractionRule, "alias" | "urlPattern" | "selectorsText">) => Promise<{ ok: true; rule: ExtractionRule } | { ok: false; message: string }>;
+  deleteRule: (ruleId: string) => Promise<void>;
+  moveRule: (ruleId: string, direction: "up" | "down") => Promise<void>;
+  refreshPageContext: () => Promise<void>;
+  generateUrlPatterns: (modelId?: string) => Promise<{ ok: true; patterns: string[] } | { ok: false; message: string }>;
   fetchRemoteModels: (providerId: string) => Promise<void>;
   testModel: (providerId: string, modelId: string) => Promise<void>;
   selectModel: (modelId: string) => void;
@@ -81,6 +108,13 @@ const exampleModel: ProviderModel = {
 export const useAppStore = create<AppState>()((set, get) => ({
   providers: [],
   models: [],
+  extractionRules: [],
+  pageContext: {
+    loading: false,
+    text: "",
+    truncated: false,
+    usedFallback: true,
+  },
   remoteModels: {},
   channelOperations: {},
   modelConnectivity: {},
@@ -210,6 +244,169 @@ export const useAppStore = create<AppState>()((set, get) => ({
       selectedModelId: selectedModelStillExists ? get().selectedModelId : (models[0]?.id ?? ""),
     });
   },
+  loadExtractionRules: async () => {
+    const extractionRules = await getExtractionRules();
+    set({ extractionRules });
+  },
+  saveRuleDraft: async (ruleId, draft) => {
+    const validation = validateExtractionRuleDraft(draft);
+    if (!validation.ok) {
+      return validation;
+    }
+
+    const now = Date.now();
+    const existingRule = ruleId ? get().extractionRules.find((rule) => rule.id === ruleId) : undefined;
+    const nextSortOrder =
+      existingRule?.sortOrder ?? Math.max(0, ...get().extractionRules.map((rule) => rule.sortOrder)) + 10;
+    const rule: ExtractionRule = {
+      id: existingRule?.id ?? `rule-${now}`,
+      alias: draft.alias.trim(),
+      urlPattern: draft.urlPattern.trim(),
+      selectorsText: draft.selectorsText.trim(),
+      sortOrder: nextSortOrder,
+      createdAt: existingRule?.createdAt ?? now,
+      updatedAt: now,
+    };
+
+    await saveExtractionRule(rule);
+    await get().loadExtractionRules();
+    void get().refreshPageContext();
+    return { ok: true, rule };
+  },
+  deleteRule: async (ruleId) => {
+    await deleteExtractionRule(ruleId);
+    await get().loadExtractionRules();
+    void get().refreshPageContext();
+  },
+  moveRule: async (ruleId, direction) => {
+    await moveExtractionRule(ruleId, direction);
+    await get().loadExtractionRules();
+    void get().refreshPageContext();
+  },
+  refreshPageContext: async () => {
+    set((state) => ({
+      pageContext: {
+        ...state.pageContext,
+        loading: true,
+        error: undefined,
+      },
+    }));
+
+    const response = await sendRuntimeMessage<
+      | {
+          ok: true;
+          url?: string;
+          text: string;
+          truncated: boolean;
+          usedFallback: boolean;
+          matchedRuleId?: string;
+        }
+      | { ok: false; message?: string }
+    >({
+      type: "pageContext.extract",
+      rules: get().extractionRules,
+      maxLength: DEFAULT_CONTEXT_MAX_LENGTH,
+    });
+
+    if (!response) {
+      set((state) => ({
+        pageContext: {
+          ...state.pageContext,
+          loading: false,
+          error: "提取当前页面失败",
+        },
+      }));
+      return;
+    }
+
+    if (response.ok) {
+      set({
+        pageContext: {
+          loading: false,
+          url: response.url,
+          text: response.text,
+          truncated: response.truncated,
+          usedFallback: response.usedFallback,
+          matchedRuleId: response.matchedRuleId,
+        },
+      });
+      return;
+    }
+
+    set((state) => ({
+      pageContext: {
+        ...state.pageContext,
+        loading: false,
+        error: response.message ?? "提取当前页面失败",
+      },
+    }));
+  },
+  generateUrlPatterns: async (modelId) => {
+    const state = get();
+    const debugRequestId = `url-pattern-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    console.debug(`${DEBUG_PREFIX} 前端开始生成 URL 正则`, {
+      debugRequestId,
+      requestedModelId: modelId,
+      providerCount: state.providers.length,
+      modelCount: state.models.length,
+      selectedModelId: state.selectedModelId,
+      pageContextUrl: state.pageContext.url,
+    });
+
+    const model = modelId
+      ? state.models.find((item) => item.id === modelId)
+      : state.models.find((item) => item.id === state.selectedModelId) ?? state.models.find((item) => item.enabled);
+    const provider = model ? state.providers.find((item) => item.id === model.providerId) : undefined;
+    if (!provider || !model) {
+      console.warn(`${DEBUG_PREFIX} 前端未找到可用模型或渠道`, {
+        debugRequestId,
+        requestedModelId: modelId,
+        foundModel: Boolean(model),
+        foundProvider: Boolean(provider),
+      });
+      return { ok: false, message: "请先配置可用模型后再使用 AI 生成" };
+    }
+
+    const urlResult = state.pageContext.url
+      ? ({ ok: true, url: state.pageContext.url } as const)
+      : await getCurrentTabUrlForGeneration(debugRequestId);
+    if (!urlResult.ok) {
+      console.warn(`${DEBUG_PREFIX} 前端获取当前 URL 失败`, {
+        debugRequestId,
+        message: urlResult.message,
+      });
+      return { ok: false, message: urlResult.message };
+    }
+
+    console.debug(`${DEBUG_PREFIX} 前端准备直接调用模型生成`, {
+      debugRequestId,
+      providerId: provider.id,
+      providerName: provider.name,
+      endpointType: provider.endpointType,
+      endpointUrl: provider.endpointUrl,
+      modelId: model.id,
+      modelName: model.displayName,
+      modelValue: model.modelId,
+      url: urlResult.url,
+    });
+
+    try {
+      const response = await generateUrlPatternsWithModel(provider, model, urlResult.url);
+
+      console.debug(`${DEBUG_PREFIX} 前端收到生成响应`, {
+        debugRequestId,
+        response,
+      });
+
+      return response.ok ? response : { ok: false, message: response.message ?? "AI 生成失败" };
+    } catch (error) {
+      console.error(`${DEBUG_PREFIX} 前端生成流程异常`, {
+        debugRequestId,
+        error,
+      });
+      return { ok: false, message: "AI 生成失败" };
+    }
+  },
   fetchRemoteModels: async (providerId) => {
     const provider = get().providers.find((item) => item.id === providerId);
     if (!provider) {
@@ -275,6 +472,13 @@ export const useAppStore = create<AppState>()((set, get) => ({
     set({
       providers: [],
       models: [],
+      extractionRules: [],
+      pageContext: {
+        loading: false,
+        text: "",
+        truncated: false,
+        usedFallback: true,
+      },
       remoteModels: {},
       channelOperations: {},
       modelConnectivity: {},
@@ -284,6 +488,29 @@ export const useAppStore = create<AppState>()((set, get) => ({
     });
   },
 }));
+
+async function getCurrentTabUrlForGeneration(debugRequestId: string): Promise<{ ok: true; url: string } | { ok: false; message: string }> {
+  console.debug(`${DEBUG_PREFIX} 前端请求后台读取当前标签页 URL`, {
+    debugRequestId,
+  });
+
+  const response = await sendRuntimeMessage<{ ok: true; url: string } | { ok: false; message?: string }>({
+    type: "extractionRule.getCurrentTabUrl",
+    debugRequestId,
+  });
+
+  console.debug(`${DEBUG_PREFIX} 前端收到当前标签页 URL 响应`, {
+    debugRequestId,
+    response,
+    runtimeLastError: globalThis.chrome?.runtime?.lastError?.message,
+  });
+
+  if (!response) {
+    return { ok: false, message: "未获取到当前页面 URL" };
+  }
+
+  return response.ok ? response : { ok: false, message: response.message ?? "未获取到当前页面 URL" };
+}
 
 type StoreGetter = StoreApi<AppState>["getState"];
 type StoreSetter = StoreApi<AppState>["setState"];
@@ -389,5 +616,45 @@ async function sendRuntimeMessage<T>(message: unknown): Promise<T> {
     } as T;
   }
 
-  return globalThis.chrome.runtime.sendMessage(message) as Promise<T>;
+  return new Promise<T>((resolve) => {
+    let settled = false;
+    const finish = (response: T) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      resolve(response);
+    };
+
+    try {
+      // 真实 Chrome 扩展环境可能走 callback 形态；显式传 callback，避免把 sendMessage 的返回值 undefined 当作响应。
+      const maybePromise = globalThis.chrome.runtime.sendMessage(message, (response: T) => {
+        const runtimeError = globalThis.chrome?.runtime?.lastError?.message;
+        if (runtimeError) {
+          finish({
+            ok: false,
+            message: runtimeError,
+          } as T);
+          return;
+        }
+
+        finish(response);
+      }) as Promise<T> | undefined;
+
+      if (maybePromise && typeof maybePromise.then === "function") {
+        void maybePromise.then(finish).catch((error) => {
+          finish({
+            ok: false,
+            message: error instanceof Error ? error.message : "插件后台请求失败",
+          } as T);
+        });
+      }
+    } catch (error) {
+      finish({
+        ok: false,
+        message: error instanceof Error ? error.message : "插件后台请求失败",
+      } as T);
+    }
+  });
 }

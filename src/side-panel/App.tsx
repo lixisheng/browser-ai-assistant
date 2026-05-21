@@ -7,10 +7,12 @@ import { useAppStore } from "./state/appStore";
 export function App() {
   const [showSettings, setShowSettings] = useState(false);
   const loadChannelConfig = useAppStore((state) => state.loadChannelConfig);
+  const loadExtractionRules = useAppStore((state) => state.loadExtractionRules);
+  const refreshPageContext = useAppStore((state) => state.refreshPageContext);
 
   useEffect(() => {
-    void loadChannelConfig();
-  }, [loadChannelConfig]);
+    void Promise.all([loadChannelConfig(), loadExtractionRules()]).then(() => refreshPageContext());
+  }, [loadChannelConfig, loadExtractionRules, refreshPageContext]);
 
   return (
     <main className="app-shell">
