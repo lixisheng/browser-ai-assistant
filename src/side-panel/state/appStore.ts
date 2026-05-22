@@ -160,7 +160,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   modelConnectivity: {},
   selectedModelId: "",
   activeSessionId: "",
-  streamMode: false,
+  streamMode: true,
   sending: false,
   contextMode: "text",
   addExampleModel: () =>
@@ -742,9 +742,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
         chatSessions: upsertSession(current.chatSessions, nextSession),
       }));
 
-      const response = await sendRuntimeMessage<
-        { ok: true; content: string; thinking?: string } | { ok: false; message: string } | undefined
-      >({
+      const request: ChatSendMessage = {
         type: "chat.send",
         model: modelConfig,
         messages: buildChatRequestMessages({
@@ -754,7 +752,30 @@ export const useAppStore = create<AppState>()((set, get) => ({
           userMessage,
         }),
         stream: state.streamMode,
-      });
+      };
+
+      if (state.streamMode) {
+        const streamResult = await sendStreamingChatMessage({
+          set,
+          sessionId: nextSession.id,
+          modelId: model.id,
+          endpointType: provider.endpointType,
+          systemPrompt: model.systemPrompt,
+          contextPrompt: state.pageContext.text,
+          contextMode: state.contextMode,
+          matchedRuleId: state.pageContext.matchedRuleId,
+          request,
+        });
+        if (streamResult.completed) {
+          return;
+        }
+
+        request.stream = false;
+      }
+
+      const response = await sendRuntimeMessage<
+        { ok: true; content: string; thinking?: string } | { ok: false; message: string } | undefined
+      >(request);
 
       if (!response) {
         set({ failure: { message: "模型请求失败，请重试" } });
@@ -841,7 +862,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       selectedModelId: "",
       activeSessionId: "",
       pendingDeleteSessionId: undefined,
-      streamMode: false,
+      streamMode: true,
       sending: false,
       contextMode: "text",
       failure: undefined,
@@ -885,6 +906,240 @@ async function getCurrentTabUrlForGeneration(debugRequestId: string): Promise<{ 
 
 type StoreGetter = StoreApi<AppState>["getState"];
 type StoreSetter = StoreApi<AppState>["setState"];
+
+type ChatSendMessage = {
+  type: "chat.send";
+  model: ReturnType<typeof createModelConfig>;
+  messages: ChatMessage[];
+  stream: boolean;
+};
+
+type ChatStreamPortMessage =
+  | { type: "chunk"; content: string }
+  | { type: "thinking"; content: string }
+  | { type: "complete"; content: string; thinking?: string }
+  | { type: "error"; message?: string };
+
+interface StreamingChatResult {
+  completed: boolean;
+}
+
+interface StreamingChatInput {
+  set: StoreSetter;
+  sessionId: string;
+  modelId: string;
+  endpointType: EndpointType;
+  systemPrompt: string;
+  contextPrompt: string;
+  contextMode: PageContextExtractMode;
+  matchedRuleId?: string;
+  request: ChatSendMessage;
+}
+
+async function sendStreamingChatMessage(input: StreamingChatInput): Promise<StreamingChatResult> {
+  if (!globalThis.chrome?.runtime?.connect) {
+    return { completed: false };
+  }
+
+  const assistantCreatedAt = Date.now();
+  const assistantMessage: ChatMessage = {
+    id: `message-${assistantCreatedAt}-assistant`,
+    role: "assistant",
+    content: "",
+    createdAt: assistantCreatedAt,
+    modelId: input.modelId,
+    endpointType: input.endpointType,
+    streamMode: true,
+    systemPrompt: input.systemPrompt,
+    contextPrompt: input.contextPrompt,
+    contextMode: input.contextMode,
+    matchedRuleId: input.matchedRuleId,
+    streaming: true,
+  };
+
+  const initializedSession = await updateChatSession(input.sessionId, (latestSession) => ({
+    ...latestSession,
+    updatedAt: assistantMessage.createdAt,
+    messages: [...latestSession.messages, assistantMessage],
+  }));
+  if (!initializedSession) {
+    return { completed: true };
+  }
+
+  input.set((current) => {
+    const currentSession = current.chatSessions.find((session) => session.id === initializedSession.id);
+    if (!currentSession) {
+      return {};
+    }
+
+    return {
+      chatSessions: upsertSession(current.chatSessions, {
+        ...currentSession,
+        updatedAt: assistantMessage.createdAt,
+        messages: [...currentSession.messages, assistantMessage],
+      }),
+    };
+  });
+
+  return new Promise<StreamingChatResult>((resolve) => {
+    const port = globalThis.chrome.runtime.connect({ name: "chat.stream" });
+    let settled = false;
+    let receivedStreamResponse = false;
+    let writeQueue = Promise.resolve();
+
+    const finish = (result: StreamingChatResult, options: { disconnect: boolean } = { disconnect: true }) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      if (options.disconnect) {
+        port.disconnect();
+      }
+      resolve(result);
+    };
+    const enqueueWrite = (operation: () => Promise<void>) => {
+      writeQueue = writeQueue.then(operation).catch(() => {
+        input.set({ failure: { message: "消息保存失败，请重试" } });
+      });
+      return writeQueue;
+    };
+
+    port.onMessage.addListener((message: ChatStreamPortMessage) => {
+      receivedStreamResponse = true;
+      if (message.type === "chunk") {
+        void enqueueWrite(() => appendAssistantChunk(input.sessionId, assistantMessage.id, message.content, input.set));
+        return;
+      }
+
+      if (message.type === "thinking") {
+        void enqueueWrite(() => appendAssistantThinkingChunk(input.sessionId, assistantMessage.id, message.content, input.set));
+        return;
+      }
+
+      if (message.type === "complete") {
+        void enqueueWrite(() => finalizeAssistantMessage(input.sessionId, assistantMessage.id, message.content, message.thinking, input.set)).then(
+          () => finish({ completed: true }),
+        );
+        return;
+      }
+
+      input.set({ failure: { message: message.message ?? "模型请求失败，请重试" } });
+      finish({ completed: true });
+    });
+
+    port.onDisconnect.addListener(() => {
+      if (!receivedStreamResponse) {
+        void removeAssistantMessage(input.sessionId, assistantMessage.id, input.set).then(() => {
+          finish({ completed: false }, { disconnect: false });
+        });
+        return;
+      }
+
+      finish({ completed: true }, { disconnect: false });
+    });
+
+    port.postMessage({
+      type: "chat.stream.start",
+      payload: input.request,
+    });
+  });
+}
+
+async function removeAssistantMessage(sessionId: string, messageId: string, set: StoreSetter): Promise<void> {
+  await updateChatSession(sessionId, (latestSession) => ({
+    ...latestSession,
+    messages: latestSession.messages.filter((message) => message.id !== messageId),
+  }));
+
+  set((current) => {
+    const session = current.chatSessions.find((item) => item.id === sessionId);
+    if (!session) {
+      return {};
+    }
+
+    return {
+      chatSessions: upsertSession(current.chatSessions, {
+        ...session,
+        messages: session.messages.filter((message) => message.id !== messageId),
+      }),
+    };
+  });
+}
+
+async function appendAssistantThinkingChunk(sessionId: string, messageId: string, content: string, set: StoreSetter): Promise<void> {
+  await updateChatSession(sessionId, (latestSession) => ({
+    ...latestSession,
+    messages: latestSession.messages.map((message) =>
+      message.id === messageId ? { ...message, thinking: `${message.thinking ?? ""}${content}` } : message,
+    ),
+  }));
+
+  set((current) =>
+    updateAssistantMessageInState(current, sessionId, messageId, (message) => ({
+      ...message,
+      thinking: `${message.thinking ?? ""}${content}`,
+    })),
+  );
+}
+
+async function appendAssistantChunk(sessionId: string, messageId: string, content: string, set: StoreSetter): Promise<void> {
+  await updateChatSession(sessionId, (latestSession) => ({
+    ...latestSession,
+    messages: latestSession.messages.map((message) =>
+      message.id === messageId ? { ...message, content: `${message.content}${content}` } : message,
+    ),
+  }));
+
+  set((current) =>
+    updateAssistantMessageInState(current, sessionId, messageId, (message) => ({
+      ...message,
+      content: `${message.content}${content}`,
+    })),
+  );
+}
+
+async function finalizeAssistantMessage(
+  sessionId: string,
+  messageId: string,
+  content: string,
+  thinking: string | undefined,
+  set: StoreSetter,
+): Promise<void> {
+  await updateChatSession(sessionId, (latestSession) => ({
+    ...latestSession,
+    updatedAt: Date.now(),
+    messages: latestSession.messages.map((message) => (message.id === messageId ? { ...message, content, thinking, streaming: false } : message)),
+  }));
+
+  set((current) =>
+    updateAssistantMessageInState(current, sessionId, messageId, (message) => ({
+      ...message,
+      content,
+      thinking,
+      streaming: false,
+    })),
+  );
+}
+
+function updateAssistantMessageInState(
+  state: AppState,
+  sessionId: string,
+  messageId: string,
+  updater: (message: ChatMessage) => ChatMessage,
+): Partial<AppState> {
+  const session = state.chatSessions.find((item) => item.id === sessionId);
+  if (!session) {
+    return {};
+  }
+
+  return {
+    chatSessions: upsertSession(state.chatSessions, {
+      ...session,
+      messages: session.messages.map((message) => (message.id === messageId ? updater(message) : message)),
+    }),
+  };
+}
 
 function createAndStoreModel(
   providerId: string,

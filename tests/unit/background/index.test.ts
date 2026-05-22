@@ -10,6 +10,7 @@ function createChromeMock() {
   const messageListeners: Array<
     Listener<(message: unknown, sender: chrome.runtime.MessageSender, sendResponse: (response?: unknown) => void) => boolean>
   > = [];
+  const connectListeners: Array<Listener<(port: chrome.runtime.Port) => void>> = [];
 
   return {
     installedListeners,
@@ -17,6 +18,7 @@ function createChromeMock() {
     commandListeners,
     contextListeners,
     messageListeners,
+    connectListeners,
     chrome: {
       runtime: {
         onInstalled: {
@@ -30,6 +32,9 @@ function createChromeMock() {
               >,
             ) => messageListeners.push(listener),
           ),
+        },
+        onConnect: {
+          addListener: vi.fn((listener: Listener<(port: chrome.runtime.Port) => void>) => connectListeners.push(listener)),
         },
       },
       contextMenus: {

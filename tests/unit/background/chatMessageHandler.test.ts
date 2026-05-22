@@ -103,8 +103,11 @@ describe("聊天模型请求处理", () => {
     expect(text).not.toHaveBeenCalled();
   });
 
-  it("启用真实流式响应时返回不支持提示且不发起请求", async () => {
-    const fetcher = vi.fn();
+  it("流式响应缺少响应体时返回中文错误", async () => {
+    const fetcher = vi.fn().mockResolvedValue({
+      ok: true,
+      body: null,
+    });
 
     const result = await handleChatSendMessage(
       {
@@ -118,9 +121,153 @@ describe("聊天模型请求处理", () => {
 
     expect(result).toEqual({
       ok: false,
-      message: "当前版本暂不支持真实流式响应，请关闭流式响应后重试",
+      message: "模型响应中没有可用内容",
     });
-    expect(fetcher).not.toHaveBeenCalled();
+    expect(fetcher).toHaveBeenCalledWith(
+      "https://api.example.com/v1/chat/completions",
+      expect.objectContaining({
+        method: "POST",
+      }),
+    );
+  });
+
+  it("OpenAI-compatible 流式响应会逐段回调并在完成时解析思考过程", async () => {
+    const encoder = new TextEncoder();
+    const chunks: Uint8Array[] = [
+      encoder.encode('data: {"choices":[{"delta":{"content":"<think>先"}}]}\n\n'),
+      encoder.encode('data: {"choices":[{"delta":{"content":"分析</think>答"}}]}\n\n'),
+      encoder.encode('data: {"choices":[{"delta":{"content":"案"}}]}\n\n'),
+      encoder.encode("data: [DONE]\n\n"),
+    ];
+    const fetcher = vi.fn().mockResolvedValue({
+      ok: true,
+      body: new ReadableStream({
+        pull(controller) {
+          const chunk = chunks.shift();
+          if (chunk) {
+            controller.enqueue(chunk);
+            return;
+          }
+
+          controller.close();
+        },
+      }),
+    });
+    const onContentChunk = vi.fn();
+
+    const result = await handleChatSendMessage(
+      {
+        type: "chat.send",
+        model: createModel(),
+        messages: [createMessage("user", "你好")],
+        stream: true,
+      },
+      fetcher,
+      { onContentChunk },
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      content: "答案",
+      thinking: "先分析",
+    });
+    expect(onContentChunk).toHaveBeenNthCalledWith(1, "<think>先");
+    expect(onContentChunk).toHaveBeenNthCalledWith(2, "分析</think>答");
+    expect(onContentChunk).toHaveBeenNthCalledWith(3, "案");
+  });
+
+  it("OpenAI-compatible 流式响应会逐段回调 reasoning_content 并在 content 前返回思考过程", async () => {
+    const encoder = new TextEncoder();
+    const chunks: Uint8Array[] = [
+      encoder.encode('data: {"choices":[{"delta":{"reasoning_content":"先分析"}}]}\n\n'),
+      encoder.encode('data: {"choices":[{"delta":{"reasoning_content":"页面"}}]}\n\n'),
+      encoder.encode('data: {"choices":[{"delta":{"content":"正式"}}]}\n\n'),
+      encoder.encode('data: {"choices":[{"delta":{"content":"回答"}}]}\n\n'),
+      encoder.encode("data: [DONE]\n\n"),
+    ];
+    const fetcher = vi.fn().mockResolvedValue({
+      ok: true,
+      body: new ReadableStream({
+        pull(controller) {
+          const chunk = chunks.shift();
+          if (chunk) {
+            controller.enqueue(chunk);
+            return;
+          }
+
+          controller.close();
+        },
+      }),
+    });
+    const onContentChunk = vi.fn();
+    const onThinkingChunk = vi.fn();
+
+    const result = await handleChatSendMessage(
+      {
+        type: "chat.send",
+        model: createModel(),
+        messages: [createMessage("user", "你好")],
+        stream: true,
+      },
+      fetcher,
+      { onContentChunk, onThinkingChunk },
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      content: "正式回答",
+      thinking: "先分析页面",
+    });
+    expect(onThinkingChunk).toHaveBeenNthCalledWith(1, "先分析");
+    expect(onThinkingChunk).toHaveBeenNthCalledWith(2, "页面");
+    expect(onContentChunk).toHaveBeenNthCalledWith(1, "正式");
+    expect(onContentChunk).toHaveBeenNthCalledWith(2, "回答");
+  });
+
+  it("Anthropic 流式响应只拼接 text_delta 文本片段", async () => {
+    const encoder = new TextEncoder();
+    const chunks: Uint8Array[] = [
+      encoder.encode('event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"第一段"}}\n\n'),
+      encoder.encode('event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"第二段"}}\n\n'),
+      encoder.encode('event: message_stop\ndata: {"type":"message_stop"}\n\n'),
+    ];
+    const fetcher = vi.fn().mockResolvedValue({
+      ok: true,
+      body: new ReadableStream({
+        pull(controller) {
+          const chunk = chunks.shift();
+          if (chunk) {
+            controller.enqueue(chunk);
+            return;
+          }
+
+          controller.close();
+        },
+      }),
+    });
+    const onContentChunk = vi.fn();
+
+    const result = await handleChatSendMessage(
+      {
+        type: "chat.send",
+        model: createModel({
+          endpointType: "anthropic_messages",
+          endpointUrl: "https://api.example.com/v1/messages",
+        }),
+        messages: [createMessage("user", "你好")],
+        stream: true,
+      },
+      fetcher,
+      { onContentChunk },
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      content: "第一段第二段",
+      thinking: undefined,
+    });
+    expect(onContentChunk).toHaveBeenNthCalledWith(1, "第一段");
+    expect(onContentChunk).toHaveBeenNthCalledWith(2, "第二段");
   });
 
   it("Anthropic 文本 block 成功返回正文", async () => {

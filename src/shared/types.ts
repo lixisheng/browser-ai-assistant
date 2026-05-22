@@ -58,6 +58,7 @@ export interface ChatMessage {
   contextMode: PageContextExtractMode;
   matchedRuleId?: string;
   thinking?: string;
+  streaming?: boolean;
 }
 
 export interface ChatSession {

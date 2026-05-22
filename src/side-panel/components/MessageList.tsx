@@ -1,4 +1,5 @@
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import type { ChatMessage } from "../../shared/types";
 
 interface MessageListProps {
@@ -23,17 +24,25 @@ export function MessageList({ messages }: MessageListProps) {
           </div>
           <div className="message-bubble-wrap">
             {message.role === "assistant" && message.thinking ? (
-              <details className="message-thinking">
+              <details className="message-thinking" open={shouldOpenThinking(message) || undefined}>
                 <summary>思考过程</summary>
                 <p>{message.thinking}</p>
               </details>
             ) : null}
             <div className="message-bubble">
-              <ReactMarkdown>{message.content}</ReactMarkdown>
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
             </div>
           </div>
         </article>
       ))}
     </section>
   );
+}
+
+function shouldOpenThinking(message: ChatMessage): boolean {
+  if (!message.streaming || !message.thinking) {
+    return false;
+  }
+
+  return message.thinking.split(/\r?\n/).length <= 5;
 }

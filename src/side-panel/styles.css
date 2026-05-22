@@ -427,6 +427,26 @@ body {
     color: var(--color-body-strong);
   }
 
+  .message-bubble table {
+    @apply my-2 block max-w-full overflow-x-auto rounded-md text-left text-xs;
+    border-collapse: collapse;
+    border: 1px solid var(--color-hairline);
+  }
+
+  .message-bubble th,
+  .message-bubble td {
+    @apply px-2 py-1 align-top;
+    border: 1px solid var(--color-hairline);
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .message-bubble th {
+    background: var(--color-surface-cream-strong);
+    color: var(--color-body-strong);
+    font-weight: 500;
+  }
+
   .message-bubble ul,
   .message-bubble ol {
     @apply my-2 grid max-w-full gap-1 pl-0;
@@ -446,7 +466,7 @@ body {
     left: 0.125rem;
     top: -0.08rem;
     color: var(--color-primary);
-    font-size: 1.45rem;
+    font-size: 1.65rem;
     font-weight: 500;
     line-height: 1;
   }

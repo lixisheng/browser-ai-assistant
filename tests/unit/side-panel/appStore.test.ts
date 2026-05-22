@@ -254,6 +254,7 @@ describe("appStore", () => {
     await useAppStore.getState().loadChannelConfig();
     await useAppStore.getState().loadChatData();
     await useAppStore.getState().refreshPageContext();
+    useAppStore.getState().setStreamMode(false);
 
     await useAppStore.getState().sendChatMessage("第一问");
     await useAppStore.getState().sendChatMessage("第二问");
@@ -275,6 +276,269 @@ describe("appStore", () => {
       }),
       expect.any(Function),
     );
+  });
+
+  it("默认开启流式响应并通过长连接逐段更新 AI 消息", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const disconnect = vi.fn();
+    let portMessageListener: ((message: unknown) => void) | undefined;
+    let postedMessage: unknown;
+    const port = {
+      postMessage: vi.fn((message: unknown) => {
+        postedMessage = message;
+      }),
+      disconnect,
+      onMessage: {
+        addListener: vi.fn((listener: (message: unknown) => void) => {
+          portMessageListener = listener;
+        }),
+      },
+      onDisconnect: {
+        addListener: vi.fn(),
+      },
+    };
+    vi.stubGlobal("chrome", {
+      runtime: {
+        connect: vi.fn(() => port),
+        sendMessage: vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+          if (message.type === "pageContext.extract") {
+            callback({
+              ok: true,
+              url: "https://example.com/article",
+              text: "页面内容",
+              truncated: false,
+              usedFallback: false,
+            });
+          }
+
+          return undefined;
+        }),
+      },
+    });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    await useAppStore.getState().refreshPageContext();
+
+    expect(useAppStore.getState().streamMode).toBe(true);
+    const sendPromise = useAppStore.getState().sendChatMessage("第一问");
+    await vi.waitFor(() => {
+      expect(portMessageListener).toBeTypeOf("function");
+      expect(useAppStore.getState().chatSessions[0]?.messages.map((message) => message.content)).toEqual(["第一问", ""]);
+    });
+
+    portMessageListener?.({ type: "chunk", content: "AI " });
+    await vi.waitFor(() => {
+      expect(useAppStore.getState().chatSessions[0]?.messages.map((message) => message.content)).toEqual(["第一问", "AI "]);
+    });
+    portMessageListener?.({ type: "chunk", content: "回复" });
+    portMessageListener?.({ type: "complete", content: "AI 回复", thinking: "思考内容" });
+    await sendPromise;
+
+    const activeSession = useAppStore.getState().chatSessions[0];
+    expect(postedMessage).toMatchObject({
+      type: "chat.stream.start",
+      payload: expect.objectContaining({
+        stream: true,
+      }),
+    });
+    expect(activeSession.messages.map((message) => message.content)).toEqual(["第一问", "AI 回复"]);
+    expect(activeSession.messages[1].thinking).toBe("思考内容");
+    expect(disconnect).toHaveBeenCalled();
+  });
+
+  it("流式响应先逐段更新思考过程，再逐段更新正文", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    let portMessageListener: ((message: unknown) => void) | undefined;
+    const port = {
+      postMessage: vi.fn(),
+      disconnect: vi.fn(),
+      onMessage: {
+        addListener: vi.fn((listener: (message: unknown) => void) => {
+          portMessageListener = listener;
+        }),
+      },
+      onDisconnect: {
+        addListener: vi.fn(),
+      },
+    };
+    vi.stubGlobal("chrome", {
+      runtime: {
+        connect: vi.fn(() => port),
+        sendMessage: vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+          if (message.type === "pageContext.extract") {
+            callback({
+              ok: true,
+              url: "https://example.com/article",
+              text: "页面内容",
+              truncated: false,
+              usedFallback: false,
+            });
+          }
+
+          return undefined;
+        }),
+      },
+    });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    await useAppStore.getState().refreshPageContext();
+
+    const sendPromise = useAppStore.getState().sendChatMessage("第一问");
+    await vi.waitFor(() => {
+      expect(portMessageListener).toBeTypeOf("function");
+    });
+
+    portMessageListener?.({ type: "thinking", content: "先" });
+    portMessageListener?.({ type: "thinking", content: "分析" });
+    await vi.waitFor(() => {
+      expect(useAppStore.getState().chatSessions[0]?.messages[1]).toMatchObject({
+        content: "",
+        thinking: "先分析",
+        streaming: true,
+      });
+    });
+
+    portMessageListener?.({ type: "chunk", content: "正式" });
+    portMessageListener?.({ type: "chunk", content: "回答" });
+    portMessageListener?.({ type: "complete", content: "正式回答", thinking: "先分析" });
+    await sendPromise;
+
+    expect(useAppStore.getState().chatSessions[0]?.messages[1]).toMatchObject({
+      content: "正式回答",
+      thinking: "先分析",
+      streaming: false,
+    });
+  });
+
+  it("流式片段落库较慢时完成消息不会被旧片段覆盖", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    let portMessageListener: ((message: unknown) => void) | undefined;
+    const port = {
+      postMessage: vi.fn(),
+      disconnect: vi.fn(),
+      onMessage: {
+        addListener: vi.fn((listener: (message: unknown) => void) => {
+          portMessageListener = listener;
+        }),
+      },
+      onDisconnect: {
+        addListener: vi.fn(),
+      },
+    };
+    vi.stubGlobal("chrome", {
+      runtime: {
+        connect: vi.fn(() => port),
+        sendMessage: vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+          if (message.type === "pageContext.extract") {
+            callback({
+              ok: true,
+              url: "https://example.com/article",
+              text: "页面内容",
+              truncated: false,
+              usedFallback: false,
+            });
+          }
+
+          return undefined;
+        }),
+      },
+    });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    await useAppStore.getState().refreshPageContext();
+
+    const sendPromise = useAppStore.getState().sendChatMessage("第一问");
+    await vi.waitFor(() => {
+      expect(portMessageListener).toBeTypeOf("function");
+    });
+
+    portMessageListener?.({ type: "chunk", content: "旧" });
+    portMessageListener?.({ type: "complete", content: "最终回复", thinking: "最终思考" });
+    await sendPromise;
+
+    const activeSessionId = useAppStore.getState().activeSessionId;
+    await expect(getChatSession(activeSessionId)).resolves.toMatchObject({
+      messages: [
+        expect.objectContaining({ role: "user", content: "第一问" }),
+        expect.objectContaining({ role: "assistant", content: "最终回复", thinking: "最终思考" }),
+      ],
+    });
+    expect(useAppStore.getState().chatSessions[0]?.messages[1]).toMatchObject({
+      content: "最终回复",
+      thinking: "最终思考",
+    });
+  });
+
+  it("流式连接断开且没有收到任何响应时自动回退到非流式请求", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    let disconnectListener: (() => void) | undefined;
+    const port = {
+      postMessage: vi.fn(() => {
+        disconnectListener?.();
+      }),
+      disconnect: vi.fn(),
+      onMessage: {
+        addListener: vi.fn(),
+      },
+      onDisconnect: {
+        addListener: vi.fn((listener: () => void) => {
+          disconnectListener = listener;
+        }),
+      },
+    };
+    vi.stubGlobal("chrome", {
+      runtime: {
+        connect: vi.fn(() => port),
+        sendMessage: vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+          if (message.type === "pageContext.extract") {
+            callback({
+              ok: true,
+              url: "https://example.com/article",
+              text: "页面内容",
+              truncated: false,
+              usedFallback: false,
+            });
+          }
+
+          if (message.type === "chat.send") {
+            callback({
+              ok: true,
+              content: "回退回复",
+              thinking: "回退思考",
+            });
+          }
+
+          return undefined;
+        }),
+      },
+    });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    await useAppStore.getState().refreshPageContext();
+
+    await useAppStore.getState().sendChatMessage("第一问");
+
+    const state = useAppStore.getState();
+    const activeSession = state.chatSessions.find((session) => session.id === state.activeSessionId);
+    expect(state.failure).toBeUndefined();
+    expect(activeSession?.messages.map((message) => message.content)).toEqual(["第一问", "回退回复"]);
+    expect(activeSession?.messages[1].thinking).toBe("回退思考");
   });
 
   it("提取模式切换后刷新页面上下文时传递 all 模式", async () => {
@@ -506,6 +770,7 @@ describe("appStore", () => {
     await useAppStore.getState().loadChannelConfig();
     await useAppStore.getState().loadChatData();
     await useAppStore.getState().refreshPageContext();
+    useAppStore.getState().setStreamMode(false);
 
     await useAppStore.getState().sendChatMessage("第一问");
 
@@ -548,6 +813,7 @@ describe("appStore", () => {
     await useAppStore.getState().loadChannelConfig();
     await useAppStore.getState().loadChatData();
     await useAppStore.getState().refreshPageContext();
+    useAppStore.getState().setStreamMode(false);
 
     repositoryMockState.failSaveChatSession = true;
     await useAppStore.getState().sendChatMessage("第一问");
@@ -593,6 +859,7 @@ describe("appStore", () => {
     await useAppStore.getState().loadChannelConfig();
     await useAppStore.getState().loadChatData();
     await useAppStore.getState().refreshPageContext();
+    useAppStore.getState().setStreamMode(false);
 
     const firstSend = useAppStore.getState().sendChatMessage("第一问");
     const secondSend = useAppStore.getState().sendChatMessage("第二问");
@@ -642,6 +909,7 @@ describe("appStore", () => {
     await useAppStore.getState().loadChannelConfig();
     await useAppStore.getState().loadChatData();
     await useAppStore.getState().refreshPageContext();
+    useAppStore.getState().setStreamMode(false);
 
     const sendPromise = useAppStore.getState().sendChatMessage("第一问");
     await vi.waitFor(() => {
@@ -691,6 +959,7 @@ describe("appStore", () => {
     await useAppStore.getState().loadChannelConfig();
     await useAppStore.getState().loadChatData();
     await useAppStore.getState().refreshPageContext();
+    useAppStore.getState().setStreamMode(false);
     const folder = await useAppStore.getState().createChatFolder("资料夹");
 
     const sendPromise = useAppStore.getState().sendChatMessage("第一问");
@@ -753,6 +1022,7 @@ describe("appStore", () => {
     await useAppStore.getState().loadChannelConfig();
     await useAppStore.getState().loadChatData();
     await useAppStore.getState().refreshPageContext();
+    useAppStore.getState().setStreamMode(false);
 
     const sendPromise = useAppStore.getState().sendChatMessage("第一问");
     await vi.waitFor(() => {

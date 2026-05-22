@@ -53,6 +53,11 @@ type RuntimeMessage =
   | CurrentTabUrlMessage
   | ChatSendMessage;
 
+interface ChatStreamStartMessage {
+  type: "chat.stream.start";
+  payload: ChatSendMessage;
+}
+
 chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResponse) => {
   if (message.type === "extractionRule.generateUrlPatterns") {
     console.debug(`${DEBUG_PREFIX} background 入口收到 runtime 消息`, {
@@ -123,6 +128,36 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResp
 
   void handleModelCatalogMessage(message).then(sendResponse);
   return true;
+});
+
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== "chat.stream") {
+    return;
+  }
+
+  const handlePortMessage = (message: ChatStreamStartMessage) => {
+    if (message.type !== "chat.stream.start") {
+      return;
+    }
+
+    void handleChatSendMessage(message.payload, fetch, {
+      onContentChunk: (content) => port.postMessage({ type: "chunk", content }),
+      onThinkingChunk: (content) => port.postMessage({ type: "thinking", content }),
+    })
+      .then((response) => {
+        if (response.ok) {
+          port.postMessage({ type: "complete", content: response.content, thinking: response.thinking });
+          return;
+        }
+
+        port.postMessage({ type: "error", message: response.message });
+      })
+      .catch(() => {
+        port.postMessage({ type: "error", message: "模型请求失败，请稍后重试" });
+      });
+  };
+
+  port.onMessage.addListener(handlePortMessage);
 });
 
 export {};

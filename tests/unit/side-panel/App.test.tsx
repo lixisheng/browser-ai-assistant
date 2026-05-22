@@ -12,7 +12,23 @@ import {
   saveModelProvider,
   saveProviderModel,
 } from "../../../src/shared/storage/repositories";
-import type { ChatFolder, ChatSession, ExtractionRule, ModelProvider, ProviderModel } from "../../../src/shared/types";
+import type { ChatFolder, ChatMessage, ChatSession, ExtractionRule, ModelProvider, ProviderModel } from "../../../src/shared/types";
+
+function createChatMessage(partial: Partial<ChatMessage>): ChatMessage {
+  return {
+    id: "message-1",
+    role: "assistant",
+    content: "消息内容",
+    createdAt: 1,
+    modelId: "model-1",
+    endpointType: "openai_chat",
+    streamMode: true,
+    systemPrompt: "你是网页助手",
+    contextPrompt: "页面内容",
+    contextMode: "text",
+    ...partial,
+  };
+}
 
 function createExtractionRule(partial: Partial<ExtractionRule>): ExtractionRule {
   return {
@@ -105,12 +121,10 @@ describe("App", () => {
         id: "session-long-code",
         title: "长代码",
         messages: [
-          {
+          createChatMessage({
             id: "message-long-code",
-            role: "assistant",
             content: "```python\nbox_annotator = sv.BoxAnnotator()\nannotated_frame = box_annotator.annotate(scene=image, detections=detections)\n```",
-            createdAt: 1,
-          },
+          }),
         ],
       }),
     );
@@ -118,10 +132,11 @@ describe("App", () => {
     render(<App />);
 
     const messageList = await screen.findByLabelText("消息列表");
-    const bubbleWrap = screen.getByText(/box_annotator/).closest(".message-bubble-wrap");
+    const codeText = await screen.findByText((content) => content.includes("box_annotator"));
+    const bubbleWrap = codeText.closest(".message-bubble-wrap");
     const styles = readFileSync(resolve(process.cwd(), "src/side-panel/styles.css"), "utf8");
 
-    expect(messageList).toContainElement(bubbleWrap);
+    expect(messageList).toContainElement(bubbleWrap as HTMLElement | null);
     expect(styles).toContain(".message-bubble-wrap");
     expect(styles).toContain("min-width: 0;");
     expect(styles).toContain(".message-bubble pre");
@@ -134,12 +149,10 @@ describe("App", () => {
         id: "session-list-markers",
         title: "列表渲染",
         messages: [
-          {
+          createChatMessage({
             id: "message-list-markers",
-            role: "assistant",
             content: "- 无序第一项\n- 无序第二项\n\n1. 有序第一项\n2. 有序第二项",
-            createdAt: 1,
-          },
+          }),
         ],
       }),
     );
@@ -153,12 +166,12 @@ describe("App", () => {
     const orderedList = lists.find((list) => list.tagName.toLowerCase() === "ol");
 
     expect(unorderedList).toBeInTheDocument();
-    expect(unorderedList.tagName.toLowerCase()).toBe("ul");
+    expect(unorderedList?.tagName.toLowerCase()).toBe("ul");
     expect(orderedList).toBeInTheDocument();
     expect(screen.getByText("无序第一项")).toBeInTheDocument();
     expect(screen.getByText("有序第一项")).toBeInTheDocument();
     expect(styles).toContain('content: "·";');
-    expect(styles).toContain("font-size: 1.45rem;");
+    expect(styles).toContain("font-size: 1.65rem;");
     expect(styles).toContain("counter(message-list-item)");
     expect(styles).toContain(".message-bubble li");
     expect(styles).toContain("overflow-wrap: anywhere;");
@@ -171,12 +184,10 @@ describe("App", () => {
         id: "session-justify",
         title: "两端对齐",
         messages: [
-          {
+          createChatMessage({
             id: "message-justify",
-            role: "assistant",
             content: "这是一段需要两端对齐的聊天正文，用来验证普通段落排版。\n\n- 第一条列表内容也需要两端对齐\n\n```ts\nconst value = 1;\n```",
-            createdAt: 1,
-          },
+          }),
         ],
       }),
     );
@@ -256,11 +267,11 @@ describe("App", () => {
     expect(screen.getByLabelText("当前模型")).toHaveClass("model-select-input");
     expect(screen.getByText("当前模型").closest("label")).toHaveClass("model-select-label-inline");
     const streamSwitch = screen.getByRole("switch", { name: "流式响应" });
-    expect(streamSwitch).toHaveAttribute("aria-checked", "false");
+    expect(streamSwitch).toHaveAttribute("aria-checked", "true");
     await user.click(streamSwitch);
     await user.type(screen.getByLabelText("对话输入"), "你好");
 
-    expect(screen.getByRole("switch", { name: "流式响应" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("switch", { name: "流式响应" })).toHaveAttribute("aria-checked", "false");
     expect(screen.getByRole("button", { name: "发送" })).toBeEnabled();
   });
 
@@ -317,6 +328,7 @@ describe("App", () => {
     render(<App />);
 
     await screen.findByDisplayValue("失败渠道 / 失败模型");
+    await user.click(screen.getByRole("switch", { name: "流式响应" }));
     await user.type(screen.getByLabelText("对话输入"), "失败消息");
     await user.click(screen.getByRole("button", { name: "发送" }));
 
@@ -752,7 +764,7 @@ describe("App", () => {
     const streamSwitch = screen.getByRole("switch", { name: "流式响应" });
     const contextSwitch = screen.getByRole("switch", { name: "提取模式" });
 
-    expect(streamSwitch).toHaveAttribute("aria-checked", "false");
+    expect(streamSwitch).toHaveAttribute("aria-checked", "true");
     expect(contextSwitch).toHaveAttribute("aria-checked", "false");
     expect(screen.getByText("提取文本")).toBeInTheDocument();
     expect(screen.queryByRole("checkbox", { name: "流式响应" })).not.toBeInTheDocument();
@@ -761,7 +773,7 @@ describe("App", () => {
     await user.click(streamSwitch);
     await user.click(contextSwitch);
 
-    expect(screen.getByRole("switch", { name: "流式响应" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("switch", { name: "流式响应" })).toHaveAttribute("aria-checked", "false");
     expect(screen.getByRole("switch", { name: "提取模式" })).toHaveAttribute("aria-checked", "true");
     expect(screen.queryByText("提取文本")).not.toBeInTheDocument();
     expect(screen.getByText("提取所有")).toBeInTheDocument();
@@ -830,6 +842,7 @@ describe("App", () => {
     expect(screen.getByRole("switch", { name: "提取模式" })).toHaveAttribute("aria-checked", "true");
     expect(screen.getByText("提取所有")).toBeInTheDocument();
 
+    await user.click(screen.getByRole("switch", { name: "流式响应" }));
     await user.type(screen.getByLabelText("对话输入"), "总结页面");
     await user.click(screen.getByRole("button", { name: "发送" }));
 
@@ -839,6 +852,72 @@ describe("App", () => {
     expect(thinkingDetails).toBeInTheDocument();
     expect(thinkingDetails).not.toHaveAttribute("open");
     expect(screen.queryByText("AI 思考过程")).not.toBeInTheDocument();
+  });
+
+  it("流式生成中的思考过程默认展开", async () => {
+    await saveChatSession(
+      createChatSession({
+        id: "session-streaming-thinking",
+        title: "流式思考",
+        messages: [
+          createChatMessage({
+            id: "message-streaming-thinking",
+            thinking: "正在分析页面",
+            content: "",
+            streaming: true,
+          }),
+        ],
+      }),
+    );
+
+    render(<App />);
+
+    const thinkingDetails = await screen.findByText("思考过程");
+    expect(thinkingDetails.closest("details")).toHaveAttribute("open");
+    expect(screen.getByText("正在分析页面")).toBeInTheDocument();
+  });
+
+  it("流式思考过程超过五行时自动折叠", async () => {
+    await saveChatSession(
+      createChatSession({
+        id: "session-long-thinking",
+        title: "长思考",
+        messages: [
+          createChatMessage({
+            id: "message-long-thinking",
+            thinking: ["第一行", "第二行", "第三行", "第四行", "第五行", "第六行"].join("\n"),
+            content: "",
+            streaming: true,
+          }),
+        ],
+      }),
+    );
+
+    render(<App />);
+
+    const thinkingDetails = await screen.findByText("思考过程");
+    expect(thinkingDetails.closest("details")).not.toHaveAttribute("open");
+  });
+
+  it("Markdown 表格渲染为真实 table 元素", async () => {
+    await saveChatSession(
+      createChatSession({
+        id: "session-table",
+        title: "表格渲染",
+        messages: [
+          createChatMessage({
+            id: "message-table",
+            content: "| 阶段 | 触发动作 |\n|---|---|\n| dev | 合并到 main |\n| beta | 正式发布 |",
+          }),
+        ],
+      }),
+    );
+
+    render(<App />);
+
+    expect(await screen.findByRole("table")).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "阶段" })).toBeInTheDocument();
+    expect(screen.getByRole("cell", { name: "合并到 main" })).toBeInTheDocument();
   });
 
   it("发送中继续输入不会被响应完成清空", async () => {
@@ -892,6 +971,7 @@ describe("App", () => {
     render(<App />);
 
     const input = await screen.findByLabelText("对话输入");
+    await user.click(screen.getByRole("switch", { name: "流式响应" }));
     await user.type(input, "第一条");
     await user.click(screen.getByRole("button", { name: "发送" }));
     expect(input).toHaveDisplayValue("");
