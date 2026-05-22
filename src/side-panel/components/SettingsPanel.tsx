@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import type { ChatPreferenceValues, ExtractionRule, ModelProvider, ProviderModel } from "../../shared/types";
 import { useAppStore } from "../state/appStore";
+import { useComposedTextInput } from "./useComposedTextInput";
 
 const DEBUG_PREFIX = "[提取规则 AI 生成诊断]";
 
@@ -610,17 +611,19 @@ function ExtractionRules() {
 function ChatPreferenceSettings() {
   const chatPreferences = useAppStore((state) => state.chatPreferences);
   const updateChatPreferences = useAppStore((state) => state.updateChatPreferences);
+  const systemPromptInput = useComposedTextInput(chatPreferences.systemPrompt, (systemPrompt) => {
+    void updateChatPreferences({ systemPrompt });
+  });
 
   return (
-    <fieldset className="grid w-full gap-3">
-      <legend className="font-medium">聊天偏好</legend>
+    <section className="grid w-full gap-3" aria-label="聊天偏好">
+      <h3 className="text-base font-semibold">聊天偏好</h3>
       <label className="grid gap-1 text-sm">
         系统提示词
         <textarea
           className="ui-input min-h-32"
           aria-label="全局系统提示词"
-          value={chatPreferences.systemPrompt}
-          onChange={(event) => void updateChatPreferences({ systemPrompt: event.target.value })}
+          {...systemPromptInput}
         />
       </label>
       <div className="chat-preference-grid">
@@ -659,7 +662,7 @@ function ChatPreferenceSettings() {
         </span>
         <span className="chat-preference-switch-label">默认展开左侧历史面板</span>
       </label>
-    </fieldset>
+    </section>
   );
 }
 
@@ -808,8 +811,8 @@ function RuleEditor({
 
 function SyncSettings() {
   return (
-    <fieldset className="grid w-full gap-3">
-      <legend className="font-medium">同步设置</legend>
+    <section className="grid w-full gap-3" aria-label="同步设置">
+      <h3 className="text-base font-semibold">同步设置</h3>
       <p className="rounded-lg p-2 text-sm" style={{ background: "#fff8e8", border: "1px solid color-mix(in srgb, var(--color-warning) 28%, white)", color: "#8a5f00" }}>
         忘记密钥将无法恢复已加密的同步数据
       </p>
@@ -829,14 +832,14 @@ function SyncSettings() {
           手动恢复
         </button>
       </div>
-    </fieldset>
+    </section>
   );
 }
 
 function AppearanceSettings() {
   return (
-    <fieldset className="grid w-full gap-3">
-      <legend className="font-medium">界面偏好</legend>
+    <section className="grid w-full gap-3" aria-label="界面偏好">
+      <h3 className="text-base font-semibold">界面偏好</h3>
       <label className="grid gap-1 text-sm">
         面板密度
         <select className="ui-input" aria-label="面板密度" defaultValue="normal">
@@ -844,6 +847,6 @@ function AppearanceSettings() {
           <option value="normal">标准</option>
         </select>
       </label>
-    </fieldset>
+    </section>
   );
 }

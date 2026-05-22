@@ -1,6 +1,7 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import type { ChatSessionPreferenceOverrides } from "../../shared/types";
 import { useAppStore } from "../state/appStore";
+import { useComposedTextInput } from "./useComposedTextInput";
 
 interface ChatPreferenceDrawerProps {
   open: boolean;
@@ -12,6 +13,9 @@ export function ChatPreferenceDrawer({ open, onOpenChange }: ChatPreferenceDrawe
   const activeSession = useAppStore((state) => state.chatSessions.find((session) => session.id === state.activeSessionId));
   const updateActiveSessionChatPreferences = useAppStore((state) => state.updateActiveSessionChatPreferences);
   const overrides = activeSession?.chatPreferenceOverrides ?? {};
+  const systemPromptInput = useComposedTextInput(overrides.systemPrompt ?? "", (systemPrompt) => {
+    void updateActiveSessionChatPreferences({ systemPrompt });
+  });
 
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -32,8 +36,7 @@ export function ChatPreferenceDrawer({ open, onOpenChange }: ChatPreferenceDrawe
                 className="ui-input min-h-28"
                 aria-label="当前聊天系统提示词"
                 placeholder={chatPreferences.systemPrompt}
-                value={overrides.systemPrompt ?? ""}
-                onChange={(event) => void updateActiveSessionChatPreferences({ systemPrompt: event.target.value })}
+                {...systemPromptInput}
               />
             </label>
             <div className="chat-preference-grid">

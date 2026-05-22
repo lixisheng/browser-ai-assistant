@@ -104,6 +104,8 @@ describe("App", () => {
     await userEvent.click(screen.getByRole("button", { name: "设置" }));
     await userEvent.click(screen.getByRole("tab", { name: "聊天偏好" }));
 
+    expect(screen.getByRole("region", { name: "聊天偏好" })).toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "聊天偏好" })).not.toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "全局系统提示词" })).toBeInTheDocument();
     expect(screen.getByRole("spinbutton", { name: "全局 temperature" })).toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: "默认展开左侧历史面板" })).toBeInTheDocument();
@@ -121,6 +123,70 @@ describe("App", () => {
     expect(styles).toContain("align-items: start;");
   });
 
+  it("全局系统提示词使用中文输入法组合输入时只保存最终文本", async () => {
+    const updateChatPreferences = vi.fn(async (updates) => {
+      useAppStore.setState((state) => ({
+        chatPreferences: {
+          ...state.chatPreferences,
+          ...updates,
+        },
+      }));
+    });
+    useAppStore.setState({ updateChatPreferences });
+
+    render(<App />);
+
+    await userEvent.click(screen.getByRole("button", { name: "设置" }));
+    await userEvent.click(screen.getByRole("tab", { name: "聊天偏好" }));
+
+    const systemPromptInput = screen.getByRole("textbox", { name: "全局系统提示词" });
+    fireEvent.compositionStart(systemPromptInput);
+    fireEvent.change(systemPromptInput, { target: { value: "你是网页助手，shizhong" } });
+
+    expect(systemPromptInput).toHaveDisplayValue("你是网页助手，shizhong");
+    expect(updateChatPreferences).not.toHaveBeenCalled();
+
+    fireEvent.compositionEnd(systemPromptInput, { target: { value: "你是网页助手，始终" } });
+
+    expect(systemPromptInput).toHaveDisplayValue("你是网页助手，始终");
+    expect(updateChatPreferences).toHaveBeenCalledTimes(1);
+    expect(updateChatPreferences).toHaveBeenCalledWith({ systemPrompt: "你是网页助手，始终" });
+  });
+
+  it("全局系统提示词支持清空并跟随外部偏好同步", async () => {
+    const updateChatPreferences = vi.fn(async (updates) => {
+      useAppStore.setState((state) => ({
+        chatPreferences: {
+          ...state.chatPreferences,
+          ...updates,
+        },
+      }));
+    });
+    useAppStore.setState({ updateChatPreferences });
+
+    render(<App />);
+
+    await userEvent.click(screen.getByRole("button", { name: "设置" }));
+    await userEvent.click(screen.getByRole("tab", { name: "聊天偏好" }));
+
+    const systemPromptInput = screen.getByRole("textbox", { name: "全局系统提示词" });
+    fireEvent.change(systemPromptInput, { target: { value: "" } });
+
+    expect(systemPromptInput).toHaveDisplayValue("");
+    expect(updateChatPreferences).toHaveBeenCalledWith({ systemPrompt: "" });
+
+    act(() => {
+      useAppStore.setState((state) => ({
+        chatPreferences: {
+          ...state.chatPreferences,
+          systemPrompt: "外部同步提示词",
+        },
+      }));
+    });
+
+    expect(systemPromptInput).toHaveDisplayValue("外部同步提示词");
+  });
+
   it("聊天区提供历史抽屉和当前聊天设置抽屉入口", async () => {
     render(<App />);
 
@@ -130,6 +196,28 @@ describe("App", () => {
     expect(screen.getByRole("textbox", { name: "当前聊天系统提示词" })).toBeInTheDocument();
     expect(screen.getByRole("spinbutton", { name: "当前聊天 temperature" })).toHaveClass("chat-preference-number-input");
     expect(screen.getByRole("spinbutton", { name: "当前聊天 top_k" }).closest("label")).toHaveClass("chat-preference-field");
+  });
+
+  it("当前聊天系统提示词使用中文输入法组合输入时只保存最终文本", async () => {
+    const updateActiveSessionChatPreferences = vi.fn(async () => undefined);
+    useAppStore.setState({ updateActiveSessionChatPreferences });
+
+    render(<App />);
+
+    await userEvent.click(screen.getByRole("button", { name: "打开当前聊天设置" }));
+
+    const systemPromptInput = screen.getByRole("textbox", { name: "当前聊天系统提示词" });
+    fireEvent.compositionStart(systemPromptInput);
+    fireEvent.change(systemPromptInput, { target: { value: "shizhong" } });
+
+    expect(systemPromptInput).toHaveDisplayValue("shizhong");
+    expect(updateActiveSessionChatPreferences).not.toHaveBeenCalled();
+
+    fireEvent.compositionEnd(systemPromptInput, { target: { value: "始终" } });
+
+    expect(systemPromptInput).toHaveDisplayValue("始终");
+    expect(updateActiveSessionChatPreferences).toHaveBeenCalledTimes(1);
+    expect(updateActiveSessionChatPreferences).toHaveBeenCalledWith({ systemPrompt: "始终" });
   });
 
   it("聊天偏好可以控制宽面板左侧历史区域默认折叠并手动展开", async () => {
