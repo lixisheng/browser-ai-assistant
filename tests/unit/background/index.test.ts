@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { clearDatabase, saveAppSetting, saveModelProvider } from "../../../src/shared/storage/repositories";
 
 type Listener<T extends (...args: never[]) => void> = T;
 
@@ -11,6 +12,7 @@ function createChromeMock() {
     Listener<(message: unknown, sender: chrome.runtime.MessageSender, sendResponse: (response?: unknown) => void) => boolean>
   > = [];
   const connectListeners: Array<Listener<(port: chrome.runtime.Port) => void>> = [];
+  const alarmListeners: Array<Listener<(alarm: chrome.alarms.Alarm) => void>> = [];
 
   return {
     installedListeners,
@@ -19,6 +21,7 @@ function createChromeMock() {
     contextListeners,
     messageListeners,
     connectListeners,
+    alarmListeners,
     chrome: {
       runtime: {
         onInstalled: {
@@ -35,6 +38,22 @@ function createChromeMock() {
         },
         onConnect: {
           addListener: vi.fn((listener: Listener<(port: chrome.runtime.Port) => void>) => connectListeners.push(listener)),
+        },
+      },
+      alarms: {
+        create: vi.fn().mockResolvedValue(undefined),
+        clear: vi.fn().mockResolvedValue(true),
+        get: vi.fn().mockResolvedValue(undefined),
+        onAlarm: {
+          addListener: vi.fn((listener: Listener<(alarm: chrome.alarms.Alarm) => void>) => alarmListeners.push(listener)),
+        },
+      },
+      storage: {
+        sync: {
+          QUOTA_BYTES_PER_ITEM: 8192,
+          set: vi.fn().mockResolvedValue(undefined),
+          get: vi.fn().mockResolvedValue({}),
+          remove: vi.fn().mockResolvedValue(undefined),
         },
       },
       contextMenus: {
@@ -81,6 +100,11 @@ describe("background 入口", () => {
     vi.resetModules();
   });
 
+  afterEach(async () => {
+    vi.unstubAllGlobals();
+    await clearDatabase();
+  });
+
   it("安装时创建打开侧边栏的右键菜单", async () => {
     const mock = createChromeMock();
     vi.stubGlobal("chrome", mock.chrome);
@@ -119,6 +143,83 @@ describe("background 入口", () => {
     await import("../../../src/background/index");
 
     expect(mock.chrome.runtime.onMessage.addListener).toHaveBeenCalledTimes(1);
+  });
+
+  it("注册同步备份消息和定时任务处理器", async () => {
+    const mock = createChromeMock();
+    vi.stubGlobal("chrome", mock.chrome);
+
+    await import("../../../src/background/index");
+
+    expect(mock.chrome.runtime.onMessage.addListener).toHaveBeenCalledTimes(1);
+    expect(mock.chrome.alarms.onAlarm.addListener).toHaveBeenCalledTimes(1);
+  });
+
+  it("处理手动备份 runtime 消息", async () => {
+    const mock = createChromeMock();
+    vi.stubGlobal("chrome", mock.chrome);
+    await import("../../../src/background/index");
+    const sendResponse = vi.fn();
+
+    const keepChannelOpen = mock.messageListeners[0](
+      { type: "sync.backupNow" },
+      {} as chrome.runtime.MessageSender,
+      sendResponse,
+    );
+
+    expect(keepChannelOpen).toBe(true);
+    await vi.waitFor(() => {
+      expect(sendResponse).toHaveBeenCalledWith(expect.objectContaining({ ok: expect.any(Boolean) }));
+    });
+  });
+
+  it("WebDAV 配置备份时不写入 Chrome Sync", async () => {
+    const mock = createChromeMock();
+    const fetcher = vi.fn().mockResolvedValue({ ok: true, text: vi.fn().mockResolvedValue("") });
+    vi.stubGlobal("chrome", mock.chrome);
+    vi.stubGlobal("fetch", fetcher);
+    await saveAppSetting({
+      key: "syncSettings",
+      value: {
+        syncEnabled: true,
+        provider: "webdav",
+        backupPrefix: "work",
+        webdav: {
+          endpointUrl: "https://dav.example.com",
+          username: "me",
+          remotePath: "browser-ai",
+        },
+      },
+      updatedAt: 1,
+    });
+    await saveAppSetting({ key: "syncWebDavPassword", value: "pwd", updatedAt: 1 });
+    await saveModelProvider({
+      id: "provider-1",
+      name: "渠道",
+      endpointType: "openai_chat",
+      endpointUrl: "https://api.example.com",
+      apiKey: "sk-local",
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    await import("../../../src/background/index");
+    const sendResponse = vi.fn();
+
+    mock.messageListeners[0](
+      { type: "sync.backupNow" },
+      {} as chrome.runtime.MessageSender,
+      sendResponse,
+    );
+
+    await vi.waitFor(() => {
+      expect(sendResponse).toHaveBeenCalledWith({ ok: true, message: "备份完成" });
+    });
+    expect(mock.chrome.storage.sync.set).not.toHaveBeenCalled();
+    expect(fetcher).toHaveBeenCalledWith(
+      "https://dav.example.com/browser-ai/work.json",
+      expect.objectContaining({ method: "PUT" }),
+    );
   });
 
   it("转发当前活动页提取请求到 content script", async () => {

@@ -1,6 +1,7 @@
 import { handleModelCatalogMessage, type ModelCatalogMessage } from "./modelCatalogMessageHandler";
 import { handleChatSendMessage, type ChatSendMessage } from "./modelRequestHandler";
 import { handlePageContextMessage, type PageContextExtractMessage } from "./pageContextMessageHandler";
+import { handleSyncAlarm, handleSyncBackupMessage, type SyncBackupMessage } from "./syncBackupHandler";
 import {
   handleCurrentTabUrlMessage,
   handleUrlPatternGenerationMessage,
@@ -51,7 +52,8 @@ type RuntimeMessage =
   | PageContextExtractMessage
   | UrlPatternGenerationMessage
   | CurrentTabUrlMessage
-  | ChatSendMessage;
+  | ChatSendMessage
+  | SyncBackupMessage;
 
 interface ChatStreamStartMessage {
   type: "chat.stream.start";
@@ -122,12 +124,21 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResp
     return true;
   }
 
+  if (message.type === "sync.backupNow" || message.type === "sync.restoreNow" || message.type === "sync.configureAlarm") {
+    void handleSyncBackupMessage(message).then(sendResponse);
+    return true;
+  }
+
   if (message.type !== "modelCatalog.list" && message.type !== "modelCatalog.test") {
     return false;
   }
 
   void handleModelCatalogMessage(message).then(sendResponse);
   return true;
+});
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  void handleSyncAlarm(alarm);
 });
 
 chrome.runtime.onConnect.addListener((port) => {

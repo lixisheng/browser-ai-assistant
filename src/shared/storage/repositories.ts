@@ -1,4 +1,5 @@
 import { db } from "./db";
+import type { SyncDataSnapshot } from "../sync/types";
 import type { AppSetting, ChatFolder, ChatSession, ExtractionRule, ModelConfig, ModelProvider, ProviderModel } from "../types";
 
 export async function saveModelConfig(model: ModelConfig): Promise<void> {
@@ -163,6 +164,65 @@ export async function clearDatabase(): Promise<void> {
         db.chatSessions.clear(),
         db.chatFolders.clear(),
         db.appSettings.clear(),
+      ]);
+    },
+  );
+}
+
+export async function exportAllDataForSync(): Promise<SyncDataSnapshot> {
+  const [modelConfigs, modelProviders, providerModels, extractionRules, chatSessions, chatFolders, appSettings] =
+    await Promise.all([
+      db.modelConfigs.toArray(),
+      db.modelProviders.toArray(),
+      db.providerModels.toArray(),
+      db.extractionRules.toArray(),
+      db.chatSessions.toArray(),
+      db.chatFolders.toArray(),
+      db.appSettings.toArray(),
+    ]);
+
+  return {
+    version: 1,
+    modelConfigs,
+    modelProviders,
+    providerModels,
+    extractionRules,
+    chatSessions: chatSessions.map(normalizeChatSession),
+    chatFolders,
+    appSettings,
+  };
+}
+
+export async function replaceAllDataFromSync(snapshot: SyncDataSnapshot): Promise<void> {
+  await db.transaction(
+    "rw",
+    [
+      db.modelConfigs,
+      db.modelProviders,
+      db.providerModels,
+      db.extractionRules,
+      db.chatSessions,
+      db.chatFolders,
+      db.appSettings,
+    ],
+    async () => {
+      await Promise.all([
+        db.modelConfigs.clear(),
+        db.modelProviders.clear(),
+        db.providerModels.clear(),
+        db.extractionRules.clear(),
+        db.chatSessions.clear(),
+        db.chatFolders.clear(),
+        db.appSettings.clear(),
+      ]);
+      await Promise.all([
+        db.modelConfigs.bulkPut(snapshot.modelConfigs),
+        db.modelProviders.bulkPut(snapshot.modelProviders),
+        db.providerModels.bulkPut(snapshot.providerModels),
+        db.extractionRules.bulkPut(snapshot.extractionRules),
+        db.chatSessions.bulkPut(snapshot.chatSessions),
+        db.chatFolders.bulkPut(snapshot.chatFolders),
+        db.appSettings.bulkPut(snapshot.appSettings),
       ]);
     },
   );

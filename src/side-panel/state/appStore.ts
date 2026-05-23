@@ -25,6 +25,17 @@ import {
 } from "../../shared/storage/repositories";
 import { validateExtractionRuleDraft } from "../../shared/extractionRules/validation";
 import { generateUrlPatternsWithModel } from "../../shared/extractionRules/urlPatternGeneration";
+import {
+  DEFAULT_SYNC_SECRETS,
+  DEFAULT_SYNC_SETTINGS,
+  getSyncSecrets,
+  getSyncSettings,
+  saveSyncSettings,
+  SYNC_ENCRYPTION_SECRET_KEY,
+  SYNC_S3_SECRET_KEY,
+  SYNC_WEBDAV_PASSWORD_KEY,
+} from "../../shared/sync/settings";
+import type { SyncSecrets, SyncSettings } from "../../shared/sync/types";
 import type {
   ChatFolder,
   ChatMessage,
@@ -68,6 +79,12 @@ interface PageContextState {
   error?: string;
 }
 
+interface SyncOperationState {
+  loading: boolean;
+  message?: string;
+  error?: string;
+}
+
 interface AppState {
   providers: ModelProvider[];
   models: ProviderModel[];
@@ -86,6 +103,9 @@ interface AppState {
   streamMode: boolean;
   sending: boolean;
   contextMode: PageContextExtractMode;
+  syncSettings: SyncSettings;
+  syncSecrets: SyncSecrets;
+  syncOperation: SyncOperationState;
   failure?: RequestFailure;
   addExampleModel: () => void;
   addProvider: () => ModelProvider;
@@ -122,6 +142,11 @@ interface AppState {
   selectModel: (modelId: string) => void;
   setStreamMode: (streamMode: boolean) => void;
   setContextMode: (contextMode: PageContextExtractMode) => void;
+  loadSyncSettings: () => Promise<void>;
+  updateSyncSettings: (updates: Partial<SyncSettings>) => Promise<void>;
+  updateSyncSecret: (key: keyof SyncSecrets, value: string) => Promise<void>;
+  backupNow: () => Promise<void>;
+  restoreNow: () => Promise<void>;
   sendChatMessage: (content: string) => Promise<void>;
   simulateFailure: () => void;
   clearFailure: () => void;
@@ -185,6 +210,11 @@ export const useAppStore = create<AppState>()((set, get) => ({
   streamMode: true,
   sending: false,
   contextMode: "text",
+  syncSettings: DEFAULT_SYNC_SETTINGS,
+  syncSecrets: DEFAULT_SYNC_SECRETS,
+  syncOperation: {
+    loading: false,
+  },
   addExampleModel: () =>
     set(() => {
       void saveModelProvider(exampleProvider);
@@ -816,6 +846,70 @@ export const useAppStore = create<AppState>()((set, get) => ({
     }));
     void get().refreshPageContext();
   },
+  loadSyncSettings: async () => {
+    const [syncSettings, syncSecrets] = await Promise.all([getSyncSettings(), getSyncSecrets()]);
+    set({ syncSettings, syncSecrets });
+  },
+  updateSyncSettings: async (updates) => {
+    const current = get().syncSettings;
+    const syncSettings: SyncSettings = {
+      ...current,
+      ...updates,
+      webdav: {
+        ...current.webdav,
+        ...updates.webdav,
+      },
+      s3: {
+        ...current.s3,
+        ...updates.s3,
+      },
+    };
+
+    await saveSyncSettings(syncSettings);
+    set({ syncSettings });
+
+    if (updates.autoSyncEnabled !== undefined || updates.intervalMinutes !== undefined || updates.syncEnabled !== undefined) {
+      await sendRuntimeMessage({ type: "sync.configureAlarm", settings: syncSettings });
+    }
+  },
+  updateSyncSecret: async (key, value) => {
+    const normalizedValue = value.trim();
+
+    await saveAppSetting({
+      key: getSyncSecretSettingKey(key),
+      value: normalizedValue,
+      updatedAt: Date.now(),
+    });
+    set((state) => ({
+      syncSecrets: {
+        ...state.syncSecrets,
+        [key]: normalizedValue,
+      },
+    }));
+
+  },
+  backupNow: async () => {
+    set({ syncOperation: { loading: true } });
+    const response = await sendRuntimeMessage<{ ok: boolean; message?: string }>({ type: "sync.backupNow" });
+    set({
+      syncOperation: response?.ok
+        ? { loading: false, message: response.message ?? "备份完成" }
+        : { loading: false, error: response?.message ?? "备份失败，请重试" },
+    });
+  },
+  restoreNow: async () => {
+    set({ syncOperation: { loading: true } });
+    const response = await sendRuntimeMessage<{ ok: boolean; message?: string }>({ type: "sync.restoreNow" });
+
+    if (response?.ok) {
+      // 恢复已经在后台完成覆盖写入；这里并行刷新互不依赖的前端状态，避免串行等待拖慢恢复反馈。
+      await Promise.all([get().loadChannelConfig(), get().loadChatData(), get().loadExtractionRules(), get().loadSyncSettings()]);
+      set({ syncOperation: { loading: false, message: response.message ?? "恢复完成" } });
+      return;
+    }
+
+    set({ syncOperation: { loading: false, error: response?.message ?? "恢复失败，请重试" } });
+  },
   sendChatMessage: async (content) => {
     const trimmedContent = content.trim();
     if (!trimmedContent || get().sending) {
@@ -1015,6 +1109,11 @@ export const useAppStore = create<AppState>()((set, get) => ({
       streamMode: true,
       sending: false,
       contextMode: "text",
+      syncSettings: DEFAULT_SYNC_SETTINGS,
+      syncSecrets: DEFAULT_SYNC_SECRETS,
+      syncOperation: {
+        loading: false,
+      },
       failure: undefined,
     });
   },
@@ -1130,6 +1229,17 @@ function normalizeOptionalInteger(value: unknown, min: number, max: number): num
 function upsertSession(sessions: ChatSession[], session: ChatSession): ChatSession[] {
   const nextSessions = sessions.filter((item) => item.id !== session.id);
   return [session, ...nextSessions].sort((left, right) => right.updatedAt - left.updatedAt);
+}
+
+function getSyncSecretSettingKey(key: keyof SyncSecrets): string {
+  if (key === "webDavPassword") {
+    return SYNC_WEBDAV_PASSWORD_KEY;
+  }
+  if (key === "s3SecretKey") {
+    return SYNC_S3_SECRET_KEY;
+  }
+
+  return SYNC_ENCRYPTION_SECRET_KEY;
 }
 
 async function getCurrentTabUrlForGeneration(debugRequestId: string): Promise<{ ok: true; url: string } | { ok: false; message: string }> {

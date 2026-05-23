@@ -11,11 +11,12 @@ export function App() {
   const loadChannelConfig = useAppStore((state) => state.loadChannelConfig);
   const loadExtractionRules = useAppStore((state) => state.loadExtractionRules);
   const loadChatData = useAppStore((state) => state.loadChatData);
+  const loadSyncSettings = useAppStore((state) => state.loadSyncSettings);
   const refreshPageContext = useAppStore((state) => state.refreshPageContext);
 
   useEffect(() => {
-    void Promise.all([loadChannelConfig(), loadExtractionRules(), loadChatData()]).then(() => refreshPageContext());
-  }, [loadChannelConfig, loadExtractionRules, loadChatData, refreshPageContext]);
+    void Promise.all([loadChannelConfig(), loadExtractionRules(), loadChatData(), loadSyncSettings()]).then(() => refreshPageContext());
+  }, [loadChannelConfig, loadExtractionRules, loadChatData, loadSyncSettings, refreshPageContext]);
 
   useEffect(() => {
     setHistoryPanelOpen(historyPanelDefaultOpen);

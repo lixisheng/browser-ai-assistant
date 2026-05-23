@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import type { ChangeEvent, CompositionEvent } from "react";
 
+type ComposedTextElement = HTMLInputElement | HTMLTextAreaElement;
+
 interface ComposedTextInputHandlers {
   value: string;
-  onChange: (event: ChangeEvent<HTMLTextAreaElement>) => void;
+  onChange: (event: ChangeEvent<ComposedTextElement>) => void;
   onCompositionStart: () => void;
-  onCompositionEnd: (event: CompositionEvent<HTMLTextAreaElement>) => void;
+  onCompositionEnd: (event: CompositionEvent<ComposedTextElement>) => void;
 }
 
 /**

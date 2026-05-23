@@ -107,6 +107,13 @@
 * 不要把耗时外部模型请求长期挂在 runtime message port 上；MV3 service worker 和消息通道生命周期可能导致 `The message port closed before a response was received.`。
 * 对需要当前 tab 信息的长任务，应优先让 background 快速返回 tab URL、tabId 等必要上下文，再由 Side Panel 或稳定执行环境继续完成耗时请求。
 
+### 10.3 Side Panel 表单与中文输入法
+
+* React 受控输入框如果会保存用户可输入的中文文本，必须兼容 IME 组合输入；不能在 `compositionstart` 到 `compositionend` 期间把拼音中间态直接提交到全局状态、IndexedDB、Chrome Storage 或远端同步设置。
+* 对 `input`、`textarea` 等文本控件，优先复用已有的组合输入安全封装，例如 `useComposedTextInput`：组合输入期间只更新本地草稿，组合结束后再提交最终文本。
+* 修复或新增涉及中文输入的表单时，必须补充回归测试，覆盖“组合输入期间不保存拼音中间态，组合结束后只保存最终中文文本”。
+* API Key、URL、路径、备份前缀、模型名等看似英文的配置项也可能被用户用中文输入法输入，应按文本输入统一处理，避免出现 `beifen`、`shizhong` 等拼音残留。
+
 ## 11. 前端设计系统约束
 
 本项目的前端视觉风格采用 VoltAgent `awesome-design-md` 中的 Claude 设计规范，来源：`https://github.com/VoltAgent/awesome-design-md/blob/main/design-md/claude/DESIGN.md`。

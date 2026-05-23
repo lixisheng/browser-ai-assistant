@@ -7,6 +7,7 @@ export interface EncryptedPayload {
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
+const BASE64_CHUNK_SIZE = 0x8000;
 
 export async function encryptJson(value: unknown, password: string): Promise<EncryptedPayload> {
   const salt = crypto.getRandomValues(new Uint8Array(16));
@@ -61,7 +62,14 @@ async function deriveKey(password: string, salt: Uint8Array): Promise<CryptoKey>
 }
 
 function toBase64(value: Uint8Array): string {
-  return btoa(String.fromCharCode(...value));
+  let binary = "";
+
+  // 大备份直接展开 Uint8Array 会把每个字节都压进调用栈，浏览器会抛 Maximum call stack size exceeded。
+  for (let index = 0; index < value.length; index += BASE64_CHUNK_SIZE) {
+    binary += String.fromCharCode(...value.subarray(index, index + BASE64_CHUNK_SIZE));
+  }
+
+  return btoa(binary);
 }
 
 function fromBase64(value: string): Uint8Array {

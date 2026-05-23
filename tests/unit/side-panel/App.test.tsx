@@ -792,9 +792,99 @@ describe("App", () => {
 
     await user.click(screen.getByRole("tab", { name: "同步设置" }));
 
-    expect(screen.getByText("忘记密钥将无法恢复已加密的同步数据")).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "开启同步" })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "开启自动同步" })).not.toBeChecked();
+    expect(screen.getByText("备份当前插件域本地存储的全部内容，密钥和远程凭据除外")).toBeInTheDocument();
+    expect(screen.getByText("加密关闭时，API Key、聊天记录和配置会以明文进入远程备份")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "手动备份" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "手动恢复" })).toBeInTheDocument();
+  });
+
+  it("同步设置提供三种备份目标、独立自动同步和加密风险提示", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    await user.click(screen.getByRole("tab", { name: "同步设置" }));
+
+    expect(screen.getByRole("checkbox", { name: "开启同步" })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "开启自动同步" })).not.toBeChecked();
+    expect(screen.getByText("备份当前插件域本地存储的全部内容，密钥和远程凭据除外")).toBeInTheDocument();
+    expect(screen.getByText("加密关闭时，API Key、聊天记录和配置会以明文进入远程备份")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("checkbox", { name: "开启同步" }));
+    expect(screen.getByRole("combobox", { name: "备份目标" })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "备份前缀" })).toBeInTheDocument();
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "备份目标" }), "webdav");
+    expect(screen.getByRole("textbox", { name: "WebDAV 地址" })).toBeInTheDocument();
+    expect(screen.getByLabelText("WebDAV 密码")).toHaveAttribute("type", "password");
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "备份目标" }), "s3");
+    expect(screen.getByRole("textbox", { name: "S3 Endpoint" })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "S3 Region" })).toHaveDisplayValue("auto");
+    expect(screen.getByLabelText("S3 Secret Key")).toHaveAttribute("type", "password");
+  });
+
+  it("同步设置输入框使用中文输入法组合输入时只保存最终文本", async () => {
+    const user = userEvent.setup();
+    const updateSyncSettings = vi.fn(async (updates) => {
+      useAppStore.setState((state) => ({
+        syncSettings: {
+          ...state.syncSettings,
+          ...updates,
+        },
+      }));
+    });
+    useAppStore.setState({
+      syncSettings: {
+        ...useAppStore.getState().syncSettings,
+        syncEnabled: true,
+      },
+      updateSyncSettings,
+    });
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    await user.click(screen.getByRole("tab", { name: "同步设置" }));
+
+    const backupPrefixInput = screen.getByRole("textbox", { name: "备份前缀" });
+    fireEvent.compositionStart(backupPrefixInput);
+    fireEvent.change(backupPrefixInput, { target: { value: "beifen" } });
+
+    expect(backupPrefixInput).toHaveDisplayValue("beifen");
+    expect(updateSyncSettings).not.toHaveBeenCalled();
+
+    fireEvent.compositionEnd(backupPrefixInput, { target: { value: "备份" } });
+
+    expect(backupPrefixInput).toHaveDisplayValue("备份");
+    expect(updateSyncSettings).toHaveBeenCalledTimes(1);
+    expect(updateSyncSettings).toHaveBeenCalledWith({ backupPrefix: "备份" });
+  });
+
+  it("恢复同步备份需要二次确认", async () => {
+    const user = userEvent.setup();
+    const restoreNow = vi.fn(async () => undefined);
+    await saveAppSetting({
+      key: "syncSettings",
+      value: { syncEnabled: true },
+      updatedAt: 1,
+    });
+    useAppStore.setState({
+      restoreNow,
+    });
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    await user.click(screen.getByRole("tab", { name: "同步设置" }));
+    await user.click(screen.getByRole("button", { name: "手动恢复" }));
+
+    expect(screen.getByRole("button", { name: "确认覆盖本地数据" })).toBeInTheDocument();
+    expect(restoreNow).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "确认覆盖本地数据" }));
+    expect(restoreNow).toHaveBeenCalledTimes(1);
   });
 
   it("可以在渠道管理中选择和取消 AI 标题生成模型", async () => {

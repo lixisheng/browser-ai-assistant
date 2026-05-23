@@ -833,26 +833,256 @@ function RuleEditor({
 }
 
 function SyncSettings() {
+  const syncSettings = useAppStore((state) => state.syncSettings);
+  const syncSecrets = useAppStore((state) => state.syncSecrets);
+  const syncOperation = useAppStore((state) => state.syncOperation);
+  const updateSyncSettings = useAppStore((state) => state.updateSyncSettings);
+  const updateSyncSecret = useAppStore((state) => state.updateSyncSecret);
+  const backupNow = useAppStore((state) => state.backupNow);
+  const restoreNow = useAppStore((state) => state.restoreNow);
+  const [confirmRestore, setConfirmRestore] = useState(false);
+  const backupPrefixInput = useComposedTextInput(syncSettings.backupPrefix, (backupPrefix) => {
+    void updateSyncSettings({ backupPrefix });
+  });
+  const encryptionSecretInput = useComposedTextInput(syncSecrets.encryptionSecret, (encryptionSecret) => {
+    void updateSyncSecret("encryptionSecret", encryptionSecret);
+  });
+  const webDavEndpointUrlInput = useComposedTextInput(syncSettings.webdav.endpointUrl, (endpointUrl) => {
+    void updateSyncSettings({ webdav: { ...syncSettings.webdav, endpointUrl } });
+  });
+  const webDavUsernameInput = useComposedTextInput(syncSettings.webdav.username, (username) => {
+    void updateSyncSettings({ webdav: { ...syncSettings.webdav, username } });
+  });
+  const webDavPasswordInput = useComposedTextInput(syncSecrets.webDavPassword, (webDavPassword) => {
+    void updateSyncSecret("webDavPassword", webDavPassword);
+  });
+  const webDavRemotePathInput = useComposedTextInput(syncSettings.webdav.remotePath, (remotePath) => {
+    void updateSyncSettings({ webdav: { ...syncSettings.webdav, remotePath } });
+  });
+  const s3EndpointUrlInput = useComposedTextInput(syncSettings.s3.endpointUrl, (endpointUrl) => {
+    void updateSyncSettings({ s3: { ...syncSettings.s3, endpointUrl } });
+  });
+  const s3AccessKeyIdInput = useComposedTextInput(syncSettings.s3.accessKeyId, (accessKeyId) => {
+    void updateSyncSettings({ s3: { ...syncSettings.s3, accessKeyId } });
+  });
+  const s3SecretKeyInput = useComposedTextInput(syncSecrets.s3SecretKey, (s3SecretKey) => {
+    void updateSyncSecret("s3SecretKey", s3SecretKey);
+  });
+  const s3BucketInput = useComposedTextInput(syncSettings.s3.bucket, (bucket) => {
+    void updateSyncSettings({ s3: { ...syncSettings.s3, bucket } });
+  });
+  const s3RegionInput = useComposedTextInput(syncSettings.s3.region, (region) => {
+    void updateSyncSettings({ s3: { ...syncSettings.s3, region } });
+  });
+  const s3ObjectKeyPrefixInput = useComposedTextInput(syncSettings.s3.objectKeyPrefix, (objectKeyPrefix) => {
+    void updateSyncSettings({ s3: { ...syncSettings.s3, objectKeyPrefix } });
+  });
+  const handleRestore = () => {
+    if (!confirmRestore) {
+      setConfirmRestore(true);
+      return;
+    }
+
+    setConfirmRestore(false);
+    void restoreNow();
+  };
+
   return (
     <section className="grid w-full gap-3" aria-label="同步设置">
       <h3 className="text-base font-semibold">同步设置</h3>
-      <p className="rounded-lg p-2 text-sm" style={{ background: "#fff8e8", border: "1px solid color-mix(in srgb, var(--color-warning) 28%, white)", color: "#8a5f00" }}>
-        忘记密钥将无法恢复已加密的同步数据
+      <p className="rounded-lg border border-[var(--color-hairline)] bg-[var(--color-surface-soft)] p-2 text-sm text-[var(--color-body)]">
+        备份当前插件域本地存储的全部内容，密钥和远程凭据除外
       </p>
+      {!syncSettings.encryptionEnabled ? (
+        <p className="rounded-lg border border-[var(--color-warning)] bg-[var(--color-surface-soft)] p-2 text-sm text-[var(--color-body)]">
+          加密关闭时，API Key、聊天记录和配置会以明文进入远程备份
+        </p>
+      ) : (
+        <p className="rounded-lg border border-[var(--color-warning)] bg-[var(--color-surface-soft)] p-2 text-sm text-[var(--color-body)]">
+          忘记密钥将无法恢复已加密的同步数据
+        </p>
+      )}
+      <label className="chat-preference-switch">
+        <input
+          className="chat-preference-switch-input"
+          type="checkbox"
+          checked={syncSettings.syncEnabled}
+          onChange={(event) => void updateSyncSettings({ syncEnabled: event.target.checked })}
+        />
+        <span className="chat-preference-switch-control" aria-hidden="true">
+          <span className="chat-preference-switch-thumb" />
+        </span>
+        <span className="chat-preference-switch-label">开启同步</span>
+      </label>
+      <label className="chat-preference-switch">
+        <input
+          className="chat-preference-switch-input"
+          type="checkbox"
+          checked={syncSettings.autoSyncEnabled}
+          onChange={(event) => void updateSyncSettings({ autoSyncEnabled: event.target.checked })}
+        />
+        <span className="chat-preference-switch-control" aria-hidden="true">
+          <span className="chat-preference-switch-thumb" />
+        </span>
+        <span className="chat-preference-switch-label">开启自动同步</span>
+      </label>
       <label className="grid gap-1 text-sm">
-        本地加密密钥
-        <input className="ui-input" aria-label="本地加密密钥" type="password" />
+        备份目标
+        <select
+          className="ui-input"
+          aria-label="备份目标"
+          value={syncSettings.provider}
+          disabled={!syncSettings.syncEnabled}
+          onChange={(event) => void updateSyncSettings({ provider: event.target.value as typeof syncSettings.provider })}
+        >
+          <option value="chrome_sync">Chrome Sync</option>
+          <option value="webdav">WebDAV</option>
+          <option value="s3">S3 兼容存储</option>
+        </select>
       </label>
       <label className="grid gap-1 text-sm">
         备份前缀
-        <input className="ui-input" aria-label="备份前缀" />
+        <input
+          className="ui-input"
+          aria-label="备份前缀"
+          disabled={!syncSettings.syncEnabled}
+          {...backupPrefixInput}
+        />
       </label>
-      <div className="flex gap-2">
-        <button className="ui-button-secondary" type="button">
+      {syncSettings.autoSyncEnabled ? (
+        <label className="grid gap-1 text-sm">
+          定时同步间隔（分钟）
+          <input
+            className="ui-input"
+            aria-label="定时同步间隔"
+            type="number"
+            min={1}
+            value={syncSettings.intervalMinutes}
+            onChange={(event) => void updateSyncSettings({ intervalMinutes: Number(event.target.value) })}
+          />
+        </label>
+      ) : null}
+      <label className="chat-preference-switch">
+        <input
+          className="chat-preference-switch-input"
+          type="checkbox"
+          checked={syncSettings.encryptionEnabled}
+          onChange={(event) => void updateSyncSettings({ encryptionEnabled: event.target.checked })}
+        />
+        <span className="chat-preference-switch-control" aria-hidden="true">
+          <span className="chat-preference-switch-thumb" />
+        </span>
+        <span className="chat-preference-switch-label">开启加密</span>
+      </label>
+      {syncSettings.encryptionEnabled ? (
+        <label className="grid gap-1 text-sm">
+          本地加密密钥
+          <input
+            className="ui-input"
+            aria-label="本地加密密钥"
+            type="password"
+            {...encryptionSecretInput}
+          />
+        </label>
+      ) : null}
+      {syncSettings.provider === "webdav" ? (
+        <div className="grid gap-3 rounded-lg border border-[var(--color-hairline)] bg-[var(--color-surface-soft)] p-3">
+          <label className="grid gap-1 text-sm">
+            WebDAV 地址
+            <input
+              className="ui-input"
+              aria-label="WebDAV 地址"
+              {...webDavEndpointUrlInput}
+            />
+          </label>
+          <label className="grid gap-1 text-sm">
+            WebDAV 用户名
+            <input
+              className="ui-input"
+              aria-label="WebDAV 用户名"
+              {...webDavUsernameInput}
+            />
+          </label>
+          <label className="grid gap-1 text-sm">
+            WebDAV 密码
+            <input
+              className="ui-input"
+              aria-label="WebDAV 密码"
+              type="password"
+              {...webDavPasswordInput}
+            />
+          </label>
+          <label className="grid gap-1 text-sm">
+            WebDAV 远程路径
+            <input
+              className="ui-input"
+              aria-label="WebDAV 远程路径"
+              {...webDavRemotePathInput}
+            />
+          </label>
+        </div>
+      ) : null}
+      {syncSettings.provider === "s3" ? (
+        <div className="grid gap-3 rounded-lg border border-[var(--color-hairline)] bg-[var(--color-surface-soft)] p-3">
+          <label className="grid gap-1 text-sm">
+            S3 Endpoint
+            <input
+              className="ui-input"
+              aria-label="S3 Endpoint"
+              {...s3EndpointUrlInput}
+            />
+          </label>
+          <label className="grid gap-1 text-sm">
+            S3 Access Key
+            <input
+              className="ui-input"
+              aria-label="S3 Access Key"
+              {...s3AccessKeyIdInput}
+            />
+          </label>
+          <label className="grid gap-1 text-sm">
+            S3 Secret Key
+            <input
+              className="ui-input"
+              aria-label="S3 Secret Key"
+              type="password"
+              {...s3SecretKeyInput}
+            />
+          </label>
+          <label className="grid gap-1 text-sm">
+            S3 Bucket
+            <input
+              className="ui-input"
+              aria-label="S3 Bucket"
+              {...s3BucketInput}
+            />
+          </label>
+          <label className="grid gap-1 text-sm">
+            S3 Region
+            <input
+              className="ui-input"
+              aria-label="S3 Region"
+              {...s3RegionInput}
+            />
+          </label>
+          <label className="grid gap-1 text-sm">
+            S3 对象前缀
+            <input
+              className="ui-input"
+              aria-label="S3 对象前缀"
+              {...s3ObjectKeyPrefixInput}
+            />
+          </label>
+        </div>
+      ) : null}
+      {syncOperation.message ? <p className="text-sm text-[var(--color-success)]">{syncOperation.message}</p> : null}
+      {syncOperation.error ? <p className="text-sm text-[var(--color-error)]">{syncOperation.error}</p> : null}
+      <div className="flex flex-wrap gap-2">
+        <button className="ui-button-secondary" type="button" disabled={!syncSettings.syncEnabled || syncOperation.loading} onClick={() => void backupNow()}>
           手动备份
         </button>
-        <button className="ui-button-secondary" type="button">
-          手动恢复
+        <button className="ui-button-secondary" type="button" disabled={!syncSettings.syncEnabled || syncOperation.loading} onClick={handleRestore}>
+          {confirmRestore ? "确认覆盖本地数据" : "手动恢复"}
         </button>
       </div>
     </section>

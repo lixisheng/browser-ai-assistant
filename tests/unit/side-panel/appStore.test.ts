@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAppStore } from "../../../src/side-panel/state/appStore";
 import { clearDatabase, getAppSetting, getChatSession, saveAppSetting, saveModelProvider, saveProviderModel } from "../../../src/shared/storage/repositories";
+import {
+  SYNC_ENCRYPTION_SECRET_KEY,
+  SYNC_S3_SECRET_KEY,
+  SYNC_WEBDAV_PASSWORD_KEY,
+} from "../../../src/shared/sync/settings";
 import type { ChatMessage, ModelProvider, ProviderModel } from "../../../src/shared/types";
 
 const repositoryMockState = vi.hoisted(() => ({
@@ -116,6 +121,68 @@ describe("appStore", () => {
     expect(useAppStore.getState().pageContext).toMatchObject({
       loading: false,
       error: "提取当前页面失败",
+    });
+  });
+
+  it("可以加载和保存同步设置，开启同步不会自动开启自动同步", async () => {
+    await useAppStore.getState().loadSyncSettings();
+
+    expect(useAppStore.getState().syncSettings).toMatchObject({
+      syncEnabled: false,
+      autoSyncEnabled: false,
+      provider: "chrome_sync",
+    });
+
+    await useAppStore.getState().updateSyncSettings({ syncEnabled: true });
+
+    expect(useAppStore.getState().syncSettings.syncEnabled).toBe(true);
+    expect(useAppStore.getState().syncSettings.autoSyncEnabled).toBe(false);
+  });
+
+  it("修改本地加密密钥且同步已开启时不会立即触发备份", async () => {
+    const sendMessage = vi.fn((_message: unknown, callback: (response: unknown) => void) => {
+      callback({ ok: true, message: "备份完成" });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", { runtime: { sendMessage } });
+    await useAppStore.getState().updateSyncSettings({ syncEnabled: true, backupPrefix: "work" });
+
+    await useAppStore.getState().updateSyncSecret("encryptionSecret", "new-secret");
+
+    expect(useAppStore.getState().syncSecrets.encryptionSecret).toBe("new-secret");
+    expect(sendMessage).not.toHaveBeenCalledWith({ type: "sync.backupNow" }, expect.any(Function));
+  });
+
+  it("手动备份才使用当前本地加密密钥触发同步", async () => {
+    const sendMessage = vi.fn((_message: unknown, callback: (response: unknown) => void) => {
+      callback({ ok: true, message: "备份完成" });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", { runtime: { sendMessage } });
+    await useAppStore.getState().updateSyncSettings({ syncEnabled: true, backupPrefix: "work" });
+    await useAppStore.getState().updateSyncSecret("encryptionSecret", "new-secret");
+    await useAppStore.getState().backupNow();
+
+    expect(useAppStore.getState().syncSecrets.encryptionSecret).toBe("new-secret");
+    expect(sendMessage).toHaveBeenCalledWith({ type: "sync.backupNow" }, expect.any(Function));
+  });
+
+  it("恢复备份后重新加载本地同步密钥和远程凭据", async () => {
+    const sendMessage = vi.fn((_message: unknown, callback: (response: unknown) => void) => {
+      callback({ ok: true, message: "恢复完成" });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", { runtime: { sendMessage } });
+    await saveAppSetting({ key: SYNC_ENCRYPTION_SECRET_KEY, value: "local-secret", updatedAt: 1 });
+    await saveAppSetting({ key: SYNC_WEBDAV_PASSWORD_KEY, value: "webdav-password", updatedAt: 1 });
+    await saveAppSetting({ key: SYNC_S3_SECRET_KEY, value: "s3-secret", updatedAt: 1 });
+
+    await useAppStore.getState().restoreNow();
+
+    expect(useAppStore.getState().syncSecrets).toMatchObject({
+      encryptionSecret: "local-secret",
+      webDavPassword: "webdav-password",
+      s3SecretKey: "s3-secret",
     });
   });
 
