@@ -1,7 +1,11 @@
-import { useEffect, useState } from "react";
-import type { KeyboardEvent as ReactKeyboardEvent } from "react";
-import type { SendShortcut } from "../../shared/types";
+import { useEffect, useId, useState } from "react";
+import type { ChangeEvent, ClipboardEvent as ReactClipboardEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
+import type { ChatImageAttachment, SendShortcut } from "../../shared/types";
 import { useAppStore } from "../state/appStore";
+
+const MAX_IMAGE_ATTACHMENTS = 5;
+const MAX_IMAGE_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+const ACCEPTED_IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"];
 
 interface ChatComposerProps {
   canSend: boolean;
@@ -28,17 +32,29 @@ function ComposerSwitch({ ariaLabel, checked, label, onToggle }: ComposerSwitchP
 
 export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
   const [input, setInput] = useState("");
+  const [attachments, setAttachments] = useState<ChatImageAttachment[]>([]);
+  const [attachmentError, setAttachmentError] = useState("");
+  const [previewAttachment, setPreviewAttachment] = useState<ChatImageAttachment | undefined>();
   const [contextDialogOpen, setContextDialogOpen] = useState(false);
   const [composing, setComposing] = useState(false);
+  const imageInputId = useId();
+  const currentModelSupportsVision = useAppStore((state) => Boolean(state.models.find((model) => model.id === state.selectedModelId)?.supportsVision));
   const sendShortcut = useAppStore((state) => state.chatPreferences.sendShortcut);
   const streamMode = useAppStore((state) => state.streamMode);
   const contextMode = useAppStore((state) => state.contextMode);
+  const appendPageContextToSystemPrompt = useAppStore((state) => state.appendPageContextToSystemPrompt);
   const sending = useAppStore((state) => state.sending);
   const pageContext = useAppStore((state) => state.pageContext);
   const setStreamMode = useAppStore((state) => state.setStreamMode);
   const setContextMode = useAppStore((state) => state.setContextMode);
+  const setComposerHasDraft = useAppStore((state) => state.setComposerHasDraft);
+  const setAppendPageContextToSystemPrompt = useAppStore((state) => state.setAppendPageContextToSystemPrompt);
   const refreshPageContext = useAppStore((state) => state.refreshPageContext);
   const sendChatMessage = useAppStore((state) => state.sendChatMessage);
+
+  useEffect(() => {
+    setComposerHasDraft(input.trim().length > 0 || attachments.length > 0);
+  }, [attachments.length, input, setComposerHasDraft]);
 
   useEffect(() => {
     if (!contextDialogOpen) {
@@ -57,12 +73,15 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
 
   const submit = async () => {
     const content = input.trim();
-    if (!content) {
+    if (!content && attachments.length === 0) {
       return;
     }
 
     setInput("");
-    await sendChatMessage(content);
+    const sendingAttachments = attachments;
+    setAttachments([]);
+    setAttachmentError("");
+    await sendChatMessage(content, sendingAttachments);
   };
 
   const handleInputKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
@@ -71,17 +90,92 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
     }
 
     event.preventDefault();
-    if (!canSend || sending || !input.trim()) {
+    if (!canSend || sending || (!input.trim() && attachments.length === 0)) {
       return;
     }
 
     void submit();
   };
 
+  const handleImageInputChange = (event: ChangeEvent<HTMLInputElement>) => {
+    void addImageFiles(Array.from(event.target.files ?? [])).catch(() => {
+      setAttachmentError("图片读取失败，请重新选择图片");
+    });
+    event.target.value = "";
+  };
+
+  const handlePaste = (event: ReactClipboardEvent<HTMLTextAreaElement>) => {
+    const files = getPastedImageFiles(event.clipboardData);
+    if (files.length === 0) {
+      return;
+    }
+
+    event.preventDefault();
+    void addImageFiles(files).catch(() => {
+      setAttachmentError("图片读取失败，请重新选择图片");
+    });
+  };
+
+  const addImageFiles = async (files: File[]) => {
+    if (files.length === 0) {
+      return;
+    }
+    if (!currentModelSupportsVision) {
+      setAttachmentError("当前模型不支持视觉理解，无法添加图片");
+      return;
+    }
+
+    const nextAttachments = [...attachments];
+    for (const file of files) {
+      if (nextAttachments.length >= MAX_IMAGE_ATTACHMENTS) {
+        setAttachmentError("最多只能添加 5 张图片");
+        break;
+      }
+      if (!file.type.startsWith("image/") || !ACCEPTED_IMAGE_TYPES.includes(file.type)) {
+        setAttachmentError("仅支持 PNG、JPEG、WebP 或 GIF 图片");
+        continue;
+      }
+      if (file.size > MAX_IMAGE_ATTACHMENT_BYTES) {
+        setAttachmentError("单张图片不能超过 5MB");
+        continue;
+      }
+
+      try {
+        nextAttachments.push({
+          id: `image-${Date.now()}-${nextAttachments.length}`,
+          name: file.name || "图片",
+          mediaType: file.type,
+          dataUrl: await readFileAsDataUrl(file),
+        });
+      } catch {
+        setAttachmentError("图片读取失败，请重新选择图片");
+        continue;
+      }
+      setAttachmentError("");
+    }
+
+    setAttachments(nextAttachments);
+  };
+
   const contextModeLabel = contextMode === "all" ? "提取所有" : "提取文本";
 
   return (
     <section className="chat-composer" aria-label="聊天输入区">
+      {attachments.length > 0 ? (
+        <div className="image-preview-strip" aria-label="已添加图片">
+          {attachments.map((attachment) => (
+            <button
+              className="image-preview-thumb"
+              type="button"
+              key={attachment.id}
+              aria-label={`查看图片 ${attachment.name}`}
+              onClick={() => setPreviewAttachment(attachment)}
+            >
+              <img src={attachment.dataUrl} alt="" />
+            </button>
+          ))}
+        </div>
+      ) : null}
       <div className="context-strip">
         <button className="ui-button-secondary context-view-button" type="button" onClick={() => setContextDialogOpen(true)}>
           查看上下文
@@ -90,18 +184,45 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
         <button className="ui-button-secondary" type="button" onClick={() => void refreshPageContext()}>
           刷新
         </button>
+        <ComposerSwitch
+          ariaLabel="拼接上下文"
+          checked={appendPageContextToSystemPrompt}
+          label="拼接上下文"
+          onToggle={() => setAppendPageContextToSystemPrompt(!appendPageContextToSystemPrompt)}
+        />
       </div>
       {pageContext.truncated ? <p className="text-sm text-[var(--color-warning)]">内容已截断，请细化 CSS/XPath</p> : null}
       {pageContext.error ? <p className="text-sm text-[var(--color-error)]">{pageContext.error}</p> : null}
-      <textarea
-        className="ui-input chat-input"
-        aria-label="对话输入"
-        value={input}
-        onKeyDown={handleInputKeyDown}
-        onCompositionStart={() => setComposing(true)}
-        onCompositionEnd={() => setComposing(false)}
-        onChange={(event) => setInput(event.target.value)}
-      />
+      {attachmentError ? <p className="text-sm text-[var(--color-error)]">{attachmentError}</p> : null}
+      <div className="chat-input-shell">
+        <input
+          id={imageInputId}
+          className="sr-only"
+          type="file"
+          accept={ACCEPTED_IMAGE_TYPES.join(",")}
+          multiple
+          aria-label="上传图片"
+          disabled={!currentModelSupportsVision}
+          onChange={handleImageInputChange}
+        />
+        <label
+          className={`image-upload-button${currentModelSupportsVision ? "" : " image-upload-button-disabled"}`}
+          htmlFor={imageInputId}
+          title={currentModelSupportsVision ? "上传图片" : "当前模型不支持视觉理解"}
+        >
+          <span aria-hidden="true">▣</span>
+        </label>
+        <textarea
+          className="ui-input chat-input"
+          aria-label="对话输入"
+          value={input}
+          onPaste={handlePaste}
+          onKeyDown={handleInputKeyDown}
+          onCompositionStart={() => setComposing(true)}
+          onCompositionEnd={() => setComposing(false)}
+          onChange={(event) => setInput(event.target.value)}
+        />
+      </div>
       <div className="composer-actions">
         <div className="composer-switches">
           <ComposerSwitch ariaLabel="流式响应" checked={streamMode} label="流式响应" onToggle={() => setStreamMode(!streamMode)} />
@@ -112,10 +233,21 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
             onToggle={() => setContextMode(contextMode === "all" ? "text" : "all")}
           />
         </div>
-        <button className="ui-button-primary" type="button" disabled={!canSend || sending || !input.trim()} onClick={() => void submit()}>
+        <button className="ui-button-primary" type="button" disabled={!canSend || sending || (!input.trim() && attachments.length === 0)} onClick={() => void submit()}>
           {sending ? "发送中" : "发送"}
         </button>
       </div>
+      {previewAttachment ? (
+        <>
+          <div className="dialog-overlay" aria-hidden="true" />
+          <section className="image-preview-dialog" role="dialog" aria-modal="true" aria-label="图片预览">
+            <button className="ui-button-secondary image-preview-close" type="button" aria-label="关闭图片预览" onClick={() => setPreviewAttachment(undefined)}>
+              关闭
+            </button>
+            <img src={previewAttachment.dataUrl} alt={previewAttachment.name} />
+          </section>
+        </>
+      ) : null}
       {contextDialogOpen ? (
         <>
           <div className="dialog-overlay" aria-hidden="true" />
@@ -134,6 +266,27 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
       ) : null}
     </section>
   );
+}
+
+function getPastedImageFiles(clipboardData: DataTransfer): File[] {
+  const itemFiles = Array.from(clipboardData.items ?? [])
+    .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => Boolean(file));
+  if (itemFiles.length > 0) {
+    return itemFiles;
+  }
+
+  return Array.from(clipboardData.files ?? []).filter((file) => file.type.startsWith("image/"));
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
+    reader.onerror = () => reject(reader.error ?? new Error("图片读取失败"));
+    reader.readAsDataURL(file);
+  });
 }
 
 function isSendShortcut(event: ReactKeyboardEvent<HTMLTextAreaElement>, shortcut: SendShortcut): boolean {

@@ -108,6 +108,39 @@ describe("模型适配器", () => {
     });
   });
 
+  it("OpenAI-compatible 请求将用户图片附件转换为 image_url 内容块", () => {
+    const payload = createOpenAIChatPayload(
+      createModel(),
+      [
+        {
+          ...messages[1],
+          content: "识别图片",
+          attachments: [
+            {
+              id: "image-1",
+              name: "页面截图.png",
+              mediaType: "image/png",
+              dataUrl: "data:image/png;base64,QUJD",
+            },
+          ],
+        },
+      ],
+      false,
+    );
+
+    expect(payload.body).toMatchObject({
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "识别图片" },
+            { type: "image_url", image_url: { url: "data:image/png;base64,QUJD" } },
+          ],
+        },
+      ],
+    });
+  });
+
   it("OpenAI-compatible 渠道只保存基础端点时自动补全 Chat Completions 路径", () => {
     const payload = createOpenAIChatPayload(
       createModel({
@@ -145,6 +178,79 @@ describe("模型适配器", () => {
         stream: false,
       },
     });
+  });
+
+  it("Anthropic 请求将用户图片附件转换为 base64 image 内容块", () => {
+    const payload = createAnthropicMessagesPayload(
+      createModel({
+        endpointType: "anthropic_messages",
+        endpointUrl: "https://api.anthropic.com/v1/messages",
+        modelId: "claude-test",
+      }),
+      [
+        {
+          ...messages[1],
+          endpointType: "anthropic_messages",
+          content: "识别图片",
+          attachments: [
+            {
+              id: "image-1",
+              name: "页面截图.png",
+              mediaType: "image/png",
+              dataUrl: "data:image/png;base64,QUJD",
+            },
+          ],
+        },
+      ],
+      false,
+    );
+
+    expect(payload.body).toMatchObject({
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "识别图片" },
+            {
+              type: "image",
+              source: {
+                type: "base64",
+                media_type: "image/png",
+                data: "QUJD",
+              },
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  it("Anthropic 请求遇到非法图片 dataUrl 时抛出明确错误", () => {
+    expect(() =>
+      createAnthropicMessagesPayload(
+        createModel({
+          endpointType: "anthropic_messages",
+          endpointUrl: "https://api.anthropic.com/v1/messages",
+          modelId: "claude-test",
+        }),
+        [
+          {
+            ...messages[1],
+            endpointType: "anthropic_messages",
+            content: "识别图片",
+            attachments: [
+              {
+                id: "image-invalid",
+                name: "损坏.png",
+                mediaType: "image/png",
+                dataUrl: "not-a-data-url",
+              },
+            ],
+          },
+        ],
+        false,
+      ),
+    ).toThrow("图片附件 dataUrl 格式无效");
   });
 
   it("Anthropic 渠道只保存基础端点时自动补全 Messages 路径", () => {

@@ -1,6 +1,13 @@
-import type { ChatMessage, ModelConfig } from "../types";
+import type { ChatImageAttachment, ChatMessage, ModelConfig } from "../types";
 import { createEndpointUrl } from "./modelCatalog";
 import type { ModelRequestPayload } from "./types";
+
+type OpenAIMessageContent =
+  | string
+  | Array<
+      | { type: "text"; text: string }
+      | { type: "image_url"; image_url: { url: string } }
+    >;
 
 export function createOpenAIChatPayload(
   model: ModelConfig,
@@ -11,7 +18,7 @@ export function createOpenAIChatPayload(
     model: model.modelId,
     messages: messages.map((message) => ({
       role: message.role,
-      content: message.content,
+      content: createOpenAIMessageContent(message.content, message.attachments),
     })),
     temperature: model.temperature,
     max_tokens: model.maxTokens,
@@ -30,4 +37,20 @@ export function createOpenAIChatPayload(
     },
     body,
   };
+}
+
+function createOpenAIMessageContent(content: string, attachments?: ChatImageAttachment[]): OpenAIMessageContent {
+  if (!attachments?.length) {
+    return content;
+  }
+
+  return [
+    { type: "text", text: content },
+    ...attachments.map((attachment) => ({
+      type: "image_url" as const,
+      image_url: {
+        url: attachment.dataUrl,
+      },
+    })),
+  ];
 }

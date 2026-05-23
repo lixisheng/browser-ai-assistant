@@ -7,17 +7,21 @@ interface BuildChatRequestMessagesInput {
   existingMessages: ChatMessage[];
   userMessage: ChatMessage;
   systemPrompt?: string;
+  appendPageContextToSystemPrompt?: boolean;
 }
 
 export function buildChatRequestMessages(input: BuildChatRequestMessagesInput): ChatMessage[] {
   const effectiveSystemPrompt = input.systemPrompt ?? input.model.systemPrompt;
-  const pageContext = fitPageContextToModelBudget({
+  const shouldAppendPageContext = input.appendPageContextToSystemPrompt ?? true;
+  const pageContext = shouldAppendPageContext
+    ? fitPageContextToModelBudget({
     systemPrompt: effectiveSystemPrompt,
     pageContext: input.pageContext,
     existingMessages: input.existingMessages,
     userMessage: input.userMessage,
     maxTokens: input.model.maxTokens,
-  });
+  })
+    : "";
   const systemContent = buildSystemContent(effectiveSystemPrompt, pageContext);
   const now = Date.now();
   const systemMessage: ChatMessage = {

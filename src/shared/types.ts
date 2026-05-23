@@ -54,6 +54,13 @@ export interface ChatSessionPreferenceOverrides {
   topK?: number;
 }
 
+export interface ChatImageAttachment {
+  id: string;
+  name: string;
+  mediaType: string;
+  dataUrl: string;
+}
+
 export interface ExtractionRule {
   id: string;
   alias: string;
@@ -76,6 +83,7 @@ export interface ChatMessage {
   contextPrompt: string;
   contextMode: PageContextExtractMode;
   matchedRuleId?: string;
+  attachments?: ChatImageAttachment[];
   thinking?: string;
   streaming?: boolean;
 }

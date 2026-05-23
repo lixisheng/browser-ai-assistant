@@ -344,6 +344,31 @@ describe("appStore", () => {
     expect(useAppStore.getState().selectedModelId).toBe("model-default");
   });
 
+  it("有未发送草稿时新建对话保持当前对话模型不变", async () => {
+    const provider = createProvider();
+    const firstModel = createModel();
+    const defaultModel: ProviderModel = {
+      ...createModel(),
+      id: "model-default",
+      displayName: "默认对话模型",
+      modelId: "gpt-default",
+      updatedAt: 2,
+    };
+
+    await saveModelProvider(provider);
+    await saveProviderModel(firstModel);
+    await saveProviderModel(defaultModel);
+    await useAppStore.getState().loadChannelConfig();
+
+    await useAppStore.getState().setDefaultChatModel("model-default");
+    useAppStore.getState().selectModel("model-1");
+
+    await useAppStore.getState().createChatSession({ preserveSelectedModel: true });
+
+    expect(useAppStore.getState().defaultChatModelId).toBe("model-default");
+    expect(useAppStore.getState().selectedModelId).toBe("model-1");
+  });
+
   it("默认对话模型不存在时新建对话回退到第一个可用模型", async () => {
     const provider = createProvider();
     const model = createModel();
@@ -526,6 +551,175 @@ describe("appStore", () => {
       }),
       expect.any(Function),
     );
+  });
+
+  it("发送聊天时将图片附件带入请求并写入用户消息历史", async () => {
+    const provider = createProvider();
+    const model = { ...createModel(), supportsVision: true };
+    const sendMessage = vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+      if (message.type === "pageContext.extract") {
+        callback({
+          ok: true,
+          text: "",
+          truncated: false,
+          usedFallback: false,
+        });
+        return undefined;
+      }
+
+      callback({
+        ok: true,
+        content: "AI 回复",
+      });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage,
+      },
+    });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    await useAppStore.getState().refreshPageContext();
+    useAppStore.getState().setStreamMode(false);
+
+    await useAppStore.getState().sendChatMessage("看图说明", [
+      {
+        id: "image-1",
+        name: "截图.png",
+        mediaType: "image/png",
+        dataUrl: "data:image/png;base64,QUJD",
+      },
+    ]);
+
+    const chatRequest = sendMessage.mock.calls
+      .map(([message]) => message as { type: string; messages?: ChatMessage[] })
+      .find((message) => message.type === "chat.send");
+    const sentUserMessage = chatRequest?.messages?.find((message) => message.role === "user");
+    const state = useAppStore.getState();
+    const activeSession = state.chatSessions.find((session) => session.id === state.activeSessionId);
+
+    expect(sentUserMessage?.attachments).toEqual([
+      {
+        id: "image-1",
+        name: "截图.png",
+        mediaType: "image/png",
+        dataUrl: "data:image/png;base64,QUJD",
+      },
+    ]);
+    expect(activeSession?.messages.find((message) => message.role === "user")?.attachments).toEqual([
+      {
+        id: "image-1",
+        name: "截图.png",
+        mediaType: "image/png",
+        dataUrl: "data:image/png;base64,QUJD",
+      },
+    ]);
+  });
+
+  it("允许发送纯图片消息并写入用户消息历史", async () => {
+    const provider = createProvider();
+    const model = { ...createModel(), supportsVision: true };
+    const sendMessage = vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+      if (message.type === "pageContext.extract") {
+        callback({
+          ok: true,
+          text: "",
+          truncated: false,
+          usedFallback: false,
+        });
+        return undefined;
+      }
+
+      callback({
+        ok: true,
+        content: "AI 回复",
+      });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage,
+      },
+    });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    await useAppStore.getState().refreshPageContext();
+    useAppStore.getState().setStreamMode(false);
+
+    await useAppStore.getState().sendChatMessage("", [
+      {
+        id: "image-only",
+        name: "纯图片.png",
+        mediaType: "image/png",
+        dataUrl: "data:image/png;base64,QUJD",
+      },
+    ]);
+
+    const chatRequest = sendMessage.mock.calls
+      .map(([message]) => message as { type: string; messages?: ChatMessage[] })
+      .find((message) => message.type === "chat.send");
+    const sentUserMessage = chatRequest?.messages?.find((message) => message.role === "user");
+    const activeSession = useAppStore.getState().chatSessions.find((session) => session.id === useAppStore.getState().activeSessionId);
+
+    expect(sentUserMessage?.content).toBe("");
+    expect(sentUserMessage?.attachments).toHaveLength(1);
+    expect(activeSession?.messages.find((message) => message.role === "user")?.attachments).toHaveLength(1);
+  });
+
+  it("默认将页面上下文拼接到请求 system prompt，关闭后不拼接", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const sendMessage = vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+      if (message.type === "pageContext.extract") {
+        callback({
+          ok: true,
+          text: "页面上下文正文",
+          truncated: false,
+          usedFallback: false,
+        });
+        return undefined;
+      }
+
+      callback({
+        ok: true,
+        content: "AI 回复",
+      });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage,
+      },
+    });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    await useAppStore.getState().refreshPageContext();
+    useAppStore.getState().setStreamMode(false);
+
+    await useAppStore.getState().sendChatMessage("第一问");
+    let chatRequest = sendMessage.mock.calls
+      .map(([message]) => message as { type: string; messages?: ChatMessage[] })
+      .find((message) => message.type === "chat.send");
+    expect(chatRequest?.messages?.[0].content).toContain("页面上下文正文");
+
+    useAppStore.getState().setAppendPageContextToSystemPrompt(false);
+    await useAppStore.getState().sendChatMessage("第二问");
+    chatRequest = sendMessage.mock.calls
+      .map(([message]) => message as { type: string; messages?: ChatMessage[] })
+      .filter((message) => message.type === "chat.send")
+      .at(-1);
+    expect(chatRequest?.messages?.[0].content).not.toContain("页面上下文正文");
+    expect(chatRequest?.messages?.[0].contextPrompt).toBe("");
   });
 
   it("发送聊天时使用全局聊天偏好覆盖模型默认参数", async () => {
@@ -789,6 +983,55 @@ describe("appStore", () => {
     await sendPromise;
 
     expect(useAppStore.getState().chatSessions[0]?.title).toBe("页面摘要讨论");
+  });
+
+  it("关闭拼接上下文后标题生成请求不包含页面上下文", async () => {
+    const provider = createProvider();
+    const chatModel = createModel();
+    const titleModel = createTitleModel();
+    const sendMessage = vi.fn((message: { type: string; model?: ProviderModel }, callback: (response: unknown) => void) => {
+      if (message.type === "pageContext.extract") {
+        callback({
+          ok: true,
+          url: "https://example.com/article",
+          text: "页面内容",
+          truncated: false,
+          usedFallback: false,
+        });
+        return undefined;
+      }
+
+      callback({
+        ok: true,
+        content: message.model?.id === "model-title" ? "{\"title\":\"页面摘要讨论\"}" : "AI 回复",
+      });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage,
+      },
+    });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(chatModel);
+    await saveProviderModel(titleModel);
+    await useAppStore.getState().loadChannelConfig();
+    useAppStore.getState().selectModel("model-1");
+    useAppStore.getState().setTitleModel("model-title");
+    await useAppStore.getState().loadChatData();
+    await useAppStore.getState().refreshPageContext();
+    useAppStore.getState().setStreamMode(false);
+    useAppStore.getState().setAppendPageContextToSystemPrompt(false);
+
+    await useAppStore.getState().sendChatMessage("第一问");
+
+    const titleRequest = sendMessage.mock.calls
+      .map(([message]) => message as { type: string; model?: ProviderModel; messages?: ChatMessage[] })
+      .filter((message) => message.type === "chat.send")
+      .find((message) => message.model?.id === "model-title");
+    expect(titleRequest?.messages?.[1].content).toContain("网页上下文：无");
+    expect(titleRequest?.messages?.[1].content).not.toContain("页面内容");
   });
 
   it("标题模型返回非 JSON 时保留默认标题并清除等待态", async () => {

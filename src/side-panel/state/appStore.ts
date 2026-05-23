@@ -38,6 +38,7 @@ import {
 import type { SyncSecrets, SyncSettings } from "../../shared/sync/types";
 import type {
   ChatFolder,
+  ChatImageAttachment,
   ChatMessage,
   ChatPreferenceValues,
   ChatSession,
@@ -100,6 +101,8 @@ interface AppState {
   chatPreferences: ChatPreferenceValues;
   activeSessionId: string;
   pendingDeleteSessionId?: string;
+  composerHasDraft: boolean;
+  appendPageContextToSystemPrompt: boolean;
   streamMode: boolean;
   sending: boolean;
   contextMode: PageContextExtractMode;
@@ -121,7 +124,7 @@ interface AppState {
   deleteModel: (modelId: string) => void;
   loadChannelConfig: () => Promise<void>;
   loadChatData: () => Promise<void>;
-  createChatSession: () => Promise<ChatSession>;
+  createChatSession: (options?: { preserveSelectedModel?: boolean }) => Promise<ChatSession>;
   selectChatSession: (sessionId: string) => void;
   renameChatSession: (sessionId: string, title: string) => Promise<void>;
   archiveChatSession: (sessionId: string) => Promise<void>;
@@ -140,6 +143,8 @@ interface AppState {
   fetchRemoteModels: (providerId: string) => Promise<void>;
   testModel: (providerId: string, modelId: string) => Promise<void>;
   selectModel: (modelId: string) => void;
+  setComposerHasDraft: (hasDraft: boolean) => void;
+  setAppendPageContextToSystemPrompt: (enabled: boolean) => void;
   setStreamMode: (streamMode: boolean) => void;
   setContextMode: (contextMode: PageContextExtractMode) => void;
   loadSyncSettings: () => Promise<void>;
@@ -147,7 +152,7 @@ interface AppState {
   updateSyncSecret: (key: keyof SyncSecrets, value: string) => Promise<void>;
   backupNow: () => Promise<void>;
   restoreNow: () => Promise<void>;
-  sendChatMessage: (content: string) => Promise<void>;
+  sendChatMessage: (content: string, attachments?: ChatImageAttachment[]) => Promise<void>;
   simulateFailure: () => void;
   clearFailure: () => void;
   reset: () => void;
@@ -208,6 +213,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
   defaultChatModelId: "",
   chatPreferences: DEFAULT_CHAT_PREFERENCES,
   activeSessionId: "",
+  composerHasDraft: false,
+  appendPageContextToSystemPrompt: true,
   streamMode: true,
   sending: false,
   contextMode: "text",
@@ -453,14 +460,12 @@ export const useAppStore = create<AppState>()((set, get) => ({
           : (chatSessions[0]?.id ?? ""),
     }));
   },
-  createChatSession: async () => {
+  createChatSession: async (options) => {
     const now = Date.now();
     const currentState = get();
-    const selectedModelId = resolveAvailableModelId(
-      currentState.defaultChatModelId,
-      currentState.models,
-      currentState.providers,
-    );
+    const selectedModelId = options?.preserveSelectedModel
+      ? resolveAvailableModelId(currentState.selectedModelId, currentState.models, currentState.providers)
+      : resolveAvailableModelId(currentState.defaultChatModelId, currentState.models, currentState.providers);
     const session: ChatSession = {
       id: `session-${now}`,
       title: "新对话",
@@ -836,6 +841,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
     setModelConnectivity(set, modelId, { loading: false, error: response.message });
   },
   selectModel: (modelId) => set({ selectedModelId: modelId }),
+  setComposerHasDraft: (hasDraft) => set({ composerHasDraft: hasDraft }),
+  setAppendPageContextToSystemPrompt: (enabled) => set({ appendPageContextToSystemPrompt: enabled }),
   setStreamMode: (streamMode) => set({ streamMode }),
   setContextMode: (contextMode) => {
     set((state) => ({
@@ -911,9 +918,10 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
     set({ syncOperation: { loading: false, error: response?.message ?? "恢复失败，请重试" } });
   },
-  sendChatMessage: async (content) => {
+  sendChatMessage: async (content, attachments = []) => {
     const trimmedContent = content.trim();
-    if (!trimmedContent || get().sending) {
+    const imageAttachments = attachments.filter((attachment) => attachment.mediaType.startsWith("image/"));
+    if ((!trimmedContent && imageAttachments.length === 0) || get().sending) {
       return;
     }
 
@@ -922,6 +930,10 @@ export const useAppStore = create<AppState>()((set, get) => ({
     const provider = model ? state.providers.find((item) => item.id === model.providerId) : undefined;
     if (!model || !provider || !model.enabled || !provider.enabled) {
       set({ failure: { message: "请先配置可用模型后再发送" } });
+      return;
+    }
+    if (imageAttachments.length > 0 && !model.supportsVision) {
+      set({ failure: { message: "当前模型不支持视觉理解，无法添加图片" } });
       return;
     }
 
@@ -954,6 +966,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       contextPrompt: state.pageContext.text,
       contextMode: state.contextMode,
       matchedRuleId: state.pageContext.matchedRuleId,
+      attachments: imageAttachments.length > 0 ? imageAttachments : undefined,
     };
     const nextSession: ChatSession = {
       ...session,
@@ -976,7 +989,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
           sessionId: nextSession.id,
           fallbackTitle,
           userContent: trimmedContent,
-          pageContext: state.pageContext.text,
+          pageContext: state.appendPageContextToSystemPrompt ? state.pageContext.text : "",
           get,
           set,
         })
@@ -992,6 +1005,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
           existingMessages: session.messages,
           userMessage,
           systemPrompt: effectiveChatPreferences.systemPrompt,
+          appendPageContextToSystemPrompt: state.appendPageContextToSystemPrompt,
         }),
         stream: state.streamMode,
       };
@@ -1107,6 +1121,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
       chatPreferences: DEFAULT_CHAT_PREFERENCES,
       activeSessionId: "",
       pendingDeleteSessionId: undefined,
+      composerHasDraft: false,
+      appendPageContextToSystemPrompt: true,
       streamMode: true,
       sending: false,
       contextMode: "text",

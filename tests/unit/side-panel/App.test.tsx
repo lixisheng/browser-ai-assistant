@@ -203,6 +203,41 @@ function createPrintWindowMock() {
   };
 }
 
+function createImageFile(name = "截图.png", size = 8): File {
+  return new File([new Uint8Array(size)], name, { type: "image/png" });
+}
+
+function stubFileReaderAsDataUrl(dataUrl = "data:image/png;base64,QUJD") {
+  class MockFileReader extends EventTarget {
+    result: string | ArrayBuffer | null = null;
+    error: DOMException | null = null;
+    onload: ((event: ProgressEvent<FileReader>) => void) | null = null;
+    onerror: ((event: ProgressEvent<FileReader>) => void) | null = null;
+
+    readAsDataURL() {
+      this.result = dataUrl;
+      this.onload?.(new ProgressEvent("load") as ProgressEvent<FileReader>);
+    }
+  }
+
+  vi.stubGlobal("FileReader", MockFileReader);
+}
+
+function stubFileReaderError() {
+  class MockFileReader extends EventTarget {
+    result: string | ArrayBuffer | null = null;
+    error: DOMException | null = new DOMException("读取失败");
+    onload: ((event: ProgressEvent<FileReader>) => void) | null = null;
+    onerror: ((event: ProgressEvent<FileReader>) => void) | null = null;
+
+    readAsDataURL() {
+      this.onerror?.(new ProgressEvent("error") as ProgressEvent<FileReader>);
+    }
+  }
+
+  vi.stubGlobal("FileReader", MockFileReader);
+}
+
 describe("App", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
@@ -776,6 +811,10 @@ describe("App", () => {
     expect(screen.getByText("当前模型").closest("label")).toHaveClass("model-select-label-inline");
     const streamSwitch = screen.getByRole("switch", { name: "流式响应" });
     expect(streamSwitch).toHaveAttribute("aria-checked", "true");
+    const appendContextSwitch = screen.getByRole("switch", { name: "拼接上下文" });
+    expect(appendContextSwitch).toHaveAttribute("aria-checked", "true");
+    await user.click(appendContextSwitch);
+    expect(screen.getByRole("switch", { name: "拼接上下文" })).toHaveAttribute("aria-checked", "false");
     await user.click(streamSwitch);
     await user.type(screen.getByLabelText("对话输入"), "你好");
 
@@ -1330,6 +1369,197 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "测试模型连通性 gpt-4.1-mini" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "删除 gpt-4.1-mini" })).toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "连通性校验" })).not.toBeInTheDocument();
+  });
+
+  it("视觉模型可以选择图片、粘贴图片、预览放大并随消息发送图片", async () => {
+    const user = userEvent.setup();
+    const provider: ModelProvider = {
+      id: "provider-vision-chat",
+      name: "视觉渠道",
+      endpointType: "openai_chat",
+      endpointUrl: "https://api.example.com/v1/chat/completions",
+      apiKey: "sk-vision",
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const model: ProviderModel = {
+      id: "model-vision-chat",
+      providerId: "provider-vision-chat",
+      displayName: "视觉模型",
+      modelId: "gpt-vision",
+      temperature: 0.7,
+      maxTokens: 1024,
+      systemPrompt: "你是网页助手",
+      isTitleModel: false,
+      supportsVision: true,
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const sendMessage = createShortcutRuntimeMock();
+    stubFileReaderAsDataUrl();
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+
+    render(<App />);
+
+    await screen.findByDisplayValue("视觉渠道 / 视觉模型 · 视觉");
+    const imageInput = screen.getByLabelText("上传图片");
+    const textInput = screen.getByLabelText("对话输入");
+    await user.upload(imageInput, createImageFile("选择.png"));
+    fireEvent.paste(textInput, {
+      clipboardData: {
+        files: [createImageFile("粘贴.png")],
+        items: [
+          {
+            kind: "file",
+            type: "image/png",
+            getAsFile: () => createImageFile("粘贴.png"),
+          },
+        ],
+      },
+    });
+
+    expect(await screen.findByRole("button", { name: "查看图片 选择.png" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "查看图片 粘贴.png" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "查看图片 选择.png" }));
+    expect(screen.getByRole("dialog", { name: "图片预览" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "关闭图片预览" }));
+
+    await user.type(textInput, "请描述图片");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    await waitFor(() => expect(hasChatSendCall(sendMessage)).toBe(true));
+    const chatRequest = getLastChatRequest(sendMessage);
+    const userMessage = chatRequest?.messages?.find((message) => message.role === "user");
+    expect(userMessage?.attachments).toHaveLength(2);
+    expect(screen.getByRole("button", { name: "查看已发送图片 选择.png" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "查看已发送图片 选择.png" }));
+    expect(screen.getByRole("dialog", { name: "图片预览" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "关闭图片预览" }));
+    expect(screen.queryByRole("button", { name: "查看图片 选择.png" })).not.toBeInTheDocument();
+  });
+
+  it("图片读取失败时显示错误且不产生未捕获异常", async () => {
+    const provider: ModelProvider = {
+      id: "provider-vision-read-error",
+      name: "视觉渠道",
+      endpointType: "openai_chat",
+      endpointUrl: "https://api.example.com/v1/chat/completions",
+      apiKey: "sk-vision",
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const model: ProviderModel = {
+      id: "model-vision-read-error",
+      providerId: "provider-vision-read-error",
+      displayName: "视觉模型",
+      modelId: "gpt-vision",
+      temperature: 0.7,
+      maxTokens: 1024,
+      systemPrompt: "你是网页助手",
+      isTitleModel: false,
+      supportsVision: true,
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    stubFileReaderError();
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+
+    render(<App />);
+
+    await screen.findByDisplayValue("视觉渠道 / 视觉模型 · 视觉");
+    await userEvent.upload(screen.getByLabelText("上传图片"), createImageFile("失败.png"));
+
+    expect(await screen.findByText("图片读取失败，请重新选择图片")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "查看图片 失败.png" })).not.toBeInTheDocument();
+  });
+
+  it("历史用户消息中的图片在重新加载后仍显示并可放大预览", async () => {
+    const user = userEvent.setup();
+    await saveChatSession(
+      createChatSession({
+        id: "session-image-history",
+        title: "图片会话",
+        messages: [
+          createChatMessage({
+            id: "message-image-history",
+            role: "user",
+            content: "这张图是什么",
+            attachments: [
+              {
+                id: "image-history-1",
+                name: "恢复.png",
+                mediaType: "image/png",
+                dataUrl: "data:image/png;base64,QUJD",
+              },
+            ],
+          }),
+        ],
+      }),
+    );
+
+    render(<App />);
+
+    expect(await screen.findByText("这张图是什么")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "查看已发送图片 恢复.png" }));
+    expect(screen.getByRole("dialog", { name: "图片预览" })).toBeInTheDocument();
+  });
+
+  it("非视觉模型禁用图片输入并拒绝粘贴图片", async () => {
+    const provider: ModelProvider = {
+      id: "provider-text-chat",
+      name: "文本渠道",
+      endpointType: "openai_chat",
+      endpointUrl: "https://api.example.com/v1/chat/completions",
+      apiKey: "sk-text",
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const model: ProviderModel = {
+      id: "model-text-chat",
+      providerId: "provider-text-chat",
+      displayName: "文本模型",
+      modelId: "gpt-text",
+      temperature: 0.7,
+      maxTokens: 1024,
+      systemPrompt: "你是网页助手",
+      isTitleModel: false,
+      supportsVision: false,
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+
+    render(<App />);
+
+    await screen.findByDisplayValue("文本渠道 / 文本模型");
+    const imageInput = screen.getByLabelText("上传图片");
+    const textInput = screen.getByLabelText("对话输入");
+    expect(imageInput).toBeDisabled();
+
+    fireEvent.paste(textInput, {
+      clipboardData: {
+        files: [createImageFile("拒绝.png")],
+        items: [
+          {
+            kind: "file",
+            type: "image/png",
+            getAsFile: () => createImageFile("拒绝.png"),
+          },
+        ],
+      },
+    });
+
+    expect(await screen.findByText("当前模型不支持视觉理解，无法添加图片")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "查看图片 拒绝.png" })).not.toBeInTheDocument();
   });
 
   it("可以在已添加模型设置弹窗中切换视觉理解能力并持久化", async () => {
@@ -2221,5 +2451,56 @@ describe("App", () => {
 
     await user.click(folderButton as Element);
     expect(screen.queryByText("资料会话")).not.toBeInTheDocument();
+  });
+  it("图片输入限制最多 5 张且单张不能超过 5MB", async () => {
+    const user = userEvent.setup();
+    const provider: ModelProvider = {
+      id: "provider-vision-limit",
+      name: "视觉渠道",
+      endpointType: "openai_chat",
+      endpointUrl: "https://api.example.com/v1/chat/completions",
+      apiKey: "sk-vision",
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const model: ProviderModel = {
+      id: "model-vision-limit",
+      providerId: "provider-vision-limit",
+      displayName: "视觉模型",
+      modelId: "gpt-vision",
+      temperature: 0.7,
+      maxTokens: 1024,
+      systemPrompt: "你是网页助手",
+      isTitleModel: false,
+      supportsVision: true,
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    stubFileReaderAsDataUrl();
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+
+    render(<App />);
+
+    await screen.findByDisplayValue("视觉渠道 / 视觉模型 · 视觉");
+    const imageInput = screen.getByLabelText("上传图片");
+    await user.upload(imageInput, createImageFile("超大.png", 5 * 1024 * 1024 + 1));
+
+    expect(await screen.findByText("单张图片不能超过 5MB")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "查看图片 超大.png" })).not.toBeInTheDocument();
+
+    await user.upload(imageInput, [
+      createImageFile("1.png"),
+      createImageFile("2.png"),
+      createImageFile("3.png"),
+      createImageFile("4.png"),
+      createImageFile("5.png"),
+      createImageFile("6.png"),
+    ]);
+
+    expect(await screen.findByText("最多只能添加 5 张图片")).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /查看图片/ })).toHaveLength(5);
   });
 });

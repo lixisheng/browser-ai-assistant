@@ -87,6 +87,7 @@ export function SessionList({ compact = false }: SessionListProps) {
   const chatFolders = useAppStore((state) => state.chatFolders);
   const activeSessionId = useAppStore((state) => state.activeSessionId);
   const pendingDeleteSessionId = useAppStore((state) => state.pendingDeleteSessionId);
+  const composerHasDraft = useAppStore((state) => state.composerHasDraft);
   const createChatSession = useAppStore((state) => state.createChatSession);
   const renameChatSession = useAppStore((state) => state.renameChatSession);
   const selectChatSession = useAppStore((state) => state.selectChatSession);
@@ -272,7 +273,7 @@ export function SessionList({ compact = false }: SessionListProps) {
           <button className="ui-button-secondary session-header-button" type="button" aria-label="新建文件夹" onClick={() => void handleCreateFolder()}>
             新建文件夹
           </button>
-          <button className="ui-button-secondary session-header-button" type="button" aria-label="新对话" onClick={() => void createChatSession()}>
+          <button className="ui-button-secondary session-header-button" type="button" aria-label="新对话" onClick={() => void createChatSession({ preserveSelectedModel: composerHasDraft })}>
             新建
           </button>
         </div>

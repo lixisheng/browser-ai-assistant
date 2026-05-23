@@ -608,6 +608,12 @@ body {
     color: var(--color-on-primary);
   }
 
+  .message-image-preview-strip {
+    @apply mb-2 flex max-w-full gap-2 overflow-x-auto rounded-lg p-2;
+    background: color-mix(in srgb, var(--color-canvas) 72%, var(--color-surface-card));
+    border: 1px solid var(--color-hairline);
+  }
+
   .message-thinking {
     @apply mb-2 rounded-lg px-3 py-2 text-sm;
     background: var(--color-surface-card);
@@ -665,7 +671,57 @@ body {
   }
 
   .chat-input {
-    @apply min-h-24 w-full resize-y p-3;
+    @apply min-h-24 w-full resize-y py-3 pl-12 pr-3;
+  }
+
+  .chat-input-shell {
+    @apply relative;
+  }
+
+  .image-upload-button {
+    @apply absolute left-2 top-2 z-10 inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-md text-sm transition;
+    background: var(--color-canvas);
+    border: 1px solid var(--color-hairline);
+    color: var(--color-body-strong);
+  }
+
+  .image-upload-button:hover {
+    background: var(--color-surface-cream-strong);
+  }
+
+  .image-upload-button-disabled {
+    @apply cursor-not-allowed opacity-55;
+  }
+
+  .image-preview-strip {
+    @apply -mb-1 flex max-w-full gap-2 overflow-x-auto rounded-lg p-2;
+    background: color-mix(in srgb, var(--color-canvas) 72%, var(--color-surface-card));
+    border: 1px solid var(--color-hairline);
+  }
+
+  .image-preview-thumb {
+    @apply h-14 w-14 shrink-0 overflow-hidden rounded-md;
+    background: var(--color-canvas);
+    border: 1px solid var(--color-hairline);
+  }
+
+  .image-preview-thumb img {
+    @apply h-full w-full object-cover;
+  }
+
+  .image-preview-dialog {
+    @apply fixed left-1/2 top-1/2 z-50 grid max-h-[82vh] w-[min(92vw,720px)] -translate-x-1/2 -translate-y-1/2 gap-3 rounded-xl p-3;
+    background: var(--color-surface-soft);
+    border: 1px solid var(--color-hairline);
+  }
+
+  .image-preview-dialog img {
+    @apply max-h-[70vh] w-full rounded-lg object-contain;
+    background: var(--color-surface-dark);
+  }
+
+  .image-preview-close {
+    @apply justify-self-end;
   }
 
   .composer-actions {
