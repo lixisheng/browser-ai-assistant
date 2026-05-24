@@ -214,6 +214,32 @@ body {
     border-top: 1px solid var(--color-hairline-soft);
   }
 
+  .private-switch-dialog {
+    @apply fixed left-3 right-3 top-1/2 z-40 grid -translate-y-1/2 gap-3 rounded-lg p-4 sm:left-1/2 sm:right-auto sm:w-[min(360px,calc(100vw-32px))] sm:-translate-x-1/2;
+    background: var(--color-canvas);
+    border: 1px solid var(--color-hairline);
+    box-shadow: 0 1px 3px rgba(20, 20, 19, 0.08);
+  }
+
+  .private-switch-dialog-title {
+    @apply text-lg font-medium;
+    color: var(--color-ink);
+    font-family: Georgia, "Times New Roman", serif;
+  }
+
+  .private-switch-dialog-description {
+    @apply text-sm;
+    color: var(--color-body);
+  }
+
+  .private-switch-dialog-actions {
+    @apply flex flex-wrap justify-end gap-2;
+  }
+
+  .private-switch-dialog-button {
+    @apply min-h-10;
+  }
+
   .session-folder {
     @apply min-w-0 gap-2;
     display: grid;
@@ -432,6 +458,15 @@ body {
 
   .chat-export-trigger {
     @apply h-10 shrink-0 px-3 text-sm;
+  }
+
+  .chat-private-trigger {
+    @apply h-10 shrink-0 px-3 text-sm;
+  }
+
+  .chat-private-trigger-active {
+    border-color: var(--color-primary);
+    color: var(--color-primary);
   }
 
   .chat-export-menu-wrap {

@@ -102,6 +102,8 @@ interface AppState {
   defaultChatModelId: string;
   chatPreferences: ChatPreferenceValues;
   activeSessionId: string;
+  privateModeActive: boolean;
+  privateChatSession?: ChatSession;
   pendingDeleteSessionId?: string;
   composerHasDraft: boolean;
   appendPageContextToSystemPrompt: boolean;
@@ -127,7 +129,9 @@ interface AppState {
   loadChannelConfig: () => Promise<void>;
   loadChatData: () => Promise<void>;
   createChatSession: (options?: { preserveSelectedModel?: boolean }) => Promise<ChatSession>;
-  selectChatSession: (sessionId: string) => void;
+  enterPrivateMode: () => Promise<void>;
+  savePrivateChatSession: () => Promise<void>;
+  selectChatSession: (sessionId: string, options?: { discardPrivateSession?: boolean }) => void;
   renameChatSession: (sessionId: string, title: string) => Promise<void>;
   archiveChatSession: (sessionId: string) => Promise<void>;
   requestDeleteChatSession: (sessionId: string) => void;
@@ -215,6 +219,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
   defaultChatModelId: "",
   chatPreferences: DEFAULT_CHAT_PREFERENCES,
   activeSessionId: "",
+  privateModeActive: false,
+  privateChatSession: undefined,
   composerHasDraft: false,
   appendPageContextToSystemPrompt: true,
   streamMode: true,
@@ -515,19 +521,95 @@ export const useAppStore = create<AppState>()((set, get) => ({
       chatSessions: [session, ...state.chatSessions],
       activeSessionId: session.id,
       selectedModelId,
+      privateModeActive: false,
+      privateChatSession: undefined,
       pendingDeleteSessionId: undefined,
     }));
     return session;
   },
-  selectChatSession: (sessionId) =>
+  enterPrivateMode: async () => {
+    const state = get();
+    if (state.privateModeActive) {
+      return;
+    }
+
+    const activeSession = state.chatSessions.find((session) => session.id === state.activeSessionId);
+    if (activeSession && activeSession.messages.length > 0) {
+      return;
+    }
+
+    if (activeSession) {
+      await deleteChatSession(activeSession.id);
+    }
+
+    const now = Date.now();
+    const selectedModelId = resolveAvailableModelId(
+      activeSession?.selectedModelId || state.selectedModelId || state.defaultChatModelId,
+      state.models,
+      state.providers,
+    );
+    const privateChatSession: ChatSession = {
+      id: `private-session-${now}`,
+      title: "新对话",
+      archived: false,
+      sortOrder: now,
+      createdAt: now,
+      updatedAt: now,
+      selectedModelId,
+      messages: [],
+    };
+
+    set((current) => ({
+      privateModeActive: true,
+      privateChatSession,
+      activeSessionId: "",
+      selectedModelId,
+      pendingDeleteSessionId: undefined,
+      chatSessions: activeSession ? current.chatSessions.filter((session) => session.id !== activeSession.id) : current.chatSessions,
+    }));
+  },
+  savePrivateChatSession: async () => {
+    const state = get();
+    const privateChatSession = state.privateChatSession;
+    if (!state.privateModeActive || !privateChatSession || privateChatSession.messages.length === 0) {
+      set({ privateModeActive: false, privateChatSession: undefined });
+      return;
+    }
+
+    const sessionToSave: ChatSession = {
+      ...privateChatSession,
+      id: privateChatSession.id.replace(/^private-session-/, "session-"),
+      updatedAt: Date.now(),
+    };
+
+    await saveChatSession(sessionToSave);
+    set((current) => ({
+      privateModeActive: false,
+      privateChatSession: undefined,
+      activeSessionId: sessionToSave.id,
+      selectedModelId: resolveSessionModelId(sessionToSave, current),
+      chatSessions: upsertSession(current.chatSessions, sessionToSave),
+    }));
+    await generateTitleFromSavedPrivateSession({
+      session: sessionToSave,
+      get,
+      set,
+    });
+  },
+  selectChatSession: (sessionId, options) =>
     set((state) => {
       const session = state.chatSessions.find((item) => item.id === sessionId);
       if (!session) {
         return { pendingDeleteSessionId: undefined };
       }
+      if (state.privateModeActive && state.privateChatSession && state.privateChatSession.messages.length > 0 && !options?.discardPrivateSession) {
+        return { pendingDeleteSessionId: undefined };
+      }
 
       return {
         activeSessionId: sessionId,
+        privateModeActive: false,
+        privateChatSession: undefined,
         pendingDeleteSessionId: undefined,
         selectedModelId: resolveSessionModelId(session, state),
       };
@@ -1016,6 +1098,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
       defaultChatModelId: "",
       chatPreferences: DEFAULT_CHAT_PREFERENCES,
       activeSessionId: "",
+      privateModeActive: false,
+      privateChatSession: undefined,
       pendingDeleteSessionId: undefined,
       composerHasDraft: false,
       appendPageContextToSystemPrompt: true,
@@ -1266,6 +1350,7 @@ interface EditAndRegenerateUserMessageInput {
 
 interface RunChatRequestInput {
   state: AppState;
+  privateMode?: boolean;
   pageContextPrompt: string;
   session: ChatSession;
   userMessage: ChatMessage;
@@ -1316,7 +1401,9 @@ async function sendChatMessageWithState(input: SendChatMessageWithStateInput): P
   }
 
   const now = Date.now();
-  const baseSession = state.chatSessions.find((session) => session.id === state.activeSessionId);
+  const baseSession = state.privateModeActive
+    ? state.privateChatSession
+    : state.chatSessions.find((session) => session.id === state.activeSessionId);
   const effectiveChatPreferences = resolveEffectiveChatPreferences(state.chatPreferences, baseSession?.chatPreferenceOverrides);
   const requestPageContextPrompt = createPageContextPrompt(state.pageContext);
   const session =
@@ -1348,6 +1435,7 @@ async function sendChatMessageWithState(input: SendChatMessageWithStateInput): P
 
   await runChatRequest({
     state,
+    privateMode: state.privateModeActive,
     pageContextPrompt: requestPageContextPrompt,
     session,
     userMessage,
@@ -1369,7 +1457,9 @@ async function regenerateChatMessage(input: RegenerateChatMessageInput): Promise
     return;
   }
 
-  const session = state.chatSessions.find((item) => item.id === state.activeSessionId);
+  const session = state.privateModeActive
+    ? state.privateChatSession
+    : state.chatSessions.find((item) => item.id === state.activeSessionId);
   if (!session) {
     return;
   }
@@ -1402,6 +1492,7 @@ async function regenerateChatMessage(input: RegenerateChatMessageInput): Promise
 
   await runChatRequest({
     state,
+    privateMode: state.privateModeActive,
     pageContextPrompt: createPageContextPrompt(state.pageContext),
     session,
     userMessage,
@@ -1424,7 +1515,9 @@ async function editAndRegenerateUserMessage(input: EditAndRegenerateUserMessageI
     return;
   }
 
-  const session = state.chatSessions.find((item) => item.id === state.activeSessionId);
+  const session = state.privateModeActive
+    ? state.privateChatSession
+    : state.chatSessions.find((item) => item.id === state.activeSessionId);
   if (!session) {
     return;
   }
@@ -1455,6 +1548,7 @@ async function editAndRegenerateUserMessage(input: EditAndRegenerateUserMessageI
 
   await runChatRequest({
     state,
+    privateMode: state.privateModeActive,
     pageContextPrompt: createPageContextPrompt(state.pageContext),
     session,
     userMessage: editedUserMessage,
@@ -1496,12 +1590,16 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
   };
 
   try {
-    await saveChatSession(nextSession);
-    input.set((current) => ({
-      activeSessionId: nextSession.id,
-      chatSessions: upsertSession(current.chatSessions, nextSession),
-    }));
-    const titleGenerationPromise = input.shouldGenerateTitle
+    if (input.privateMode) {
+      input.set({ privateChatSession: nextSession });
+    } else {
+      await saveChatSession(nextSession);
+      input.set((current) => ({
+        activeSessionId: nextSession.id,
+        chatSessions: upsertSession(current.chatSessions, nextSession),
+      }));
+    }
+    const titleGenerationPromise = !input.privateMode && input.shouldGenerateTitle
       ? generateTitleForSession({
         sessionId: nextSession.id,
         fallbackTitle: input.fallbackTitle,
@@ -1537,6 +1635,7 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
         contextPrompt: input.state.pageContext.text,
         contextMode: input.state.contextMode,
         matchedRuleId: input.state.pageContext.matchedRuleId,
+        privateMode: input.privateMode,
         request,
       });
       if (streamResult.completed) {
@@ -1575,6 +1674,24 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
       contextMode: input.state.contextMode,
       matchedRuleId: input.state.pageContext.matchedRuleId,
     };
+    if (input.privateMode) {
+      input.set((current) => {
+        const currentSession = current.privateChatSession;
+        if (!current.privateModeActive || !currentSession || currentSession.id !== nextSession.id) {
+          return {};
+        }
+
+        return {
+          privateChatSession: {
+            ...currentSession,
+            updatedAt: assistantMessage.createdAt,
+            messages: [...currentSession.messages, assistantMessage],
+          },
+        };
+      });
+      return;
+    }
+
     const completedSession = await updateChatSession(nextSession.id, (latestSession) => ({
       ...latestSession,
       updatedAt: assistantMessage.createdAt,
@@ -1656,6 +1773,76 @@ async function generateTitleForSession(input: GenerateTitleForSessionInput): Pro
   }
 }
 
+async function generateTitleFromSavedPrivateSession(input: { session: ChatSession; get: StoreGetter; set: StoreSetter }): Promise<void> {
+  try {
+    const state = input.get();
+    const titleModel = state.models.find((model) => model.isTitleModel && model.enabled);
+    const titleProvider = titleModel ? state.providers.find((provider) => provider.id === titleModel.providerId) : undefined;
+    if (!titleModel || !titleProvider?.enabled) {
+      return;
+    }
+
+    const titleModelConfig = createModelConfig(titleProvider, titleModel);
+    const titleMessages = createTitleGenerationMessages({
+      userContent: formatSessionMessagesForTitle(input.session.messages),
+      pageContext: state.appendPageContextToSystemPrompt ? state.pageContext.text : "",
+    }).map((message) => ({
+      ...message,
+      modelId: titleModel.id,
+      endpointType: titleProvider.endpointType,
+      systemPrompt: titleModel.systemPrompt,
+    }));
+    const title = await generateSessionTitle({
+      fallbackTitle: input.session.title,
+      messages: titleMessages,
+      titleModel: titleModelConfig,
+      requestTitle: async (model, messages) => {
+        const response = await sendRuntimeMessage<{ ok: true; content: string } | { ok: false; message: string } | undefined>({
+          type: "chat.send",
+          model,
+          messages,
+          stream: false,
+        });
+        if (!response?.ok) {
+          throw new Error(response?.message ?? "标题生成失败");
+        }
+
+        return response.content;
+      },
+    });
+
+    await updateSavedPrivateSessionTitle({
+      sessionId: input.session.id,
+      title,
+      set: input.set,
+    });
+  } catch {
+    // 隐私会话已完成保存；标题生成失败时保留原标题，避免影响用户显式保存结果。
+  }
+}
+
+function formatSessionMessagesForTitle(messages: ChatMessage[]): string {
+  return messages
+    .filter((message) => message.role !== "system" && message.content.trim())
+    .map((message) => `${message.role === "user" ? "用户" : "助手"}：${message.content.trim()}`)
+    .join("\n\n");
+}
+
+async function updateSavedPrivateSessionTitle(input: { sessionId: string; title: string; set: StoreSetter }): Promise<void> {
+  const updatedSession = await updateChatSession(input.sessionId, (latestSession) => ({
+    ...latestSession,
+    title: input.title,
+    titleGenerating: false,
+  }));
+  if (!updatedSession) {
+    return;
+  }
+
+  input.set((current) => ({
+    chatSessions: upsertSession(current.chatSessions, updatedSession),
+  }));
+}
+
 async function updateGeneratedTitle(input: GenerateTitleForSessionInput, title: string): Promise<void> {
   const updatedSession = await updateChatSession(input.sessionId, (latestSession) => {
     if (latestSession.title !== input.fallbackTitle) {
@@ -1719,6 +1906,7 @@ interface StreamingChatInput {
   contextPrompt: string;
   contextMode: PageContextExtractMode;
   matchedRuleId?: string;
+  privateMode?: boolean;
   request: ChatSendMessage;
 }
 
@@ -1743,29 +1931,46 @@ async function sendStreamingChatMessage(input: StreamingChatInput): Promise<Stre
     streaming: true,
   };
 
-  const initializedSession = await updateChatSession(input.sessionId, (latestSession) => ({
-    ...latestSession,
-    updatedAt: assistantMessage.createdAt,
-    messages: [...latestSession.messages, assistantMessage],
-  }));
-  if (!initializedSession) {
-    return { completed: true };
-  }
+  if (input.privateMode) {
+    input.set((current) => {
+      const currentSession = current.privateChatSession;
+      if (!current.privateModeActive || !currentSession || currentSession.id !== input.sessionId) {
+        return {};
+      }
 
-  input.set((current) => {
-    const currentSession = current.chatSessions.find((session) => session.id === initializedSession.id);
-    if (!currentSession) {
-      return {};
+      return {
+        privateChatSession: {
+          ...currentSession,
+          updatedAt: assistantMessage.createdAt,
+          messages: [...currentSession.messages, assistantMessage],
+        },
+      };
+    });
+  } else {
+    const initializedSession = await updateChatSession(input.sessionId, (latestSession) => ({
+      ...latestSession,
+      updatedAt: assistantMessage.createdAt,
+      messages: [...latestSession.messages, assistantMessage],
+    }));
+    if (!initializedSession) {
+      return { completed: true };
     }
 
-    return {
-      chatSessions: upsertSession(current.chatSessions, {
-        ...currentSession,
-        updatedAt: assistantMessage.createdAt,
-        messages: [...currentSession.messages, assistantMessage],
-      }),
-    };
-  });
+    input.set((current) => {
+      const currentSession = current.chatSessions.find((session) => session.id === initializedSession.id);
+      if (!currentSession) {
+        return {};
+      }
+
+      return {
+        chatSessions: upsertSession(current.chatSessions, {
+          ...currentSession,
+          updatedAt: assistantMessage.createdAt,
+          messages: [...currentSession.messages, assistantMessage],
+        }),
+      };
+    });
+  }
 
   return new Promise<StreamingChatResult>((resolve) => {
     const port = globalThis.chrome.runtime.connect({ name: "chat.stream" });
@@ -1794,17 +1999,17 @@ async function sendStreamingChatMessage(input: StreamingChatInput): Promise<Stre
     port.onMessage.addListener((message: ChatStreamPortMessage) => {
       receivedStreamResponse = true;
       if (message.type === "chunk") {
-        void enqueueWrite(() => appendAssistantChunk(input.sessionId, assistantMessage.id, message.content, input.set));
+        void enqueueWrite(() => appendAssistantChunk(input.sessionId, assistantMessage.id, message.content, input.set, input.privateMode));
         return;
       }
 
       if (message.type === "thinking") {
-        void enqueueWrite(() => appendAssistantThinkingChunk(input.sessionId, assistantMessage.id, message.content, input.set));
+        void enqueueWrite(() => appendAssistantThinkingChunk(input.sessionId, assistantMessage.id, message.content, input.set, input.privateMode));
         return;
       }
 
       if (message.type === "complete") {
-        void enqueueWrite(() => finalizeAssistantMessage(input.sessionId, assistantMessage.id, message.content, message.thinking, input.set)).then(
+        void enqueueWrite(() => finalizeAssistantMessage(input.sessionId, assistantMessage.id, message.content, message.thinking, input.set, input.privateMode)).then(
           () => finish({ completed: true, assistantContent: message.content }),
         );
         return;
@@ -1816,7 +2021,7 @@ async function sendStreamingChatMessage(input: StreamingChatInput): Promise<Stre
 
     port.onDisconnect.addListener(() => {
       if (!receivedStreamResponse) {
-        void removeAssistantMessage(input.sessionId, assistantMessage.id, input.set).then(() => {
+        void removeAssistantMessage(input.sessionId, assistantMessage.id, input.set, input.privateMode).then(() => {
           finish({ completed: false }, { disconnect: false });
         });
         return;
@@ -1832,7 +2037,24 @@ async function sendStreamingChatMessage(input: StreamingChatInput): Promise<Stre
   });
 }
 
-async function removeAssistantMessage(sessionId: string, messageId: string, set: StoreSetter): Promise<void> {
+async function removeAssistantMessage(sessionId: string, messageId: string, set: StoreSetter, privateMode = false): Promise<void> {
+  if (privateMode) {
+    set((current) => {
+      const session = current.privateChatSession;
+      if (!current.privateModeActive || !session || session.id !== sessionId) {
+        return {};
+      }
+
+      return {
+        privateChatSession: {
+          ...session,
+          messages: session.messages.filter((message) => message.id !== messageId),
+        },
+      };
+    });
+    return;
+  }
+
   await updateChatSession(sessionId, (latestSession) => ({
     ...latestSession,
     messages: latestSession.messages.filter((message) => message.id !== messageId),
@@ -1853,7 +2075,17 @@ async function removeAssistantMessage(sessionId: string, messageId: string, set:
   });
 }
 
-async function appendAssistantThinkingChunk(sessionId: string, messageId: string, content: string, set: StoreSetter): Promise<void> {
+async function appendAssistantThinkingChunk(sessionId: string, messageId: string, content: string, set: StoreSetter, privateMode = false): Promise<void> {
+  if (privateMode) {
+    set((current) =>
+      updatePrivateAssistantMessageInState(current, sessionId, messageId, (message) => ({
+        ...message,
+        thinking: `${message.thinking ?? ""}${content}`,
+      })),
+    );
+    return;
+  }
+
   await updateChatSession(sessionId, (latestSession) => ({
     ...latestSession,
     messages: latestSession.messages.map((message) =>
@@ -1869,7 +2101,17 @@ async function appendAssistantThinkingChunk(sessionId: string, messageId: string
   );
 }
 
-async function appendAssistantChunk(sessionId: string, messageId: string, content: string, set: StoreSetter): Promise<void> {
+async function appendAssistantChunk(sessionId: string, messageId: string, content: string, set: StoreSetter, privateMode = false): Promise<void> {
+  if (privateMode) {
+    set((current) =>
+      updatePrivateAssistantMessageInState(current, sessionId, messageId, (message) => ({
+        ...message,
+        content: `${message.content}${content}`,
+      })),
+    );
+    return;
+  }
+
   await updateChatSession(sessionId, (latestSession) => ({
     ...latestSession,
     messages: latestSession.messages.map((message) =>
@@ -1891,7 +2133,20 @@ async function finalizeAssistantMessage(
   content: string,
   thinking: string | undefined,
   set: StoreSetter,
+  privateMode = false,
 ): Promise<void> {
+  if (privateMode) {
+    set((current) =>
+      updatePrivateAssistantMessageInState(current, sessionId, messageId, (message) => ({
+        ...message,
+        content,
+        thinking,
+        streaming: false,
+      })),
+    );
+    return;
+  }
+
   await updateChatSession(sessionId, (latestSession) => ({
     ...latestSession,
     updatedAt: Date.now(),
@@ -1924,6 +2179,25 @@ function updateAssistantMessageInState(
       ...session,
       messages: session.messages.map((message) => (message.id === messageId ? updater(message) : message)),
     }),
+  };
+}
+
+function updatePrivateAssistantMessageInState(
+  state: AppState,
+  sessionId: string,
+  messageId: string,
+  updater: (message: ChatMessage) => ChatMessage,
+): Partial<AppState> {
+  const session = state.privateChatSession;
+  if (!state.privateModeActive || !session || session.id !== sessionId) {
+    return {};
+  }
+
+  return {
+    privateChatSession: {
+      ...session,
+      messages: session.messages.map((message) => (message.id === messageId ? updater(message) : message)),
+    },
   };
 }
 

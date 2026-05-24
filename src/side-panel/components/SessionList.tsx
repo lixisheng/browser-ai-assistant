@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent } from "react";
+import * as Dialog from "@radix-ui/react-dialog";
 import type { ChatFolder, ChatSession } from "../../shared/types";
 import { useAppStore } from "../state/appStore";
 
@@ -80,6 +81,7 @@ export function SessionList({ compact = false }: SessionListProps) {
   const [renamingFolderValue, setRenamingFolderValue] = useState("");
   const [draggingSessionId, setDraggingSessionId] = useState<string>();
   const [dragOverFolderId, setDragOverFolderId] = useState<string>();
+  const [pendingPrivateSwitchSessionId, setPendingPrivateSwitchSessionId] = useState<string>();
   const handledSessionRenameId = useRef<string | undefined>(undefined);
   const handledFolderRenameId = useRef<string | undefined>(undefined);
   const initializedCollapsedFolderIds = useRef<Set<string>>(new Set());
@@ -88,6 +90,8 @@ export function SessionList({ compact = false }: SessionListProps) {
   const activeSessionId = useAppStore((state) => state.activeSessionId);
   const pendingDeleteSessionId = useAppStore((state) => state.pendingDeleteSessionId);
   const composerHasDraft = useAppStore((state) => state.composerHasDraft);
+  const privateModeActive = useAppStore((state) => state.privateModeActive);
+  const privateChatSession = useAppStore((state) => state.privateChatSession);
   const createChatSession = useAppStore((state) => state.createChatSession);
   const renameChatSession = useAppStore((state) => state.renameChatSession);
   const selectChatSession = useAppStore((state) => state.selectChatSession);
@@ -98,6 +102,22 @@ export function SessionList({ compact = false }: SessionListProps) {
   const createChatFolder = useAppStore((state) => state.createChatFolder);
   const renameChatFolder = useAppStore((state) => state.renameChatFolder);
   const moveChatSessionToFolder = useAppStore((state) => state.moveChatSessionToFolder);
+  const handleSelectChatSession = (sessionId: string) => {
+    if (privateModeActive && (privateChatSession?.messages.length ?? 0) > 0) {
+      setPendingPrivateSwitchSessionId(sessionId);
+      return;
+    }
+
+    selectChatSession(sessionId);
+  };
+  const confirmPrivateSwitch = () => {
+    if (!pendingPrivateSwitchSessionId) {
+      return;
+    }
+
+    selectChatSession(pendingPrivateSwitchSessionId, { discardPrivateSession: true });
+    setPendingPrivateSwitchSessionId(undefined);
+  };
 
   const activeSessions = chatSessions.filter((session) => !session.archived);
   const archivedSessions = chatSessions.filter((session) => session.archived);
@@ -296,7 +316,7 @@ export function SessionList({ compact = false }: SessionListProps) {
               onRenameCommit={() => undefined}
               activeSessionId={activeSessionId}
               pendingDeleteSessionId={pendingDeleteSessionId}
-              onSelect={selectChatSession}
+              onSelect={handleSelectChatSession}
               onArchive={(sessionId) => void archiveChatSession(sessionId)}
               onRenameSession={startRenameSession}
               onRequestDelete={requestDeleteChatSession}
@@ -337,7 +357,7 @@ export function SessionList({ compact = false }: SessionListProps) {
                 onRenameCommit={commitRenameFolderByKey}
                 activeSessionId={activeSessionId}
                 pendingDeleteSessionId={pendingDeleteSessionId}
-                onSelect={selectChatSession}
+                onSelect={handleSelectChatSession}
                 onArchive={(sessionId) => void archiveChatSession(sessionId)}
                 onRenameSession={startRenameSession}
                 onRequestDelete={requestDeleteChatSession}
@@ -380,7 +400,7 @@ export function SessionList({ compact = false }: SessionListProps) {
             onRenameCommit={() => undefined}
             activeSessionId={activeSessionId}
             pendingDeleteSessionId={pendingDeleteSessionId}
-            onSelect={selectChatSession}
+            onSelect={handleSelectChatSession}
             onRenameSession={startRenameSession}
             onRequestDelete={requestDeleteChatSession}
             onConfirmDelete={(sessionId) => void confirmDeleteChatSession(sessionId)}
@@ -398,6 +418,29 @@ export function SessionList({ compact = false }: SessionListProps) {
             onSessionRenameCommit={commitRenameSessionByKey}
           />
       </div>
+      <Dialog.Root open={Boolean(pendingPrivateSwitchSessionId)} onOpenChange={(open) => {
+        if (!open) {
+          setPendingPrivateSwitchSessionId(undefined);
+        }
+      }}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="dialog-overlay" />
+          <Dialog.Content className="private-switch-dialog">
+            <Dialog.Title className="private-switch-dialog-title">丢弃隐私对话？</Dialog.Title>
+            <Dialog.Description className="private-switch-dialog-description">
+              当前隐私对话尚未保存，切换历史会话会丢弃这些内容。
+            </Dialog.Description>
+            <div className="private-switch-dialog-actions">
+              <Dialog.Close className="ui-button-secondary private-switch-dialog-button" type="button">
+                继续保留
+              </Dialog.Close>
+              <button className="ui-button-primary private-switch-dialog-button" type="button" onClick={confirmPrivateSwitch}>
+                丢弃并切换
+              </button>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
     </aside>
   );
 }

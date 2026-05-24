@@ -427,6 +427,155 @@ describe("App", () => {
     expect(markdown).toContain("## 用户 · 2023-11-14T22:13:20.000Z\n\n```\n请总结页面\n```");
   });
 
+  it("隐私按钮位于导出按钮右侧，激活后切换为保存按钮", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const exportButton = await screen.findByRole("button", { name: "导出当前聊天" });
+    const privateButton = screen.getByRole("button", { name: "进入隐私模式" });
+    expect(exportButton.parentElement?.nextElementSibling).toBe(privateButton);
+
+    await user.click(privateButton);
+
+    const saveButton = screen.getByRole("button", { name: "保存隐私对话" });
+    expect(saveButton).toHaveTextContent("保存");
+    expect(saveButton).toHaveClass("chat-private-trigger-active");
+  });
+
+  it("已存在且包含消息的历史会话不显示隐私按钮", async () => {
+    await saveChatSession(
+      createChatSession({
+        id: "session-existing",
+        title: "已有会话",
+        messages: [
+          createChatMessage({
+            id: "message-existing",
+            role: "user",
+            content: "已有消息",
+          }),
+        ],
+      }),
+    );
+
+    render(<App />);
+
+    await screen.findByRole("button", { name: "导出当前聊天" });
+    expect(screen.queryByRole("button", { name: "进入隐私模式" })).not.toBeInTheDocument();
+  });
+
+  it("隐私模式有消息时切换历史会话需要确认，取消后保留隐私对话", async () => {
+    const user = userEvent.setup();
+    const sendMessage = createShortcutRuntimeMock();
+    const nativeConfirm = vi.spyOn(window, "confirm");
+    await saveModelProvider({
+      id: "provider-1",
+      name: "默认渠道",
+      endpointType: "openai_chat",
+      endpointUrl: "https://api.example.com/v1/chat/completions",
+      apiKey: "sk-test",
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    await saveProviderModel({
+      id: "model-1",
+      providerId: "provider-1",
+      displayName: "默认模型",
+      modelId: "gpt-test",
+      temperature: 0.7,
+      maxTokens: 1024,
+      systemPrompt: "你是网页助手",
+      isTitleModel: false,
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    await saveChatSession(
+      createChatSession({
+        id: "session-existing",
+        title: "已有会话",
+        messages: [
+          createChatMessage({
+            id: "message-existing",
+            role: "user",
+            content: "已有消息",
+          }),
+        ],
+      }),
+    );
+
+    render(<App />);
+    await user.click(await screen.findByRole("button", { name: "新对话" }));
+    await user.click(screen.getByRole("button", { name: "进入隐私模式" }));
+    await user.type(screen.getByRole("textbox", { name: "对话输入" }), "隐私问题");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(hasChatSendCall(sendMessage)).toBe(true));
+
+    await user.click(screen.getByRole("button", { name: "已有会话" }));
+
+    const dialog = screen.getByRole("dialog", { name: "丢弃隐私对话？" });
+    expect(nativeConfirm).not.toHaveBeenCalled();
+    expect(dialog).toHaveTextContent("当前隐私对话尚未保存，切换历史会话会丢弃这些内容。");
+    await user.click(screen.getByRole("button", { name: "继续保留" }));
+
+    expect(screen.getByRole("button", { name: "保存隐私对话" })).toBeInTheDocument();
+    expect(screen.getByText("隐私问题")).toBeInTheDocument();
+  });
+
+  it("隐私模式有消息时确认切换历史会话会丢弃隐私对话", async () => {
+    const user = userEvent.setup();
+    const sendMessage = createShortcutRuntimeMock();
+    await saveModelProvider({
+      id: "provider-1",
+      name: "默认渠道",
+      endpointType: "openai_chat",
+      endpointUrl: "https://api.example.com/v1/chat/completions",
+      apiKey: "sk-test",
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    await saveProviderModel({
+      id: "model-1",
+      providerId: "provider-1",
+      displayName: "默认模型",
+      modelId: "gpt-test",
+      temperature: 0.7,
+      maxTokens: 1024,
+      systemPrompt: "你是网页助手",
+      isTitleModel: false,
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    await saveChatSession(
+      createChatSession({
+        id: "session-existing",
+        title: "已有会话",
+        messages: [
+          createChatMessage({
+            id: "message-existing",
+            role: "user",
+            content: "已有消息",
+          }),
+        ],
+      }),
+    );
+
+    render(<App />);
+    await user.click(await screen.findByRole("button", { name: "新对话" }));
+    await user.click(screen.getByRole("button", { name: "进入隐私模式" }));
+    await user.type(screen.getByRole("textbox", { name: "对话输入" }), "隐私问题");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(hasChatSendCall(sendMessage)).toBe(true));
+
+    await user.click(screen.getByRole("button", { name: "已有会话" }));
+    await user.click(screen.getByRole("button", { name: "丢弃并切换" }));
+
+    expect(screen.queryByRole("button", { name: "保存隐私对话" })).not.toBeInTheDocument();
+    expect(screen.getByText("已有消息")).toBeInTheDocument();
+  });
+
   it("可以导出当前会话为 Word 和 PDF", async () => {
     const user = userEvent.setup();
     const downloadMock = createSequentialDownloadMock(["blob:word-export"]);

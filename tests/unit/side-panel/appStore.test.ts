@@ -2625,4 +2625,236 @@ describe("appStore", () => {
       await expect(getChatSession("session-active-model")).resolves.toMatchObject({ selectedModelId: "model-1" });
     });
   });
+
+  it("空白占位会话进入隐私模式时删除历史 item", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+
+    const placeholder = await useAppStore.getState().createChatSession();
+    await expect(getChatSession(placeholder.id)).resolves.toBeDefined();
+
+    await useAppStore.getState().enterPrivateMode();
+
+    const state = useAppStore.getState();
+    expect(state.privateModeActive).toBe(true);
+    expect(state.privateChatSession).toMatchObject({
+      title: "新对话",
+      selectedModelId: "model-1",
+      messages: [],
+    });
+    expect(state.chatSessions).toHaveLength(0);
+    await expect(getChatSession(placeholder.id)).resolves.toBeUndefined();
+  });
+
+  it("隐私模式发送消息不会持久化或新增历史 item", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const sendMessage = vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+      callback({ ok: true, content: message.type === "chat.send" ? "隐私回复" : "" });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", { runtime: { sendMessage } });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    useAppStore.getState().setStreamMode(false);
+    await useAppStore.getState().enterPrivateMode();
+
+    await useAppStore.getState().sendChatMessage("隐私问题");
+
+    const state = useAppStore.getState();
+    expect(state.privateModeActive).toBe(true);
+    expect(state.chatSessions).toHaveLength(0);
+    expect(state.privateChatSession?.messages.map((message) => message.content)).toEqual(["隐私问题", "隐私回复"]);
+    await expect(getChatSession(state.privateChatSession?.id ?? "")).resolves.toBeUndefined();
+  });
+
+  it("保存隐私会话后退出隐私模式并成为普通历史会话", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const sendMessage = vi.fn((_message: { type: string }, callback: (response: unknown) => void) => {
+      callback({ ok: true, content: "隐私回复" });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", { runtime: { sendMessage } });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    useAppStore.getState().setStreamMode(false);
+    await useAppStore.getState().enterPrivateMode();
+    await useAppStore.getState().sendChatMessage("需要保留");
+    const privateSessionId = useAppStore.getState().privateChatSession?.id ?? "";
+    const savedSessionId = privateSessionId.replace(/^private-session-/, "session-");
+
+    await useAppStore.getState().savePrivateChatSession();
+
+    const state = useAppStore.getState();
+    expect(state.privateModeActive).toBe(false);
+    expect(state.privateChatSession).toBeUndefined();
+    expect(state.activeSessionId).toBe(savedSessionId);
+    expect(state.chatSessions).toHaveLength(1);
+    expect(state.chatSessions[0].id).toBe(savedSessionId);
+    expect(state.chatSessions[0].id).not.toMatch(/^private-session-/);
+    expect(state.chatSessions[0].messages.map((message) => message.content)).toEqual(["需要保留", "隐私回复"]);
+    await expect(getChatSession(privateSessionId)).resolves.toBeUndefined();
+    await expect(getChatSession(savedSessionId)).resolves.toMatchObject({
+      id: savedSessionId,
+      messages: expect.any(Array),
+    });
+  });
+
+  it("保存隐私会话后使用完整聊天记录重新生成标题", async () => {
+    const provider = createProvider();
+    const chatModel = createModel();
+    const titleModel = createTitleModel();
+    const sendMessage = vi.fn((message: { type: string; model?: ProviderModel; messages?: ChatMessage[] }, callback: (response: unknown) => void) => {
+      callback({
+        ok: true,
+        content: message.model?.id === "model-title" ? "{\"title\":\"完整隐私对话标题\"}" : "隐私回复",
+      });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", { runtime: { sendMessage } });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(chatModel);
+    await saveProviderModel(titleModel);
+    await useAppStore.getState().loadChannelConfig();
+    useAppStore.getState().selectModel("model-1");
+    useAppStore.getState().setTitleModel("model-title");
+    useAppStore.getState().setStreamMode(false);
+    await useAppStore.getState().enterPrivateMode();
+    await useAppStore.getState().sendChatMessage("第一轮隐私问题");
+    await useAppStore.getState().sendChatMessage("第二轮隐私追问");
+
+    await useAppStore.getState().savePrivateChatSession();
+
+    const titleRequest = sendMessage.mock.calls
+      .map(([message]) => message as { type: string; model?: ProviderModel; messages?: ChatMessage[] })
+      .filter((message) => message.type === "chat.send")
+      .find((message) => message.model?.id === "model-title");
+    expect(titleRequest?.messages?.[1].content).toContain("用户：第一轮隐私问题");
+    expect(titleRequest?.messages?.[1].content).toContain("助手：隐私回复");
+    expect(titleRequest?.messages?.[1].content).toContain("用户：第二轮隐私追问");
+    expect(useAppStore.getState().chatSessions[0]).toMatchObject({
+      title: "完整隐私对话标题",
+      titleGenerating: false,
+    });
+    await expect(getChatSession(useAppStore.getState().activeSessionId)).resolves.toMatchObject({
+      title: "完整隐私对话标题",
+    });
+  });
+
+  it("隐私模式流式响应只更新内存会话", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    let portMessageListener: ((message: unknown) => void) | undefined;
+    const port = {
+      postMessage: vi.fn(),
+      disconnect: vi.fn(),
+      onMessage: {
+        addListener: vi.fn((listener: (message: unknown) => void) => {
+          portMessageListener = listener;
+        }),
+      },
+      onDisconnect: {
+        addListener: vi.fn(),
+      },
+    };
+    vi.stubGlobal("chrome", {
+      runtime: {
+        connect: vi.fn(() => port),
+        sendMessage: vi.fn(),
+      },
+    });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().enterPrivateMode();
+
+    const sendPromise = useAppStore.getState().sendChatMessage("流式隐私问题");
+    await vi.waitFor(() => {
+      expect(portMessageListener).toBeTypeOf("function");
+      expect(useAppStore.getState().privateChatSession?.messages.map((message) => message.content)).toEqual(["流式隐私问题", ""]);
+    });
+
+    portMessageListener?.({ type: "chunk", content: "隐私" });
+    portMessageListener?.({ type: "complete", content: "隐私流式回复", thinking: "隐私思考" });
+    await sendPromise;
+
+    const state = useAppStore.getState();
+    expect(state.chatSessions).toHaveLength(0);
+    expect(state.privateChatSession?.messages[1]).toMatchObject({
+      content: "隐私流式回复",
+      thinking: "隐私思考",
+      streaming: false,
+    });
+    await expect(getChatSession(state.privateChatSession?.id ?? "")).resolves.toBeUndefined();
+  });
+
+  it("隐私模式下新建对话会退出隐私模式并创建普通占位会话", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+
+    await useAppStore.getState().enterPrivateMode();
+    const session = await useAppStore.getState().createChatSession();
+
+    const state = useAppStore.getState();
+    expect(state.privateModeActive).toBe(false);
+    expect(state.privateChatSession).toBeUndefined();
+    expect(state.chatSessions).toEqual([session]);
+    await expect(getChatSession(session.id)).resolves.toBeDefined();
+  });
+
+  it("隐私模式有消息时直接切换历史会话不会静默丢弃隐私对话", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const existingSession = {
+      id: "session-existing",
+      title: "已有会话",
+      archived: false,
+      sortOrder: 1,
+      createdAt: 1,
+      updatedAt: 1,
+      selectedModelId: "model-1",
+      messages: [
+        createChatMessage({
+          id: "message-existing",
+          role: "user",
+          content: "已有消息",
+        }),
+      ],
+    };
+    const sendMessage = vi.fn((_message: { type: string }, callback: (response: unknown) => void) => {
+      callback({ ok: true, content: "隐私回复" });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", { runtime: { sendMessage } });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await saveChatSession(existingSession);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    useAppStore.getState().setStreamMode(false);
+    await useAppStore.getState().createChatSession();
+    await useAppStore.getState().enterPrivateMode();
+    await useAppStore.getState().sendChatMessage("隐私问题");
+
+    useAppStore.getState().selectChatSession("session-existing");
+
+    const state = useAppStore.getState();
+    expect(state.privateModeActive).toBe(true);
+    expect(state.privateChatSession?.messages.map((message) => message.content)).toEqual(["隐私问题", "隐私回复"]);
+    expect(state.activeSessionId).toBe("");
+  });
 });

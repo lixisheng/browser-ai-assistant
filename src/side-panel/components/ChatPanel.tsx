@@ -28,7 +28,12 @@ export function ChatPanel({ historyPanelOpen, onToggleHistoryPanel }: ChatPanelP
   const pageContext = useAppStore((state) => state.pageContext);
   const contextMode = useAppStore((state) => state.contextMode);
   const extractionRules = useAppStore((state) => state.extractionRules);
-  const activeSession = useAppStore((state) => state.chatSessions.find((session) => session.id === state.activeSessionId));
+  const storedActiveSession = useAppStore((state) => state.chatSessions.find((session) => session.id === state.activeSessionId));
+  const privateModeActive = useAppStore((state) => state.privateModeActive);
+  const privateChatSession = useAppStore((state) => state.privateChatSession);
+  const enterPrivateMode = useAppStore((state) => state.enterPrivateMode);
+  const savePrivateChatSession = useAppStore((state) => state.savePrivateChatSession);
+  const activeSession = privateModeActive ? privateChatSession : storedActiveSession;
   const selectedModel = models.find((model) => model.id === selectedModelId);
   const selectedProvider = providers.find((provider) => provider.id === selectedModel?.providerId);
   const matchedRule = extractionRules.find((rule) => rule.id === pageContext.matchedRuleId);
@@ -41,6 +46,7 @@ export function ChatPanel({ historyPanelOpen, onToggleHistoryPanel }: ChatPanelP
         ? "全局 HTML"
         : "全局文本";
   const canExport = Boolean(activeSession && activeSession.messages.length > 0);
+  const canShowPrivateButton = privateModeActive || !storedActiveSession || storedActiveSession.messages.length === 0;
 
   useEffect(() => {
     if (!exportMenuOpen) {
@@ -127,6 +133,16 @@ export function ChatPanel({ historyPanelOpen, onToggleHistoryPanel }: ChatPanelP
               </div>
             ) : null}
           </div>
+          {canShowPrivateButton ? (
+            <button
+              className={privateModeActive ? "ui-button-secondary chat-private-trigger chat-private-trigger-active" : "ui-button-secondary chat-private-trigger"}
+              type="button"
+              aria-label={privateModeActive ? "保存隐私对话" : "进入隐私模式"}
+              onClick={() => void (privateModeActive ? savePrivateChatSession() : enterPrivateMode())}
+            >
+              {privateModeActive ? "保存" : "隐私"}
+            </button>
+          ) : null}
         </div>
       </div>
       <MessageList
