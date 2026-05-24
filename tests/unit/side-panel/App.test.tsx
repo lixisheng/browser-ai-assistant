@@ -1036,8 +1036,13 @@ describe("App", () => {
     expect(orderedList).toBeInTheDocument();
     expect(screen.getByText("无序第一项")).toBeInTheDocument();
     expect(screen.getByText("有序第一项")).toBeInTheDocument();
-    expect(styles).toContain('content: "·";');
-    expect(styles).toContain("font-size: 1.65rem;");
+    const unorderedMarkerRule = styles.match(/\.message-bubble ul > li::before \{[\s\S]*?\}/)?.[0] ?? "";
+    expect(unorderedMarkerRule).toContain('content: "";');
+    expect(unorderedMarkerRule).toContain("top: 0.7em;");
+    expect(unorderedMarkerRule).toContain("transform: translateY(-50%);");
+    expect(unorderedMarkerRule).toContain("width: 0.275rem;");
+    expect(unorderedMarkerRule).toContain("height: 0.275rem;");
+    expect(unorderedMarkerRule).toContain("border-radius: 9999px;");
     expect(styles).toContain("counter(message-list-item)");
     expect(styles).toContain(".message-bubble li");
     expect(styles).toContain(".message-bubble ol > li");

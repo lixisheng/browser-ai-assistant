@@ -699,14 +699,15 @@ body {
   }
 
   .message-bubble ul > li::before {
-    content: "·";
+    content: "";
     position: absolute;
     left: 0.125rem;
-    top: -0.08rem;
-    color: var(--color-primary);
-    font-size: 1.65rem;
-    font-weight: 500;
-    line-height: 1;
+    top: 0.7em;
+    width: 0.275rem;
+    height: 0.275rem;
+    border-radius: 9999px;
+    background: var(--color-primary);
+    transform: translateY(-50%);
   }
 
   .message-bubble ol {
