@@ -1,5 +1,6 @@
 import { useEffect, useId, useState } from "react";
 import type { ChangeEvent, ClipboardEvent as ReactClipboardEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
+import { isPngDataUrl, isTabCaptureImageAttachment, TAB_CAPTURE_VISIBLE_MESSAGE_TYPE, type TabCaptureVisibleResponse } from "../../shared/tabCapture";
 import type { ChatImageAttachment, SendShortcut } from "../../shared/types";
 import { useAppStore } from "../state/appStore";
 
@@ -116,6 +117,41 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
     });
   };
 
+  const handleCaptureVisibleTab = async () => {
+    if (!currentModelSupportsVision) {
+      return;
+    }
+    if (attachments.length >= MAX_IMAGE_ATTACHMENTS) {
+      setAttachmentError("最多只能添加 5 张图片");
+      return;
+    }
+
+    try {
+      const response = await sendRuntimeMessage<TabCaptureVisibleResponse>({ type: TAB_CAPTURE_VISIBLE_MESSAGE_TYPE });
+      if (!response?.ok) {
+        setAttachmentError(response?.message || "当前页面截图失败，请稍后重试");
+        return;
+      }
+      if (!isTabCaptureImageAttachment(response.attachment)) {
+        setAttachmentError("当前页面截图结果无效，请重试");
+        return;
+      }
+      if (estimateDataUrlBytes(response.attachment.dataUrl) > MAX_IMAGE_ATTACHMENT_BYTES) {
+        setAttachmentError("单张图片不能超过 5MB");
+        return;
+      }
+      if (!isPngDataUrl(response.attachment.dataUrl)) {
+        setAttachmentError("当前页面截图结果无效，请重试");
+        return;
+      }
+
+      setAttachments((current) => [...current, response.attachment]);
+      setAttachmentError("");
+    } catch {
+      setAttachmentError("当前页面截图失败，请稍后重试");
+    }
+  };
+
   const addImageFiles = async (files: File[]) => {
     if (files.length === 0) {
       return;
@@ -164,15 +200,20 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
       {attachments.length > 0 ? (
         <div className="image-preview-strip" aria-label="已添加图片">
           {attachments.map((attachment) => (
-            <button
-              className="image-preview-thumb"
-              type="button"
-              key={attachment.id}
-              aria-label={`查看图片 ${attachment.name}`}
-              onClick={() => setPreviewAttachment(attachment)}
-            >
-              <img src={attachment.dataUrl} alt="" />
-            </button>
+            <div className="image-preview-thumb-wrap" key={attachment.id}>
+              <button className="image-preview-thumb" type="button" aria-label={`查看图片 ${attachment.name}`} onClick={() => setPreviewAttachment(attachment)}>
+                <img src={attachment.dataUrl} alt="" />
+              </button>
+              <button
+                className="image-preview-remove"
+                type="button"
+                aria-label={`删除图片 ${attachment.name}`}
+                title="删除图片"
+                onClick={() => setAttachments((current) => current.filter((item) => item.id !== attachment.id))}
+              >
+                ×
+              </button>
+            </div>
           ))}
         </div>
       ) : null}
@@ -184,6 +225,11 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
         <button className="ui-button-secondary" type="button" onClick={() => void refreshPageContext()}>
           刷新
         </button>
+        {currentModelSupportsVision ? (
+          <button className="ui-button-secondary" type="button" aria-label="截图当前标签页" title="截取当前标签页可见区域" onClick={() => void handleCaptureVisibleTab()}>
+            截图
+          </button>
+        ) : null}
         <ComposerSwitch
           ariaLabel="拼接上下文"
           checked={appendPageContextToSystemPrompt}
@@ -286,6 +332,59 @@ function readFileAsDataUrl(file: File): Promise<string> {
     reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
     reader.onerror = () => reject(reader.error ?? new Error("图片读取失败"));
     reader.readAsDataURL(file);
+  });
+}
+
+function estimateDataUrlBytes(dataUrl: string): number {
+  const base64 = dataUrl.split(",", 2)[1] ?? "";
+  const paddingBytes = base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0;
+  return Math.max(0, Math.floor((base64.length * 3) / 4) - paddingBytes);
+}
+
+function sendRuntimeMessage<T>(message: { type: string }): Promise<T | undefined> {
+  return new Promise((resolve, reject) => {
+    const runtime = globalThis.chrome?.runtime;
+    if (!runtime?.sendMessage) {
+      reject(new Error("Chrome runtime 不可用"));
+      return;
+    }
+
+    let settled = false;
+    const finish = (response: T | undefined) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      resolve(response);
+    };
+    const fail = (error: unknown) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      reject(error);
+    };
+
+    try {
+      // 真实 Chrome 扩展环境可能走 callback 形态；保留 Promise 兼容是为了适配测试环境和不同浏览器实现。
+      const maybePromise = runtime.sendMessage(message, (response: T) => {
+        const lastError = runtime.lastError;
+        if (lastError) {
+          fail(new Error(lastError.message));
+          return;
+        }
+
+        finish(response);
+      }) as Promise<T> | undefined;
+
+      if (maybePromise && typeof maybePromise.then === "function") {
+        void maybePromise.then(finish).catch(fail);
+      }
+    } catch (error) {
+      fail(error);
+    }
   });
 }
 

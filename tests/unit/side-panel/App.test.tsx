@@ -80,7 +80,7 @@ function createDataTransfer() {
   };
 }
 
-function createShortcutRuntimeMock() {
+function createShortcutRuntimeMock(options: { screenshotResponse?: unknown } = {}) {
   const sendMessage = vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
     if (message.type === "pageContext.extract") {
       callback({
@@ -89,6 +89,21 @@ function createShortcutRuntimeMock() {
         truncated: false,
         usedFallback: true,
       });
+      return undefined;
+    }
+
+    if (message.type === "tab.captureVisible") {
+      callback(
+        options.screenshotResponse ?? {
+          ok: true,
+          attachment: {
+            id: "screenshot-1",
+            name: "当前标签页截图.png",
+            mediaType: "image/png",
+            dataUrl: "data:image/png;base64,QUJD",
+          },
+        },
+      );
       return undefined;
     }
 
@@ -1616,6 +1631,226 @@ describe("App", () => {
     expect(screen.getByRole("dialog", { name: "图片预览" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "关闭图片预览" }));
     expect(screen.queryByRole("button", { name: "查看图片 选择.png" })).not.toBeInTheDocument();
+  });
+
+  it("可以从编辑区删除已添加的图片且发送时不包含该图片", async () => {
+    const user = userEvent.setup();
+    const provider: ModelProvider = {
+      id: "provider-vision-remove-image",
+      name: "视觉渠道",
+      endpointType: "openai_chat",
+      endpointUrl: "https://api.example.com/v1/chat/completions",
+      apiKey: "sk-vision",
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const model: ProviderModel = {
+      id: "model-vision-remove-image",
+      providerId: "provider-vision-remove-image",
+      displayName: "视觉模型",
+      modelId: "gpt-vision",
+      temperature: 0.7,
+      maxTokens: 1024,
+      systemPrompt: "你是网页助手",
+      isTitleModel: false,
+      supportsVision: true,
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const sendMessage = createShortcutRuntimeMock();
+    stubFileReaderAsDataUrl();
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+
+    render(<App />);
+
+    await screen.findByDisplayValue("视觉渠道 / 视觉模型 · 视觉");
+    await user.upload(screen.getByLabelText("上传图片"), [createImageFile("保留.png"), createImageFile("删除.png")]);
+    expect(await screen.findByRole("button", { name: "查看图片 保留.png" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "查看图片 删除.png" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "删除图片 删除.png" }));
+
+    expect(screen.queryByRole("button", { name: "查看图片 删除.png" })).not.toBeInTheDocument();
+    await user.type(screen.getByLabelText("对话输入"), "描述剩余图片");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    await waitFor(() => expect(hasChatSendCall(sendMessage)).toBe(true));
+    const chatRequest = getLastChatRequest(sendMessage);
+    const userMessage = chatRequest?.messages?.find((message) => message.role === "user");
+    expect(userMessage?.attachments).toHaveLength(1);
+    expect(userMessage?.attachments?.[0]?.name).toBe("保留.png");
+  });
+
+  it("视觉模型可以截取当前标签页可见区域并作为图片加入编辑区", async () => {
+    const user = userEvent.setup();
+    const provider: ModelProvider = {
+      id: "provider-vision-screenshot",
+      name: "视觉渠道",
+      endpointType: "openai_chat",
+      endpointUrl: "https://api.example.com/v1/chat/completions",
+      apiKey: "sk-vision",
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const model: ProviderModel = {
+      id: "model-vision-screenshot",
+      providerId: "provider-vision-screenshot",
+      displayName: "视觉模型",
+      modelId: "gpt-vision",
+      temperature: 0.7,
+      maxTokens: 1024,
+      systemPrompt: "你是网页助手",
+      isTitleModel: false,
+      supportsVision: true,
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const sendMessage = createShortcutRuntimeMock();
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+
+    render(<App />);
+
+    await screen.findByDisplayValue("视觉渠道 / 视觉模型 · 视觉");
+    const screenshotButton = screen.getByRole("button", { name: "截图当前标签页" });
+    expect(screenshotButton).toHaveClass("ui-button-secondary");
+    expect(screenshotButton).not.toHaveClass("composer-switch");
+    await user.click(screenshotButton);
+
+    expect(await screen.findByRole("button", { name: "查看图片 当前标签页截图.png" })).toBeInTheDocument();
+    expect(sendMessage).toHaveBeenCalledWith({ type: "tab.captureVisible" }, expect.any(Function));
+  });
+
+  it("当前模型不支持视觉理解时不显示截图按钮", async () => {
+    const provider: ModelProvider = {
+      id: "provider-text-screenshot",
+      name: "文本渠道",
+      endpointType: "openai_chat",
+      endpointUrl: "https://api.example.com/v1/chat/completions",
+      apiKey: "sk-text",
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const model: ProviderModel = {
+      id: "model-text-screenshot",
+      providerId: "provider-text-screenshot",
+      displayName: "文本模型",
+      modelId: "gpt-text",
+      temperature: 0.7,
+      maxTokens: 1024,
+      systemPrompt: "你是网页助手",
+      isTitleModel: false,
+      supportsVision: false,
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    createShortcutRuntimeMock();
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+
+    render(<App />);
+
+    await screen.findByDisplayValue("文本渠道 / 文本模型");
+    expect(screen.queryByRole("button", { name: "截图当前标签页" })).not.toBeInTheDocument();
+  });
+
+  it("当前标签页截图失败时在编辑区显示错误", async () => {
+    const user = userEvent.setup();
+    const provider: ModelProvider = {
+      id: "provider-vision-screenshot-error",
+      name: "视觉渠道",
+      endpointType: "openai_chat",
+      endpointUrl: "https://api.example.com/v1/chat/completions",
+      apiKey: "sk-vision",
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const model: ProviderModel = {
+      id: "model-vision-screenshot-error",
+      providerId: "provider-vision-screenshot-error",
+      displayName: "视觉模型",
+      modelId: "gpt-vision",
+      temperature: 0.7,
+      maxTokens: 1024,
+      systemPrompt: "你是网页助手",
+      isTitleModel: false,
+      supportsVision: true,
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    createShortcutRuntimeMock({
+      screenshotResponse: {
+        ok: false,
+        message: "当前页面无法截图，请切换到普通网页后重试",
+      },
+    });
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+
+    render(<App />);
+
+    await screen.findByDisplayValue("视觉渠道 / 视觉模型 · 视觉");
+    await user.click(screen.getByRole("button", { name: "截图当前标签页" }));
+
+    expect(await screen.findByText("当前页面无法截图，请切换到普通网页后重试")).toBeInTheDocument();
+  });
+
+  it("当前标签页截图超过单张大小限制时不加入编辑区", async () => {
+    const user = userEvent.setup();
+    const provider: ModelProvider = {
+      id: "provider-vision-screenshot-large",
+      name: "视觉渠道",
+      endpointType: "openai_chat",
+      endpointUrl: "https://api.example.com/v1/chat/completions",
+      apiKey: "sk-vision",
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const model: ProviderModel = {
+      id: "model-vision-screenshot-large",
+      providerId: "provider-vision-screenshot-large",
+      displayName: "视觉模型",
+      modelId: "gpt-vision",
+      temperature: 0.7,
+      maxTokens: 1024,
+      systemPrompt: "你是网页助手",
+      isTitleModel: false,
+      supportsVision: true,
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    createShortcutRuntimeMock({
+      screenshotResponse: {
+        ok: true,
+        attachment: {
+          id: "screenshot-large",
+          name: "当前标签页截图.png",
+          mediaType: "image/png",
+          dataUrl: `data:image/png;base64,${"A".repeat(7 * 1024 * 1024)}`,
+        },
+      },
+    });
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+
+    render(<App />);
+
+    await screen.findByDisplayValue("视觉渠道 / 视觉模型 · 视觉");
+    await user.click(screen.getByRole("button", { name: "截图当前标签页" }));
+
+    expect(await screen.findByText("单张图片不能超过 5MB")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "查看图片 当前标签页截图.png" })).not.toBeInTheDocument();
   });
 
   it("图片读取失败时显示错误且不产生未捕获异常", async () => {

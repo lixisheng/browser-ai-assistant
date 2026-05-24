@@ -84,6 +84,7 @@ function createChromeMock() {
       },
       tabs: {
         query: vi.fn().mockResolvedValue([{ id: 7 }]),
+        captureVisibleTab: vi.fn().mockResolvedValue("data:image/png;base64,QUJD"),
         sendMessage: vi.fn().mockResolvedValue({
           ok: true,
           url: "https://example.com/article",
@@ -352,6 +353,61 @@ describe("background 入口", () => {
     expect(sendResponse).toHaveBeenCalledWith({
       ok: false,
       message: "未找到当前活动页面",
+    });
+  });
+
+  it("截取当前活动标签页可见区域并返回图片附件数据", async () => {
+    const mock = createChromeMock();
+    mock.chrome.tabs.query.mockResolvedValueOnce([{ id: 7, windowId: 3 }]);
+    vi.stubGlobal("chrome", mock.chrome);
+    await import("../../../src/background/index");
+    const sendResponse = vi.fn();
+
+    const keepChannelOpen = mock.messageListeners[0](
+      {
+        type: "tab.captureVisible",
+      },
+      {} as chrome.runtime.MessageSender,
+      sendResponse,
+    );
+
+    expect(keepChannelOpen).toBe(true);
+    await vi.waitFor(() => {
+      expect(sendResponse).toHaveBeenCalledWith({
+        ok: true,
+        attachment: {
+          id: expect.stringMatching(/^screenshot-/),
+          name: "当前标签页截图.png",
+          mediaType: "image/png",
+          dataUrl: "data:image/png;base64,QUJD",
+        },
+      });
+    });
+    expect(mock.chrome.tabs.query).toHaveBeenCalledWith({ active: true, currentWindow: true });
+    expect(mock.chrome.tabs.captureVisibleTab).toHaveBeenCalledWith(3, { format: "png" });
+  });
+
+  it("当前标签页截图失败时返回明确中文错误", async () => {
+    const mock = createChromeMock();
+    mock.chrome.tabs.query.mockResolvedValueOnce([{ id: 7, windowId: 3 }]);
+    mock.chrome.tabs.captureVisibleTab.mockRejectedValueOnce(new Error("Cannot access a chrome:// URL"));
+    vi.stubGlobal("chrome", mock.chrome);
+    await import("../../../src/background/index");
+    const sendResponse = vi.fn();
+
+    mock.messageListeners[0](
+      {
+        type: "tab.captureVisible",
+      },
+      {} as chrome.runtime.MessageSender,
+      sendResponse,
+    );
+
+    await vi.waitFor(() => {
+      expect(sendResponse).toHaveBeenCalledWith({
+        ok: false,
+        message: "当前页面无法截图，请切换到普通网页后重试",
+      });
     });
   });
 

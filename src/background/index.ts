@@ -1,7 +1,9 @@
 import { handleModelCatalogMessage, type ModelCatalogMessage } from "./modelCatalogMessageHandler";
 import { handleChatSendMessage, type ChatSendMessage } from "./modelRequestHandler";
 import { handlePageContextMessage, type PageContextExtractMessage } from "./pageContextMessageHandler";
+import type { TabCaptureVisibleMessage } from "../shared/tabCapture";
 import { handleSyncAlarm, handleSyncBackupMessage, restoreSyncAlarmFromSettings, type SyncBackupMessage } from "./syncBackupHandler";
+import { handleTabCaptureVisibleMessage } from "./tabCaptureMessageHandler";
 import {
   handleCurrentTabUrlMessage,
   handleUrlPatternGenerationMessage,
@@ -64,6 +66,7 @@ type RuntimeMessage =
   | UrlPatternGenerationMessage
   | CurrentTabUrlMessage
   | ChatSendMessage
+  | TabCaptureVisibleMessage
   | SyncBackupMessage;
 
 interface ChatStreamStartMessage {
@@ -132,6 +135,11 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResp
 
   if (message.type === "chat.send") {
     void handleChatSendMessage(message).then(sendResponse);
+    return true;
+  }
+
+  if (message.type === "tab.captureVisible") {
+    void handleTabCaptureVisibleMessage().then(sendResponse);
     return true;
   }
 
