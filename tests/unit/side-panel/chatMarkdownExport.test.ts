@@ -109,6 +109,54 @@ const value = 1;
 `);
   });
 
+  it("导出用户消息时把调用的 Prompt 快照拼接到用户输入前", () => {
+    const session = createSession({
+      title: "Prompt 会话",
+      messages: [
+        createMessage({
+          id: "message-prompt",
+          role: "user",
+          content: "用户输入的内容",
+          promptInvocations: [
+            {
+              promptId: "prompt-1",
+              title: "Prompt1 的标题",
+              contentSnapshot: "Prompt1 的内容",
+            },
+            {
+              promptId: "prompt-2",
+              title: "Prompt2 的标题",
+              contentSnapshot: "Prompt2 的内容",
+            },
+          ],
+          createdAt: 1700000000000,
+        }),
+      ],
+    });
+
+    expect(createChatSessionMarkdown(session, 1700000200000)).toContain(`## 用户 · 2023-11-14T22:13:20.000Z
+
+\`\`\`\`
+# 调用的Prompt
+
+## Prompt1 的标题
+\`\`\`
+Prompt1 的内容
+\`\`\`
+
+## Prompt2 的标题
+\`\`\`
+Prompt2 的内容
+\`\`\`
+
+# 用户输入
+
+用户输入的内容
+\`\`\`\`
+`);
+    expect(createChatSessionPrintHtml(session, 1700000200000)).toContain("# 调用的Prompt");
+  });
+
   it("生成适合下载的 Markdown 文件名", () => {
     const session = createSession({ title: "资料/会话:*?" });
 

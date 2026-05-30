@@ -12,9 +12,10 @@ import {
   saveChatSession,
   saveExtractionRule,
   saveModelProvider,
+  savePromptTemplate,
   saveProviderModel,
 } from "../../../src/shared/storage/repositories";
-import type { ChatFolder, ChatMessage, ChatSession, ExtractionRule, ModelProvider, ProviderModel, SendShortcut } from "../../../src/shared/types";
+import type { ChatFolder, ChatMessage, ChatSession, ExtractionRule, ModelProvider, PromptTemplate, ProviderModel, SendShortcut } from "../../../src/shared/types";
 
 function createChatMessage(partial: Partial<ChatMessage>): ChatMessage {
   return {
@@ -38,6 +39,18 @@ function createExtractionRule(partial: Partial<ExtractionRule>): ExtractionRule 
     alias: "正文区域",
     urlPattern: "https://example.com/.*",
     selectorsText: "main",
+    sortOrder: 1,
+    createdAt: 1,
+    updatedAt: 1,
+    ...partial,
+  };
+}
+
+function createPromptTemplate(partial: Partial<PromptTemplate> = {}): PromptTemplate {
+  return {
+    id: "prompt-1",
+    title: "风险审查",
+    content: "从安全、隐私和可维护性三个角度审查。",
     sortOrder: 1,
     createdAt: 1,
     updatedAt: 1,
@@ -1203,14 +1216,14 @@ describe("App", () => {
     const input = screen.getByLabelText("对话输入");
     await user.type(input, "保留换行{Shift>}{Enter}{/Shift}继续输入");
     expect(hasChatSendCall(sendMessage)).toBe(false);
-    expect(input).toHaveDisplayValue("保留换行\n继续输入");
+    expect(input.textContent).toBe("保留换行\n继续输入");
 
     fireEvent.keyDown(input, { key: "Enter" });
 
     await waitFor(() => expect(hasChatSendCall(sendMessage)).toBe(true));
     const chatRequest = getLastChatRequest(sendMessage);
     expect(chatRequest?.messages?.at(-1)?.content).toBe("保留换行\n继续输入");
-    expect(input).toHaveDisplayValue("");
+    expect(input.textContent).toBe("");
   });
 
   it.each([
@@ -1219,6 +1232,7 @@ describe("App", () => {
     { shortcut: "ctrl_shift_enter", eventInit: { key: "Enter", ctrlKey: true, shiftKey: true } },
     { shortcut: "alt_enter", eventInit: { key: "Enter", altKey: true } },
   ] satisfies Array<{ shortcut: SendShortcut; eventInit: Parameters<typeof fireEvent.keyDown>[1] }>)("按聊天偏好的 $shortcut 触发发送", async ({ shortcut, eventInit }) => {
+    const user = userEvent.setup();
     const provider: ModelProvider = {
       id: "provider-shortcut-custom",
       name: "快捷键渠道",
@@ -1261,14 +1275,99 @@ describe("App", () => {
 
     await screen.findByDisplayValue("快捷键渠道 / 快捷键模型");
     const input = screen.getByLabelText("对话输入");
-    fireEvent.change(input, { target: { value: "快捷发送" } });
+    await user.type(input, "快捷发送");
 
     fireEvent.keyDown(input, eventInit);
 
     await waitFor(() => expect(hasChatSendCall(sendMessage)).toBe(true));
     const chatRequest = getLastChatRequest(sendMessage);
     expect(chatRequest?.messages?.at(-1)?.content).toBe("快捷发送");
-    expect(input).toHaveDisplayValue("");
+    expect(input.textContent).toBe("");
+  });
+
+  it("输入斜杠可以搜索并调用 Prompt，气泡只显示标题链接", async () => {
+    const user = userEvent.setup();
+    const provider: ModelProvider = {
+      id: "provider-prompt",
+      name: "Prompt 渠道",
+      endpointType: "openai_chat",
+      endpointUrl: "https://api.example.com/v1/chat/completions",
+      apiKey: "sk-test",
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const model: ProviderModel = {
+      id: "model-prompt",
+      providerId: "provider-prompt",
+      displayName: "Prompt 模型",
+      modelId: "gpt-prompt",
+      temperature: 0.7,
+      maxTokens: 1024,
+      systemPrompt: "模型系统提示词",
+      isTitleModel: false,
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const sendMessage = vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+      if (message.type === "pageContext.extract") {
+        callback({ ok: true, text: "页面内容", truncated: false, usedFallback: true });
+        return undefined;
+      }
+
+      callback({ ok: true, content: "AI 回复" });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", { runtime: { sendMessage } });
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await savePromptTemplate(createPromptTemplate());
+
+    render(<App />);
+
+    await screen.findByDisplayValue("Prompt 渠道 / Prompt 模型");
+    await user.click(screen.getByRole("switch", { name: "流式响应" }));
+    const input = screen.getByLabelText("对话输入");
+    await user.type(input, "/风险{Enter}");
+    const composerPromptToken = screen.getByRole("button", { name: "已调用提示词：风险审查" });
+    expect(composerPromptToken).toHaveClass("prompt-token-link");
+    expect(composerPromptToken).not.toHaveTextContent("用");
+    expect(input.closest(".prompt-inline-editor")).not.toBeNull();
+    expect(composerPromptToken.closest(".prompt-inline-editor")).toBe(input.closest(".prompt-inline-editor"));
+    expect(input.textContent).toBe("");
+
+    fireEvent.keyDown(input, { key: "Backspace" });
+    expect(screen.queryByRole("button", { name: "已调用提示词：风险审查" })).not.toBeInTheDocument();
+
+    await user.type(input, "/风险");
+    fireEvent.compositionStart(input);
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(screen.queryByRole("button", { name: "已调用提示词：风险审查" })).not.toBeInTheDocument();
+    fireEvent.compositionEnd(input);
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(screen.getByRole("button", { name: "已调用提示词：风险审查" }).closest(".prompt-inline-editor")).toBe(input.closest(".prompt-inline-editor"));
+
+    await user.type(input, "请结合页面输出建议");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    await waitFor(() => expect(sendMessage.mock.calls.some(([message]) => (message as { type: string }).type === "chat.send")).toBe(true));
+    const chatRequest = sendMessage.mock.calls
+      .map(([message]) => message as { type: string; messages?: ChatMessage[] })
+      .find((message) => message.type === "chat.send");
+    expect(chatRequest?.messages?.at(-1)?.content).toContain("已调用提示词：");
+    expect(chatRequest?.messages?.at(-1)?.content).toContain("从安全、隐私和可维护性三个角度审查。");
+    const messagePromptToken = await screen.findByLabelText("用户消息提示词：风险审查");
+    expect(messagePromptToken).toHaveClass("prompt-token-link");
+    expect(messagePromptToken).not.toHaveTextContent("用");
+    expect(messagePromptToken.closest(".message-prompt-token-strip")?.tagName).toBe("SPAN");
+    expect(screen.queryByRole("button", { name: "用户消息提示词：风险审查" })).not.toBeInTheDocument();
+    expect(screen.queryByText("从安全、隐私和可维护性三个角度审查。")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "编辑消息" }));
+    const editInput = screen.getByRole("textbox", { name: "编辑用户消息" });
+    const editPromptToken = screen.getByRole("button", { name: "编辑消息提示词：风险审查" });
+    expect(editPromptToken.closest(".prompt-inline-editor")).toBe(editInput.closest(".prompt-inline-editor"));
   });
 
   it("输入法组合输入期间不会用 Enter 快捷键触发发送", async () => {
@@ -1303,7 +1402,8 @@ describe("App", () => {
 
     await screen.findByDisplayValue("快捷键渠道 / 快捷键模型");
     const input = screen.getByLabelText("对话输入");
-    fireEvent.change(input, { target: { value: "shuru" } });
+    input.textContent = "shuru";
+    fireEvent.input(input);
     fireEvent.compositionStart(input);
     fireEvent.keyDown(input, { key: "Enter" });
 
@@ -1393,7 +1493,8 @@ describe("App", () => {
     expect(screen.getByRole("tab", { name: "渠道管理" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "提取规则" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "同步设置" })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "界面偏好" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "提示词" })).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "界面偏好" })).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "设置" }).closest("section")?.className).not.toContain("lg:grid-cols");
     expect(screen.getByRole("heading", { name: "设置" }).parentElement?.parentElement).toHaveClass("w-[80%]");
     expect(screen.getByRole("tablist", { name: "设置分类" })).toHaveClass("settings-tabs-scroll", "overflow-x-auto");
@@ -1409,6 +1510,10 @@ describe("App", () => {
 
     expect(screen.getByRole("button", { name: "新增规则" })).toBeInTheDocument();
     expect(screen.queryByLabelText("CSS/XPath 列表")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "提示词" }));
+    expect(screen.getByRole("heading", { name: "提示词" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "新增提示词" })).toBeInTheDocument();
 
     await user.click(screen.getByRole("tab", { name: "同步设置" }));
 
@@ -1444,6 +1549,50 @@ describe("App", () => {
     expect(screen.getByRole("textbox", { name: "S3 Endpoint" })).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "S3 Region" })).toHaveDisplayValue("auto");
     expect(screen.getByLabelText("S3 Secret Key")).toHaveAttribute("type", "password");
+  });
+
+  it("提示词管理支持新增编辑删除和拖拽排序", async () => {
+    const user = userEvent.setup();
+    const longPromptPreview = "第一条内容第一行，用来验证列表预览。\n第二行内容继续展示。\n第三行内容需要被隐藏。";
+    await savePromptTemplate(createPromptTemplate({ id: "prompt-first", title: "第一条", content: longPromptPreview, sortOrder: 10 }));
+    await savePromptTemplate(createPromptTemplate({ id: "prompt-second", title: "第二条", content: "第二条内容", sortOrder: 20 }));
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    await user.click(screen.getByRole("tab", { name: "提示词" }));
+    expect(screen.getByText((_, element) => element?.textContent === longPromptPreview)).toHaveClass("prompt-template-preview");
+    await user.click(screen.getByRole("button", { name: "新增提示词" }));
+    await user.type(screen.getByRole("textbox", { name: "提示词标题" }), "第三条");
+    await user.type(screen.getByRole("textbox", { name: "Prompt 内容" }), "第三条内容");
+    await user.click(screen.getByRole("button", { name: "保存提示词" }));
+
+    expect(await screen.findByRole("button", { name: /第三条/ })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /第三条/ }));
+    await user.clear(screen.getByRole("textbox", { name: "提示词标题" }));
+    await user.type(screen.getByRole("textbox", { name: "提示词标题" }), "第三条已编辑");
+    await user.click(screen.getByRole("button", { name: "保存提示词" }));
+
+    expect(await screen.findByRole("button", { name: /第三条已编辑/ })).toBeInTheDocument();
+
+    const draggedPrompt = screen.getByRole("button", { name: /第二条/ }).closest("article");
+    const targetPrompt = screen.getByRole("button", { name: /第一条/ }).closest("article");
+    expect(draggedPrompt).not.toBeNull();
+    expect(targetPrompt).not.toBeNull();
+    fireEvent.dragStart(draggedPrompt as Element, { dataTransfer: createDataTransfer() });
+    fireEvent.dragOver(targetPrompt as Element);
+    fireEvent.drop(targetPrompt as Element, { dataTransfer: createDataTransfer() });
+
+    await waitFor(() => {
+      expect(useAppStore.getState().promptTemplates.map((prompt) => prompt.title).slice(0, 2)).toEqual(["第二条", "第一条"]);
+    });
+
+    await user.click(screen.getByRole("button", { name: /第三条已编辑/ }));
+    vi.spyOn(window, "confirm").mockReturnValueOnce(true);
+    await user.click(screen.getByRole("button", { name: "删除提示词" }));
+
+    expect(screen.queryByRole("button", { name: /第三条已编辑/ })).not.toBeInTheDocument();
   });
 
   it("同步设置输入框使用中文输入法组合输入时只保存最终文本", async () => {
@@ -2735,7 +2884,7 @@ describe("App", () => {
     await user.click(screen.getByRole("switch", { name: "流式响应" }));
     await user.type(input, "第一条");
     await user.click(screen.getByRole("button", { name: "发送" }));
-    expect(input).toHaveDisplayValue("");
+    expect(input.textContent).toBe("");
     await waitFor(() => expect(sendMessage.mock.calls.some(([message]) => (message as { type: string }).type === "chat.send")).toBe(true));
 
     await user.type(input, "下一条草稿");
@@ -2748,7 +2897,7 @@ describe("App", () => {
     });
 
     expect(await screen.findByText("第一条回复")).toBeInTheDocument();
-    await waitFor(() => expect(input).toHaveDisplayValue("下一条草稿"));
+    await waitFor(() => expect(input.textContent).toBe("下一条草稿"));
   });
 
   it("历史会话菜单展示重命名归档删除且删除需要二次确认", async () => {

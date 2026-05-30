@@ -1,12 +1,23 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAppStore } from "../../../src/side-panel/state/appStore";
-import { clearDatabase, getAppSetting, getChatSession, getProviderModels, saveAppSetting, saveChatSession, saveModelProvider, saveProviderModel } from "../../../src/shared/storage/repositories";
+import {
+  clearDatabase,
+  getAppSetting,
+  getChatSession,
+  getPromptTemplates,
+  getProviderModels,
+  saveAppSetting,
+  saveChatSession,
+  saveModelProvider,
+  savePromptTemplate,
+  saveProviderModel,
+} from "../../../src/shared/storage/repositories";
 import {
   SYNC_ENCRYPTION_SECRET_KEY,
   SYNC_S3_SECRET_KEY,
   SYNC_WEBDAV_PASSWORD_KEY,
 } from "../../../src/shared/sync/settings";
-import type { ChatMessage, ModelProvider, ProviderModel } from "../../../src/shared/types";
+import type { ChatMessage, ChatPromptInvocation, ModelProvider, PromptTemplate, ProviderModel } from "../../../src/shared/types";
 
 const repositoryMockState = vi.hoisted(() => ({
   failSaveChatSession: false,
@@ -96,6 +107,18 @@ function createTitleModel(): ProviderModel {
   };
 }
 
+function createPromptTemplate(partial: Partial<PromptTemplate> = {}): PromptTemplate {
+  return {
+    id: "prompt-1",
+    title: "风险审查",
+    content: "从安全、隐私和可维护性三个角度审查。",
+    sortOrder: 10,
+    createdAt: 1,
+    updatedAt: 1,
+    ...partial,
+  };
+}
+
 function createChatMessage(partial: Partial<ChatMessage>): ChatMessage {
   return {
     id: "message-1",
@@ -138,6 +161,37 @@ describe("appStore", () => {
       loading: false,
       error: "提取当前页面失败",
     });
+  });
+
+  it("可以加载、保存、校验和排序 Prompt 模板", async () => {
+    await savePromptTemplate(createPromptTemplate({ id: "prompt-existing", title: "已有提示词", sortOrder: 20 }));
+
+    await useAppStore.getState().loadPromptTemplates();
+
+    expect(useAppStore.getState().promptTemplates.map((prompt) => prompt.title)).toEqual(["已有提示词"]);
+
+    const invalidResult = await useAppStore.getState().savePromptTemplateDraft(undefined, {
+      title: "  ",
+      content: "内容",
+    });
+    expect(invalidResult).toEqual({ ok: false, message: "提示词标题不能为空" });
+
+    const createdResult = await useAppStore.getState().savePromptTemplateDraft(undefined, {
+      title: " 新提示词 ",
+      content: " 输出行动清单 ",
+    });
+    expect(createdResult).toMatchObject({
+      ok: true,
+      prompt: expect.objectContaining({
+        title: "新提示词",
+        content: "输出行动清单",
+      }),
+    });
+
+    await useAppStore.getState().reorderPromptTemplates([createdResult.ok ? createdResult.prompt.id : "", "prompt-existing"]);
+
+    expect(useAppStore.getState().promptTemplates.map((prompt) => prompt.title)).toEqual(["新提示词", "已有提示词"]);
+    expect((await getPromptTemplates()).map((prompt) => prompt.title)).toEqual(["新提示词", "已有提示词"]);
   });
 
   it("可以加载和保存同步设置，开启同步不会自动开启自动同步", async () => {
@@ -567,6 +621,52 @@ describe("appStore", () => {
       }),
       expect.any(Function),
     );
+  });
+
+  it("发送含 Prompt 调用的聊天时保存可见文本并提交展开后的 UserPrompt", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const promptInvocation: ChatPromptInvocation = {
+      promptId: "prompt-risk",
+      title: "风险审查",
+      contentSnapshot: "从安全、隐私和可维护性三个角度审查。",
+    };
+    const sendMessage = vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+      callback({
+        ok: true,
+        content: message.type === "chat.send" ? "AI 回复" : "",
+      });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage,
+      },
+    });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    useAppStore.getState().setStreamMode(false);
+
+    await useAppStore.getState().sendChatMessage("请结合页面输出建议", [], [promptInvocation]);
+
+    const chatRequest = sendMessage.mock.calls
+      .map(([message]) => message as { type: string; messages?: ChatMessage[] })
+      .find((message) => message.type === "chat.send");
+    expect(chatRequest?.messages?.at(-1)?.content).toContain("已调用提示词：");
+    expect(chatRequest?.messages?.at(-1)?.content).toContain("风险审查");
+    expect(chatRequest?.messages?.at(-1)?.content).toContain("从安全、隐私和可维护性三个角度审查。");
+    expect(chatRequest?.messages?.at(-1)?.content).toContain("用户输入：\n请结合页面输出建议");
+
+    const state = useAppStore.getState();
+    const activeSession = state.chatSessions.find((session) => session.id === state.activeSessionId);
+    expect(activeSession?.messages[0]).toMatchObject({
+      role: "user",
+      content: "请结合页面输出建议",
+      promptInvocations: [promptInvocation],
+    });
   });
 
   it("发送聊天时将图片附件带入请求并写入用户消息历史", async () => {

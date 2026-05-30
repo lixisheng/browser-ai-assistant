@@ -119,6 +119,51 @@ describe("聊天请求消息构造", () => {
     expect(result[0].systemPrompt).toBe("你是更严格的网页分析助手");
   });
 
+  it("发送含 Prompt 调用的用户消息时只在 user 内容中展开 Prompt 快照", () => {
+    const model = createModelConfig(createProvider(), createModel());
+    const userMessage = {
+      ...createMessage("message-1", "user", "请结合当前页面输出建议", 1),
+      promptInvocations: [
+        {
+          promptId: "prompt-risk",
+          title: "风险审查",
+          contentSnapshot: "从安全、隐私和可维护性三个角度审查。",
+        },
+        {
+          promptId: "prompt-action",
+          title: "行动清单",
+          contentSnapshot: "最后输出三条可执行行动。",
+        },
+      ],
+    };
+
+    const result = buildChatRequestMessages({
+      model,
+      pageContext: "当前页面正文",
+      existingMessages: [],
+      userMessage,
+      systemPrompt: "你是网页助手",
+    });
+
+    expect(result[0].content).toBe("你是网页助手\n\n当前页面上下文：\n当前页面正文");
+    expect(result[0].content).not.toContain("从安全、隐私和可维护性三个角度审查");
+    expect(result[1]).toMatchObject({
+      role: "user",
+      content: [
+        "已调用提示词：",
+        "1. 风险审查",
+        "从安全、隐私和可维护性三个角度审查。",
+        "",
+        "2. 行动清单",
+        "最后输出三条可执行行动。",
+        "",
+        "用户输入：",
+        "请结合当前页面输出建议",
+      ].join("\n"),
+    });
+    expect(userMessage.content).toBe("请结合当前页面输出建议");
+  });
+
   it("发送前按 max_token 预算裁剪页面上下文并保留系统提示词和用户输入", () => {
     const model = createModelConfig(createProvider(), { ...createModel(), maxTokens: 20 });
     const userMessage = createMessage("message-1", "user", "请总结", 1);

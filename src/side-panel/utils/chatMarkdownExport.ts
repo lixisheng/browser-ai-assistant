@@ -31,7 +31,7 @@ export function createChatSessionMarkdown(session: ChatSession, exportedAt: numb
       lines.push(`> 思考过程：${message.thinking.trim().replace(/\r?\n/g, "\n> ")}`, "");
     }
 
-    lines.push(formatContentCodeBlock(message.content), "");
+    lines.push(formatContentCodeBlock(formatMessageExportContent(message)), "");
   }
 
   return lines.join("\n");
@@ -118,10 +118,21 @@ function createExportBlocks(session: ChatSession, exportedAt: number): ExportBlo
     if (message.thinking?.trim()) {
       blocks.push({ type: "thinking", text: `思考过程：${message.thinking.trim()}` });
     }
-    blocks.push({ type: "code", text: message.content.trimEnd() });
+    blocks.push({ type: "code", text: formatMessageExportContent(message).trimEnd() });
   }
 
   return blocks;
+}
+
+function formatMessageExportContent(message: ChatMessage): string {
+  const promptInvocations = message.role === "user" ? (message.promptInvocations ?? []) : [];
+  if (promptInvocations.length === 0) {
+    return message.content;
+  }
+
+  const promptSections = promptInvocations.map((prompt) => [`## ${prompt.title}`, "```", prompt.contentSnapshot, "```"].join("\n"));
+
+  return ["# 调用的Prompt", "", promptSections.join("\n\n"), "", "# 用户输入", "", message.content].join("\n");
 }
 
 function blockToHtml(block: ExportBlock): string {

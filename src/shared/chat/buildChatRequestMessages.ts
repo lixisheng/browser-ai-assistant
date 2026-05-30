@@ -38,7 +38,32 @@ export function buildChatRequestMessages(input: BuildChatRequestMessagesInput): 
     matchedRuleId: input.userMessage.matchedRuleId,
   };
 
-  return [systemMessage, ...input.existingMessages, input.userMessage];
+  return [systemMessage, ...input.existingMessages, expandUserMessagePromptInvocations(input.userMessage)];
+}
+
+function expandUserMessagePromptInvocations(message: ChatMessage): ChatMessage {
+  if (message.role !== "user" || !message.promptInvocations?.length) {
+    return message;
+  }
+
+  return {
+    ...message,
+    content: buildPromptExpandedUserContent(message),
+  };
+}
+
+export function buildPromptExpandedUserContent(message: Pick<ChatMessage, "content" | "promptInvocations">): string {
+  const promptSections = (message.promptInvocations ?? []).map((prompt, index) =>
+    [`${index + 1}. ${prompt.title}`, prompt.contentSnapshot].join("\n"),
+  );
+  const userContent = message.content.trim();
+  const sections = ["已调用提示词：", promptSections.join("\n\n")];
+
+  if (userContent) {
+    sections.push("", "用户输入：", userContent);
+  }
+
+  return sections.join("\n").trim();
 }
 
 function buildSystemContent(systemPrompt: string, pageContext: string): string {

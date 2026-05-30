@@ -9,18 +9,22 @@ import {
   deleteExtractionRule,
   deleteModelProvider,
   deleteProviderModel,
+  deletePromptTemplate,
   getAppSetting,
   getChatFolders,
   getChatSessions,
   getExtractionRules,
   getModelProviders,
+  getPromptTemplates,
   getProviderModels,
+  reorderPromptTemplates,
   saveAppSetting,
   saveChatFolder,
   saveChatSession,
   moveExtractionRule,
   saveExtractionRule,
   saveModelProvider,
+  savePromptTemplate,
   saveProviderModel,
   updateChatSession,
 } from "../../shared/storage/repositories";
@@ -41,6 +45,7 @@ import type {
   ChatFolder,
   ChatImageAttachment,
   ChatMessage,
+  ChatPromptInvocation,
   ChatPreferenceValues,
   ChatSession,
   ChatSessionPreferenceOverrides,
@@ -48,6 +53,7 @@ import type {
   ExtractionRule,
   ModelProvider,
   PageContextExtractMode,
+  PromptTemplate,
   ProviderModel,
   SendShortcut,
 } from "../../shared/types";
@@ -92,6 +98,7 @@ interface AppState {
   providers: ModelProvider[];
   models: ProviderModel[];
   extractionRules: ExtractionRule[];
+  promptTemplates: PromptTemplate[];
   chatSessions: ChatSession[];
   chatFolders: ChatFolder[];
   pageContext: PageContextState;
@@ -144,6 +151,10 @@ interface AppState {
   saveRuleDraft: (ruleId: string | undefined, draft: Pick<ExtractionRule, "alias" | "urlPattern" | "selectorsText">) => Promise<{ ok: true; rule: ExtractionRule } | { ok: false; message: string }>;
   deleteRule: (ruleId: string) => Promise<void>;
   moveRule: (ruleId: string, direction: "up" | "down") => Promise<void>;
+  loadPromptTemplates: () => Promise<void>;
+  savePromptTemplateDraft: (promptId: string | undefined, draft: Pick<PromptTemplate, "title" | "content">) => Promise<{ ok: true; prompt: PromptTemplate } | { ok: false; message: string }>;
+  deletePrompt: (promptId: string) => Promise<void>;
+  reorderPromptTemplates: (orderedIds: string[]) => Promise<void>;
   refreshPageContext: () => Promise<void>;
   generateUrlPatterns: (modelId?: string) => Promise<{ ok: true; patterns: string[] } | { ok: false; message: string }>;
   fetchRemoteModels: (providerId: string) => Promise<void>;
@@ -158,9 +169,9 @@ interface AppState {
   updateSyncSecret: (key: keyof SyncSecrets, value: string) => Promise<void>;
   backupNow: () => Promise<void>;
   restoreNow: () => Promise<void>;
-  sendChatMessage: (content: string, attachments?: ChatImageAttachment[]) => Promise<void>;
+  sendChatMessage: (content: string, attachments?: ChatImageAttachment[], promptInvocations?: ChatPromptInvocation[]) => Promise<void>;
   regenerateMessage: (messageId: string) => Promise<void>;
-  editAndRegenerateUserMessage: (messageId: string, content: string) => Promise<void>;
+  editAndRegenerateUserMessage: (messageId: string, content: string, promptInvocations?: ChatPromptInvocation[]) => Promise<void>;
   reset: () => void;
 }
 
@@ -203,6 +214,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   providers: [],
   models: [],
   extractionRules: [],
+  promptTemplates: [],
   chatSessions: [],
   chatFolders: [],
   pageContext: {
@@ -780,6 +792,43 @@ export const useAppStore = create<AppState>()((set, get) => ({
     await get().loadExtractionRules();
     void get().refreshPageContext();
   },
+  loadPromptTemplates: async () => {
+    const promptTemplates = await getPromptTemplates();
+    set({ promptTemplates });
+  },
+  savePromptTemplateDraft: async (promptId, draft) => {
+    const title = draft.title.trim();
+    const content = draft.content.trim();
+    if (!title) {
+      return { ok: false, message: "提示词标题不能为空" };
+    }
+    if (!content) {
+      return { ok: false, message: "Prompt 内容不能为空" };
+    }
+
+    const now = Date.now();
+    const existingPrompt = promptId ? get().promptTemplates.find((prompt) => prompt.id === promptId) : undefined;
+    const prompt: PromptTemplate = {
+      id: existingPrompt?.id ?? `prompt-${now}`,
+      title,
+      content,
+      sortOrder: existingPrompt?.sortOrder ?? Math.max(0, ...get().promptTemplates.map((item) => item.sortOrder)) + 10,
+      createdAt: existingPrompt?.createdAt ?? now,
+      updatedAt: now,
+    };
+
+    await savePromptTemplate(prompt);
+    await get().loadPromptTemplates();
+    return { ok: true, prompt };
+  },
+  deletePrompt: async (promptId) => {
+    await deletePromptTemplate(promptId);
+    await get().loadPromptTemplates();
+  },
+  reorderPromptTemplates: async (orderedIds) => {
+    await reorderPromptTemplates(orderedIds);
+    await get().loadPromptTemplates();
+  },
   refreshPageContext: async () => {
     const requestedContextMode = get().contextMode;
     const requestId = ++pageContextRefreshSequence;
@@ -1064,16 +1113,16 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
     if (response?.ok) {
       // 恢复已经在后台完成覆盖写入；这里并行刷新互不依赖的前端状态，避免串行等待拖慢恢复反馈。
-      await Promise.all([get().loadChannelConfig(), get().loadChatData(), get().loadExtractionRules(), get().loadSyncSettings()]);
+      await Promise.all([get().loadChannelConfig(), get().loadChatData(), get().loadExtractionRules(), get().loadPromptTemplates(), get().loadSyncSettings()]);
       set({ syncOperation: { loading: false, message: response.message ?? "恢复完成" } });
       return;
     }
 
     set({ syncOperation: { loading: false, error: response?.message ?? "恢复失败，请重试" } });
   },
-  sendChatMessage: (content, attachments = []) => sendChatMessageWithState({ content, attachments, get, set }),
+  sendChatMessage: (content, attachments = [], promptInvocations = []) => sendChatMessageWithState({ content, attachments, promptInvocations, get, set }),
   regenerateMessage: (messageId) => regenerateChatMessage({ messageId, get, set }),
-  editAndRegenerateUserMessage: (messageId, content) => editAndRegenerateUserMessage({ messageId, content, get, set }),
+  editAndRegenerateUserMessage: (messageId, content, promptInvocations) => editAndRegenerateUserMessage({ messageId, content, promptInvocations, get, set }),
   reset: () => {
     clearAllModelConnectivityResetTimers();
     pageContextRefreshSequence += 1;
@@ -1082,6 +1131,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       providers: [],
       models: [],
       extractionRules: [],
+      promptTemplates: [],
       chatSessions: [],
       chatFolders: [],
       pageContext: {
@@ -1198,6 +1248,15 @@ async function persistSessionSelectedModel(session: ChatSession): Promise<void> 
 
 function createDefaultSessionTitle(content: string): string {
   return content.length > 20 ? `${content.slice(0, 20)}...` : content;
+}
+
+function createVisibleUserTitleContent(content: string, promptInvocations: ChatPromptInvocation[]): string {
+  const trimmedContent = content.trim();
+  if (trimmedContent) {
+    return trimmedContent;
+  }
+
+  return promptInvocations.map((prompt) => prompt.title).join("、") || "新对话";
 }
 
 function normalizeChatPreferences(value?: Partial<ChatPreferenceValues>): ChatPreferenceValues {
@@ -1331,6 +1390,7 @@ type ChatSendMessage = {
 interface SendChatMessageWithStateInput {
   content: string;
   attachments?: ChatImageAttachment[];
+  promptInvocations?: ChatPromptInvocation[];
   get: StoreGetter;
   set: StoreSetter;
 }
@@ -1344,6 +1404,7 @@ interface RegenerateChatMessageInput {
 interface EditAndRegenerateUserMessageInput {
   messageId: string;
   content: string;
+  promptInvocations?: ChatPromptInvocation[];
   get: StoreGetter;
   set: StoreSetter;
 }
@@ -1384,7 +1445,8 @@ function hasAvailableTitleModel(state: AppState): boolean {
 async function sendChatMessageWithState(input: SendChatMessageWithStateInput): Promise<void> {
   const trimmedContent = input.content.trim();
   const imageAttachments = (input.attachments ?? []).filter((attachment) => attachment.mediaType.startsWith("image/"));
-  if ((!trimmedContent && imageAttachments.length === 0) || input.get().sending) {
+  const promptInvocations = input.promptInvocations ?? [];
+  if ((!trimmedContent && imageAttachments.length === 0 && promptInvocations.length === 0) || input.get().sending) {
     return;
   }
 
@@ -1410,7 +1472,7 @@ async function sendChatMessageWithState(input: SendChatMessageWithStateInput): P
     baseSession ??
     {
       id: `session-${now}`,
-      title: createDefaultSessionTitle(trimmedContent),
+      title: createDefaultSessionTitle(createVisibleUserTitleContent(trimmedContent, promptInvocations)),
       archived: false,
       sortOrder: now,
       createdAt: now,
@@ -1431,6 +1493,7 @@ async function sendChatMessageWithState(input: SendChatMessageWithStateInput): P
     contextMode: state.contextMode,
     matchedRuleId: state.pageContext.matchedRuleId,
     attachments: imageAttachments.length > 0 ? imageAttachments : undefined,
+    promptInvocations: promptInvocations.length > 0 ? promptInvocations : undefined,
   };
 
   await runChatRequest({
@@ -1442,8 +1505,8 @@ async function sendChatMessageWithState(input: SendChatMessageWithStateInput): P
     existingMessages: session.messages,
     nextMessages: [...session.messages, userMessage],
     shouldGenerateTitle: session.messages.length === 0 && hasAvailableTitleModel(state),
-    nextTitle: session.messages.length === 0 ? createDefaultSessionTitle(trimmedContent) : session.title,
-    fallbackTitle: session.messages.length === 0 ? createDefaultSessionTitle(trimmedContent) : session.title,
+    nextTitle: session.messages.length === 0 ? createDefaultSessionTitle(createVisibleUserTitleContent(trimmedContent, promptInvocations)) : session.title,
+    fallbackTitle: session.messages.length === 0 ? createDefaultSessionTitle(createVisibleUserTitleContent(trimmedContent, promptInvocations)) : session.title,
     model,
     provider,
     get: input.get,
@@ -1511,7 +1574,8 @@ async function regenerateChatMessage(input: RegenerateChatMessageInput): Promise
 async function editAndRegenerateUserMessage(input: EditAndRegenerateUserMessageInput): Promise<void> {
   const trimmedContent = input.content.trim();
   const state = input.get();
-  if (!trimmedContent || state.sending) {
+  const promptInvocations = input.promptInvocations;
+  if ((!trimmedContent && (!promptInvocations || promptInvocations.length === 0)) || state.sending) {
     return;
   }
 
@@ -1543,6 +1607,7 @@ async function editAndRegenerateUserMessage(input: EditAndRegenerateUserMessageI
   const editedUserMessage: ChatMessage = {
     ...originalUserMessage,
     content: trimmedContent,
+    promptInvocations: promptInvocations ?? originalUserMessage.promptInvocations,
   };
   const existingMessages = session.messages.slice(0, userMessageIndex);
 

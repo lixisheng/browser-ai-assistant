@@ -10,10 +10,12 @@ import {
   getAppSetting,
   getChatSessions,
   getModelProviders,
+  getPromptTemplates,
   saveAppSetting,
   saveModelProvider,
+  savePromptTemplate,
 } from "../../../src/shared/storage/repositories";
-import type { ChatSession, ModelProvider } from "../../../src/shared/types";
+import type { ChatSession, ModelProvider, PromptTemplate } from "../../../src/shared/types";
 
 describe("同步快照", () => {
   afterEach(async () => {
@@ -32,12 +34,22 @@ describe("同步快照", () => {
       updatedAt: 1,
     };
     await saveModelProvider(provider);
+    const prompt: PromptTemplate = {
+      id: "prompt-1",
+      title: "摘要",
+      content: "总结页面重点",
+      sortOrder: 1,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    await savePromptTemplate(prompt);
     await saveAppSetting({ key: "syncEncryptionSecret", value: "secret", updatedAt: 1 });
     await saveAppSetting({ key: "syncSettings", value: { syncEnabled: true }, updatedAt: 1 });
 
     const snapshot = await exportSyncSnapshot();
 
     expect(snapshot.modelProviders).toEqual([provider]);
+    expect(snapshot.promptTemplates).toEqual([prompt]);
     expect(snapshot.appSettings).toEqual([
       { key: "syncSettings", value: { syncEnabled: true }, updatedAt: 1 },
     ]);
@@ -100,5 +112,29 @@ describe("同步快照", () => {
     await expect(getAppSetting(SYNC_WEBDAV_PASSWORD_KEY)).resolves.toBe("webdav-password");
     await expect(getAppSetting(SYNC_S3_SECRET_KEY)).resolves.toBe("s3-secret");
     await expect(getAppSetting("syncSettings")).resolves.toEqual({ syncEnabled: true });
+  });
+
+  it("恢复旧快照时允许缺少 Prompt 模板列表", async () => {
+    await savePromptTemplate({
+      id: "prompt-local",
+      title: "本地提示词",
+      content: "本地内容",
+      sortOrder: 1,
+      createdAt: 1,
+      updatedAt: 1,
+    });
+
+    await restoreSyncSnapshot({
+      version: 1,
+      modelConfigs: [],
+      modelProviders: [],
+      providerModels: [],
+      extractionRules: [],
+      chatSessions: [],
+      chatFolders: [],
+      appSettings: [],
+    });
+
+    expect(await getPromptTemplates()).toEqual([]);
   });
 });

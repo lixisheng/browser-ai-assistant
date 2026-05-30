@@ -10,13 +10,14 @@ export function App() {
   const [historyPanelOpen, setHistoryPanelOpen] = useState(historyPanelDefaultOpen);
   const loadChannelConfig = useAppStore((state) => state.loadChannelConfig);
   const loadExtractionRules = useAppStore((state) => state.loadExtractionRules);
+  const loadPromptTemplates = useAppStore((state) => state.loadPromptTemplates);
   const loadChatData = useAppStore((state) => state.loadChatData);
   const loadSyncSettings = useAppStore((state) => state.loadSyncSettings);
   const refreshPageContext = useAppStore((state) => state.refreshPageContext);
 
   useEffect(() => {
-    void Promise.all([loadChannelConfig(), loadExtractionRules(), loadChatData(), loadSyncSettings()]).then(() => refreshPageContext());
-  }, [loadChannelConfig, loadExtractionRules, loadChatData, loadSyncSettings, refreshPageContext]);
+    void Promise.all([loadChannelConfig(), loadExtractionRules(), loadPromptTemplates(), loadChatData(), loadSyncSettings()]).then(() => refreshPageContext());
+  }, [loadChannelConfig, loadExtractionRules, loadPromptTemplates, loadChatData, loadSyncSettings, refreshPageContext]);
 
   useEffect(() => {
     setHistoryPanelOpen(historyPanelDefaultOpen);

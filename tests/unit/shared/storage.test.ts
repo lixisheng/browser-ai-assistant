@@ -1,4 +1,6 @@
-import { afterEach, describe, expect, it } from "vitest";
+import Dexie from "dexie";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { DATABASE_NAME } from "../../../src/shared/constants";
 import {
   clearDatabase,
   deleteChatFolder,
@@ -18,9 +20,23 @@ import {
   getModelProviders,
   getProviderModels,
   moveExtractionRule,
+  deletePromptTemplate,
+  getPromptTemplates,
+  reorderPromptTemplates,
+  savePromptTemplate,
 } from "../../../src/shared/storage/repositories";
 import { db } from "../../../src/shared/storage/db";
-import type { ChatFolder, ChatSession, ExtractionRule, ModelProvider, ProviderModel } from "../../../src/shared/types";
+import type { ChatFolder, ChatSession, ExtractionRule, ModelProvider, PromptTemplate, ProviderModel } from "../../../src/shared/types";
+
+const LEGACY_VERSION_2_SCHEMA = {
+  modelConfigs: "id, channelName, endpointType, updatedAt",
+  modelProviders: "id, name, endpointType, updatedAt",
+  providerModels: "id, providerId, displayName, updatedAt",
+  extractionRules: "id, sortOrder, urlPattern, updatedAt",
+  chatSessions: "id, folderId, archived, sortOrder, updatedAt",
+  chatFolders: "id, sortOrder, updatedAt",
+  appSettings: "key, updatedAt",
+};
 
 function createProvider(): ModelProvider {
   return {
@@ -49,6 +65,16 @@ function createModel(): ProviderModel {
     createdAt: 1,
     updatedAt: 1,
   };
+}
+
+async function deleteDatabaseByName(name: string): Promise<void> {
+  await db.close();
+  await new Promise<void>((resolve, reject) => {
+    const request = indexedDB.deleteDatabase(name);
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+    request.onblocked = () => reject(new Error("删除测试数据库被阻塞"));
+  });
 }
 
 describe("存储仓库", () => {
@@ -138,6 +164,99 @@ describe("存储仓库", () => {
     expect((await getExtractionRules()).map((rule) => rule.id)).toEqual(["rule-first"]);
   });
 
+  it("按 sortOrder 读取、重排和删除 Prompt 模板", async () => {
+    const first: PromptTemplate = {
+      id: "prompt-first",
+      title: "第一条",
+      content: "优先总结页面风险",
+      sortOrder: 10,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const second: PromptTemplate = {
+      id: "prompt-second",
+      title: "第二条",
+      content: "输出行动清单",
+      sortOrder: 20,
+      createdAt: 2,
+      updatedAt: 2,
+    };
+
+    await savePromptTemplate(second);
+    await savePromptTemplate(first);
+
+    expect((await getPromptTemplates()).map((prompt) => prompt.id)).toEqual(["prompt-first", "prompt-second"]);
+
+    await reorderPromptTemplates(["prompt-second", "prompt-first"]);
+
+    expect((await getPromptTemplates()).map((prompt) => prompt.id)).toEqual(["prompt-second", "prompt-first"]);
+
+    await deletePromptTemplate("prompt-second");
+
+    expect((await getPromptTemplates()).map((prompt) => prompt.id)).toEqual(["prompt-first"]);
+  });
+
+  it("从 v2 数据库升级时保留旧数据并新增 Prompt 模板表", async () => {
+    const provider = createProvider();
+    await deleteDatabaseByName(DATABASE_NAME);
+
+    const legacyDb = new Dexie(DATABASE_NAME);
+    legacyDb.version(2).stores(LEGACY_VERSION_2_SCHEMA);
+    await legacyDb.open();
+    await legacyDb.table("modelProviders").put(provider);
+    await legacyDb.close();
+
+    await db.open();
+
+    expect(await getModelProviders()).toEqual([provider]);
+
+    const prompt: PromptTemplate = {
+      id: "prompt-after-upgrade",
+      title: "升级后提示词",
+      content: "确认升级后可写入新表",
+      sortOrder: 10,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    await savePromptTemplate(prompt);
+
+    expect(await getPromptTemplates()).toEqual([prompt]);
+  });
+
+  it("Prompt 模板排序参数无效时保留原顺序并输出告警", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const first: PromptTemplate = {
+        id: "prompt-first",
+        title: "第一条",
+        content: "优先总结页面风险",
+        sortOrder: 10,
+        createdAt: 1,
+        updatedAt: 1,
+      };
+      const second: PromptTemplate = {
+        id: "prompt-second",
+        title: "第二条",
+        content: "输出行动清单",
+        sortOrder: 20,
+        createdAt: 2,
+        updatedAt: 2,
+      };
+
+      await savePromptTemplate(first);
+      await savePromptTemplate(second);
+      await reorderPromptTemplates(["prompt-second", "missing-prompt"]);
+
+      expect((await getPromptTemplates()).map((prompt) => prompt.id)).toEqual(["prompt-first", "prompt-second"]);
+      expect(warnSpy).toHaveBeenCalledWith("[BrowserAIAssistant] Prompt 模板排序参数无效，已忽略本次排序", {
+        orderedIds: ["prompt-second", "missing-prompt"],
+        existingIds: ["prompt-first", "prompt-second"],
+      });
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   it("保存并读取聊天会话", async () => {
     const session: ChatSession = {
       id: "session-1",
@@ -160,6 +279,13 @@ describe("存储仓库", () => {
           matchedRuleId: "rule-1",
           systemPrompt: "你是网页助手",
           contextPrompt: "页面内容",
+          promptInvocations: [
+            {
+              promptId: "prompt-legacy",
+              title: "旧提示词",
+              contentSnapshot: "旧提示词内容",
+            },
+          ],
         },
       ],
     };

@@ -61,6 +61,21 @@ export interface ChatImageAttachment {
   dataUrl: string;
 }
 
+export interface PromptTemplate {
+  id: string;
+  title: string;
+  content: string;
+  sortOrder: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface ChatPromptInvocation {
+  promptId: string;
+  title: string;
+  contentSnapshot: string;
+}
+
 export interface ExtractionRule {
   id: string;
   alias: string;
@@ -84,6 +99,7 @@ export interface ChatMessage {
   contextMode: PageContextExtractMode;
   matchedRuleId?: string;
   attachments?: ChatImageAttachment[];
+  promptInvocations?: ChatPromptInvocation[];
   thinking?: string;
   streaming?: boolean;
 }

@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { ChatImageAttachment, ChatMessage } from "../../shared/types";
+import type { ChatImageAttachment, ChatMessage, ChatPromptInvocation } from "../../shared/types";
+import { PromptInlineEditor, PromptTokenContent } from "./PromptInlineEditor";
 
 interface MessageListProps {
   messages: ChatMessage[];
   onRegenerateMessage: (messageId: string) => void;
-  onEditAndRegenerateUserMessage: (messageId: string, content: string) => void;
+  onEditAndRegenerateUserMessage: (messageId: string, content: string, promptInvocations?: ChatPromptInvocation[]) => void;
   regenerating: boolean;
 }
 
@@ -15,6 +16,7 @@ export function MessageList({ messages, onRegenerateMessage, onEditAndRegenerate
   const [pendingRegenerateMessageId, setPendingRegenerateMessageId] = useState<string | undefined>();
   const [editingMessageId, setEditingMessageId] = useState<string | undefined>();
   const [editingContent, setEditingContent] = useState("");
+  const [editingPromptInvocations, setEditingPromptInvocations] = useState<ChatPromptInvocation[]>([]);
   const regeneratePopoverRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -72,11 +74,14 @@ export function MessageList({ messages, onRegenerateMessage, onEditAndRegenerate
             ) : null}
             {editingMessageId === message.id ? (
               <div className="message-edit-panel">
-                <textarea
+                <PromptInlineEditor
                   className="ui-input message-edit-input"
-                  aria-label="编辑用户消息"
+                  ariaLabel="编辑用户消息"
                   value={editingContent}
-                  onChange={(event) => setEditingContent(event.target.value)}
+                  promptInvocations={editingPromptInvocations}
+                  promptAriaLabelPrefix="编辑消息提示词"
+                  onChange={setEditingContent}
+                  onRemovePrompt={(index) => setEditingPromptInvocations((current) => current.filter((_, itemIndex) => itemIndex !== index))}
                 />
                 <div className="message-edit-actions">
                   <button
@@ -87,6 +92,7 @@ export function MessageList({ messages, onRegenerateMessage, onEditAndRegenerate
                     onClick={() => {
                       setEditingMessageId(undefined);
                       setEditingContent("");
+                      setEditingPromptInvocations([]);
                     }}
                   >
                     <CancelEditIcon />
@@ -96,16 +102,18 @@ export function MessageList({ messages, onRegenerateMessage, onEditAndRegenerate
                     type="button"
                     aria-label="发送编辑后的消息"
                     title="发送编辑后的消息"
-                    disabled={regenerating || !editingContent.trim()}
+                    disabled={regenerating || (!editingContent.trim() && editingPromptInvocations.length === 0)}
                     onClick={() => {
                       const trimmedContent = editingContent.trim();
-                      if (!trimmedContent) {
+                      if (!trimmedContent && editingPromptInvocations.length === 0) {
                         return;
                       }
 
                       setEditingMessageId(undefined);
                       setEditingContent("");
-                      onEditAndRegenerateUserMessage(message.id, trimmedContent);
+                      const nextPromptInvocations = editingPromptInvocations;
+                      setEditingPromptInvocations([]);
+                      onEditAndRegenerateUserMessage(message.id, trimmedContent, nextPromptInvocations);
                     }}
                   >
                     <SendEditedMessageIcon />
@@ -113,8 +121,11 @@ export function MessageList({ messages, onRegenerateMessage, onEditAndRegenerate
                 </div>
               </div>
             ) : (
-              <div className="message-bubble">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+              <div className={`message-bubble${message.role === "user" && message.promptInvocations?.length ? " message-bubble-with-prompts" : ""}`}>
+                {message.role === "user" && message.promptInvocations?.length ? (
+                  <PromptTokenLinks prompts={message.promptInvocations} ariaLabelPrefix="用户消息提示词" />
+                ) : null}
+                {message.content.trim() ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown> : null}
               </div>
             )}
             <div className={`message-regenerate-action message-regenerate-action-${message.role}`}>
@@ -129,6 +140,7 @@ export function MessageList({ messages, onRegenerateMessage, onEditAndRegenerate
                     setPendingRegenerateMessageId(undefined);
                     setEditingMessageId(message.id);
                     setEditingContent(message.content);
+                    setEditingPromptInvocations(message.promptInvocations ?? []);
                   }}
                 >
                   <EditMessageIcon />
@@ -180,6 +192,18 @@ export function MessageList({ messages, onRegenerateMessage, onEditAndRegenerate
         </>
       ) : null}
     </section>
+  );
+}
+
+function PromptTokenLinks({ prompts, ariaLabelPrefix }: { prompts: ChatPromptInvocation[]; ariaLabelPrefix: string }) {
+  return (
+    <span className="message-prompt-token-strip">
+      {prompts.map((prompt, index) => (
+        <span key={`${prompt.promptId}-${index}`} className="prompt-token-link" aria-label={`${ariaLabelPrefix}：${prompt.title}`}>
+          <PromptTokenContent title={prompt.title} />
+        </span>
+      ))}
+    </span>
   );
 }
 

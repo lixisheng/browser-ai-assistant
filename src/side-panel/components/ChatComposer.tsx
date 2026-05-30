@@ -1,8 +1,9 @@
 import { useEffect, useId, useState } from "react";
 import type { ChangeEvent, ClipboardEvent as ReactClipboardEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
 import { isPngDataUrl, isTabCaptureImageAttachment, TAB_CAPTURE_VISIBLE_MESSAGE_TYPE, type TabCaptureVisibleResponse } from "../../shared/tabCapture";
-import type { ChatImageAttachment, SendShortcut } from "../../shared/types";
+import type { ChatImageAttachment, ChatPromptInvocation, PromptTemplate, SendShortcut } from "../../shared/types";
 import { useAppStore } from "../state/appStore";
+import { PromptInlineEditor } from "./PromptInlineEditor";
 
 const MAX_IMAGE_ATTACHMENTS = 5;
 const MAX_IMAGE_ATTACHMENT_BYTES = 5 * 1024 * 1024;
@@ -33,6 +34,10 @@ function ComposerSwitch({ ariaLabel, checked, label, onToggle }: ComposerSwitchP
 
 export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
   const [input, setInput] = useState("");
+  const [promptInvocations, setPromptInvocations] = useState<ChatPromptInvocation[]>([]);
+  const [slashMenuOpen, setSlashMenuOpen] = useState(false);
+  const [slashQuery, setSlashQuery] = useState("");
+  const [slashStartIndex, setSlashStartIndex] = useState<number | undefined>();
   const [attachments, setAttachments] = useState<ChatImageAttachment[]>([]);
   const [attachmentError, setAttachmentError] = useState("");
   const [previewAttachment, setPreviewAttachment] = useState<ChatImageAttachment | undefined>();
@@ -41,6 +46,7 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
   const imageInputId = useId();
   const currentModelSupportsVision = useAppStore((state) => Boolean(state.models.find((model) => model.id === state.selectedModelId)?.supportsVision));
   const sendShortcut = useAppStore((state) => state.chatPreferences.sendShortcut);
+  const promptTemplates = useAppStore((state) => state.promptTemplates);
   const streamMode = useAppStore((state) => state.streamMode);
   const contextMode = useAppStore((state) => state.contextMode);
   const appendPageContextToSystemPrompt = useAppStore((state) => state.appendPageContextToSystemPrompt);
@@ -54,8 +60,8 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
   const sendChatMessage = useAppStore((state) => state.sendChatMessage);
 
   useEffect(() => {
-    setComposerHasDraft(input.trim().length > 0 || attachments.length > 0);
-  }, [attachments.length, input, setComposerHasDraft]);
+    setComposerHasDraft(input.trim().length > 0 || attachments.length > 0 || promptInvocations.length > 0);
+  }, [attachments.length, input, promptInvocations.length, setComposerHasDraft]);
 
   useEffect(() => {
     if (!contextDialogOpen) {
@@ -74,24 +80,45 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
 
   const submit = async () => {
     const content = input.trim();
-    if (!content && attachments.length === 0) {
+    if (!content && attachments.length === 0 && promptInvocations.length === 0) {
       return;
     }
 
     setInput("");
+    setPromptInvocations([]);
+    setSlashMenuOpen(false);
     const sendingAttachments = attachments;
+    const sendingPromptInvocations = promptInvocations;
     setAttachments([]);
     setAttachmentError("");
-    await sendChatMessage(content, sendingAttachments);
+    await sendChatMessage(content, sendingAttachments, sendingPromptInvocations);
   };
 
-  const handleInputKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
-    if (composing || !isSendShortcut(event, sendShortcut)) {
+  const handleInputKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
+    const isComposingInput = composing || event.nativeEvent.isComposing;
+    if (slashMenuOpen) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setSlashMenuOpen(false);
+        return;
+      }
+      if (isComposingInput && event.key === "Enter") {
+        event.preventDefault();
+        return;
+      }
+      if (!isComposingInput && event.key === "Enter" && filteredPromptTemplates[0]) {
+        event.preventDefault();
+        handleSelectPrompt(filteredPromptTemplates[0]);
+        return;
+      }
+    }
+
+    if (isComposingInput || !isSendShortcut(event, sendShortcut)) {
       return;
     }
 
     event.preventDefault();
-    if (!canSend || sending || (!input.trim() && attachments.length === 0)) {
+    if (!canSend || sending || (!input.trim() && attachments.length === 0 && promptInvocations.length === 0)) {
       return;
     }
 
@@ -105,7 +132,7 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
     event.target.value = "";
   };
 
-  const handlePaste = (event: ReactClipboardEvent<HTMLTextAreaElement>) => {
+  const handlePaste = (event: ReactClipboardEvent<HTMLElement>) => {
     const files = getPastedImageFiles(event.clipboardData);
     if (files.length === 0) {
       return;
@@ -115,6 +142,42 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
     void addImageFiles(files).catch(() => {
       setAttachmentError("图片读取失败，请重新选择图片");
     });
+  };
+
+  const handleInputChange = (value: string, options: { forceSlashDetection?: boolean } = {}) => {
+    setInput(value);
+    if (composing && !options.forceSlashDetection) {
+      return;
+    }
+
+    const slashInfo = findSlashCommand(value);
+    if (!slashInfo) {
+      setSlashMenuOpen(false);
+      setSlashQuery("");
+      setSlashStartIndex(undefined);
+      return;
+    }
+
+    setSlashMenuOpen(true);
+    setSlashQuery(slashInfo.query);
+    setSlashStartIndex(slashInfo.startIndex);
+  };
+
+  const handleSelectPrompt = (prompt: PromptTemplate) => {
+    setPromptInvocations((current) => [
+      ...current,
+      {
+        promptId: prompt.id,
+        title: prompt.title,
+        contentSnapshot: prompt.content,
+      },
+    ]);
+    setInput((current) => {
+      return removeSlashCommandSegment(current, slashStartIndex);
+    });
+    setSlashMenuOpen(false);
+    setSlashQuery("");
+    setSlashStartIndex(undefined);
   };
 
   const handleCaptureVisibleTab = async () => {
@@ -194,6 +257,8 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
   };
 
   const contextModeLabel = contextMode === "all" ? "提取所有" : "提取文本";
+  const filteredPromptTemplates = filterPromptTemplates(promptTemplates, slashQuery);
+  const canSubmit = canSend && !sending && (input.trim().length > 0 || attachments.length > 0 || promptInvocations.length > 0);
 
   return (
     <section className="chat-composer" aria-label="聊天输入区">
@@ -258,16 +323,44 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
         >
           <span aria-hidden="true">▣</span>
         </label>
-        <textarea
+        <PromptInlineEditor
           className="ui-input chat-input"
-          aria-label="对话输入"
+          ariaLabel="对话输入"
           value={input}
+          promptInvocations={promptInvocations}
+          promptAriaLabelPrefix="已调用提示词"
+          onChange={handleInputChange}
+          onRemovePrompt={(index) => setPromptInvocations((current) => current.filter((_, itemIndex) => itemIndex !== index))}
           onPaste={handlePaste}
           onKeyDown={handleInputKeyDown}
           onCompositionStart={() => setComposing(true)}
-          onCompositionEnd={() => setComposing(false)}
-          onChange={(event) => setInput(event.target.value)}
+          onCompositionEnd={(value) => {
+            setComposing(false);
+            handleInputChange(value, { forceSlashDetection: true });
+          }}
         />
+        {slashMenuOpen ? (
+          <div className="slash-command-menu" role="listbox" aria-label="提示词命令">
+            {filteredPromptTemplates.length > 0 ? (
+              filteredPromptTemplates.map((prompt) => (
+                <button
+                  key={prompt.id}
+                  className="slash-command-option"
+                  type="button"
+                  role="option"
+                  aria-selected="false"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => handleSelectPrompt(prompt)}
+                >
+                  <span className="slash-command-title">{prompt.title}</span>
+                  <span className="slash-command-content">{prompt.content}</span>
+                </button>
+              ))
+            ) : (
+              <p className="slash-command-empty">未找到匹配提示词</p>
+            )}
+          </div>
+        ) : null}
       </div>
       <div className="composer-actions">
         <div className="composer-switches">
@@ -279,7 +372,7 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
             onToggle={() => setContextMode(contextMode === "all" ? "text" : "all")}
           />
         </div>
-        <button className="ui-button-primary" type="button" disabled={!canSend || sending || (!input.trim() && attachments.length === 0)} onClick={() => void submit()}>
+        <button className="ui-button-primary" type="button" disabled={!canSubmit} onClick={() => void submit()}>
           {sending ? "发送中" : "发送"}
         </button>
       </div>
@@ -341,6 +434,57 @@ function estimateDataUrlBytes(dataUrl: string): number {
   return Math.max(0, Math.floor((base64.length * 3) / 4) - paddingBytes);
 }
 
+function findSlashCommand(value: string): { startIndex: number; query: string } | undefined {
+  const startIndex = value.lastIndexOf("/");
+  if (startIndex < 0) {
+    return undefined;
+  }
+
+  const query = value.slice(startIndex + 1);
+  if (/\s/.test(query)) {
+    return undefined;
+  }
+
+  return { startIndex, query };
+}
+
+export function removeSlashCommandSegment(value: string, fallbackStartIndex?: number): string {
+  const slashInfo = findSlashCommand(value);
+  const startIndex = slashInfo?.startIndex ?? fallbackStartIndex;
+  if (startIndex === undefined || startIndex < 0) {
+    return value;
+  }
+
+  const afterSlashText = value.slice(startIndex + 1);
+  const nextWhitespaceIndex = afterSlashText.search(/\s/);
+  const endIndex = nextWhitespaceIndex < 0 ? value.length : startIndex + 1 + nextWhitespaceIndex;
+  const before = value.slice(0, startIndex);
+  const after = value.slice(endIndex);
+  if (!before) {
+    return after.replace(/^\s+/, "");
+  }
+  if (!after) {
+    return before.replace(/\s+$/, "");
+  }
+  if (/\s$/.test(before) && /^\s/.test(after)) {
+    return `${before}${after.replace(/^\s+/, "")}`;
+  }
+
+  return `${before}${after}`;
+}
+
+function filterPromptTemplates(promptTemplates: PromptTemplate[], query: string): PromptTemplate[] {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!normalizedQuery) {
+    return promptTemplates;
+  }
+
+  return promptTemplates.filter((prompt) => {
+    const searchableText = `${prompt.title}\n${prompt.content}`.toLowerCase();
+    return searchableText.includes(normalizedQuery);
+  });
+}
+
 function sendRuntimeMessage<T>(message: { type: string }): Promise<T | undefined> {
   return new Promise((resolve, reject) => {
     const runtime = globalThis.chrome?.runtime;
@@ -388,7 +532,7 @@ function sendRuntimeMessage<T>(message: { type: string }): Promise<T | undefined
   });
 }
 
-function isSendShortcut(event: ReactKeyboardEvent<HTMLTextAreaElement>, shortcut: SendShortcut): boolean {
+function isSendShortcut(event: ReactKeyboardEvent<HTMLElement>, shortcut: SendShortcut): boolean {
   if (event.key !== "Enter" || event.nativeEvent.isComposing) {
     return false;
   }

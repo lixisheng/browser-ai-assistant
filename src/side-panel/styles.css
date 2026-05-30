@@ -78,6 +78,15 @@ body {
     transition: border-color 420ms ease;
   }
 
+  .prompt-template-preview {
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    text-overflow: ellipsis;
+    white-space: normal;
+  }
+
   .ui-input {
     @apply rounded-md px-2 py-2 outline-none transition;
     background: var(--color-canvas);
@@ -86,6 +95,11 @@ body {
   }
 
   .ui-input:focus {
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 15%, transparent);
+  }
+
+  .prompt-inline-editor:focus-within {
     border-color: var(--color-primary);
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 15%, transparent);
   }
@@ -587,7 +601,7 @@ body {
   }
 
   .message-edit-input {
-    @apply min-h-24 w-full resize-y text-sm;
+    @apply min-h-24 w-full text-sm;
   }
 
   .message-edit-actions {
@@ -632,6 +646,14 @@ body {
     @apply min-w-0 max-w-full overflow-hidden rounded-lg px-3 py-2 text-sm;
     background: var(--color-surface-soft);
     border: 1px solid var(--color-hairline);
+  }
+
+  .message-prompt-token-strip {
+    @apply mr-1 inline-flex max-w-full flex-wrap items-center gap-1 align-middle;
+  }
+
+  .message-bubble-with-prompts > p:first-of-type {
+    display: inline;
   }
 
   .message-bubble p,
@@ -807,11 +829,72 @@ body {
   }
 
   .chat-input {
-    @apply min-h-24 w-full resize-y py-3 pl-12 pr-3;
+    @apply min-h-24 w-full py-3 pl-12 pr-3;
   }
 
   .chat-input-shell {
     @apply relative;
+  }
+
+  .prompt-inline-editor {
+    @apply flex cursor-text flex-wrap content-start items-center gap-x-1 gap-y-1 overflow-y-auto whitespace-pre-wrap break-words text-sm;
+  }
+
+  .prompt-inline-editor-text {
+    @apply min-w-20 flex-1 outline-none;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  .prompt-token-link {
+    @apply inline-flex max-w-full items-center gap-1 truncate rounded-sm px-0.5 py-0 text-sm font-medium align-middle;
+    display: inline-flex;
+    color: var(--color-link);
+    background: transparent;
+    border: 0;
+    line-height: 1.4;
+    pointer-events: auto;
+  }
+
+  .prompt-token-icon,
+  .prompt-token-title {
+    @apply shrink-0 font-semibold;
+    color: var(--color-link);
+  }
+
+  .prompt-token-title {
+    @apply min-w-0 truncate;
+  }
+
+  .slash-command-menu {
+    @apply absolute bottom-full left-0 right-0 z-30 mb-2 grid max-h-56 gap-1 overflow-y-auto rounded-lg p-2;
+    background: var(--color-canvas);
+    border: 1px solid var(--color-hairline);
+    box-shadow: 0 1px 3px rgba(20, 20, 19, 0.08);
+  }
+
+  .slash-command-option {
+    @apply grid gap-1 rounded-md px-3 py-2 text-left text-sm;
+    color: var(--color-ink);
+    background: var(--color-surface-soft);
+  }
+
+  .slash-command-option:hover {
+    background: var(--color-surface-card);
+  }
+
+  .slash-command-title {
+    @apply truncate font-medium;
+  }
+
+  .slash-command-content {
+    @apply line-clamp-2 text-xs;
+    color: var(--color-muted);
+  }
+
+  .slash-command-empty {
+    @apply px-3 py-2 text-sm;
+    color: var(--color-muted);
   }
 
   .image-upload-button {

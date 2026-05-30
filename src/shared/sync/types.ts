@@ -5,6 +5,7 @@ import type {
   ExtractionRule,
   ModelConfig,
   ModelProvider,
+  PromptTemplate,
   ProviderModel,
 } from "../types";
 
@@ -51,6 +52,7 @@ export interface SyncDataSnapshot {
   modelProviders: ModelProvider[];
   providerModels: ProviderModel[];
   extractionRules: ExtractionRule[];
+  promptTemplates?: PromptTemplate[];
   chatSessions: ChatSession[];
   chatFolders: ChatFolder[];
   appSettings: AppSetting[];
