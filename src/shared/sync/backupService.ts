@@ -4,10 +4,14 @@ import { exportSyncSnapshot, restoreSyncSnapshot } from "./snapshot";
 import { createChromeSyncProvider } from "./chromeSyncProvider";
 import { createS3Provider } from "./s3Provider";
 import { createWebDavProvider } from "./webDavProvider";
-import type { SyncDataSnapshot, SyncRemoteBackup, SyncRemoteProvider, SyncSecrets, SyncSettings } from "./types";
+import type { SyncDataSnapshot, SyncRemoteBackup, SyncRemoteBackupMeta, SyncRemoteProvider, SyncSecrets, SyncSettings } from "./types";
 
 interface SyncOperationInput {
   provider: SyncRemoteProvider;
+}
+
+interface SyncRestoreInput extends SyncOperationInput {
+  backupId: string;
 }
 
 export async function backupNow(input: SyncOperationInput): Promise<SyncRemoteBackup> {
@@ -32,6 +36,7 @@ export async function backupNow(input: SyncOperationInput): Promise<SyncRemoteBa
   };
 
   await input.provider.write(settings.backupPrefix, backup);
+  await pruneOldBackups(input.provider, settings.backupPrefix, settings.maxBackupCount);
   await saveSyncSettings({
     ...settings,
     lastBackupAt: backup.createdAt,
@@ -42,17 +47,23 @@ export async function backupNow(input: SyncOperationInput): Promise<SyncRemoteBa
   return backup;
 }
 
-export async function restoreNow(input: SyncOperationInput): Promise<void> {
+export async function listRemoteBackups(input: SyncOperationInput): Promise<SyncRemoteBackupMeta[]> {
+  const settings = await getSyncSettings();
+  assertSyncEnabled(settings);
+  return input.provider.list();
+}
+
+export async function restoreNow(input: SyncRestoreInput): Promise<void> {
   const settings = await getSyncSettings();
   assertSyncEnabled(settings);
   assertBackupPrefix(settings.backupPrefix);
-  const backup = await input.provider.read(settings.backupPrefix);
+  const backup = await input.provider.read(input.backupId);
 
   if (!backup) {
-    throw new Error("未找到当前前缀对应的同步备份");
+    throw new Error("未找到指定的同步备份");
   }
-  if (backup.prefix !== settings.backupPrefix) {
-    throw new Error("备份前缀不匹配，未覆盖本地数据");
+  if (backup.provider !== settings.provider) {
+    throw new Error("备份目标不匹配，未覆盖本地数据");
   }
 
   const secrets = await getSyncSecrets();
@@ -64,6 +75,19 @@ export async function restoreNow(input: SyncOperationInput): Promise<void> {
     lastStatus: "success",
     lastMessage: "恢复完成",
   });
+}
+
+async function pruneOldBackups(provider: SyncRemoteProvider, prefix: string, maxBackupCount: number): Promise<void> {
+  const backups = (await provider.list())
+    .filter((backup) => backup.prefix === prefix)
+    .sort((left, right) => left.createdAt - right.createdAt);
+  const deleteCount = backups.length - maxBackupCount;
+
+  if (deleteCount <= 0) {
+    return;
+  }
+
+  await Promise.all(backups.slice(0, deleteCount).map((backup) => provider.delete(backup.id)));
 }
 
 export function resolveProviderFromSettings(

@@ -30,6 +30,7 @@ export interface SyncSettings {
   autoSyncEnabled: boolean;
   provider: SyncProviderType;
   backupPrefix: string;
+  maxBackupCount: number;
   encryptionEnabled: boolean;
   intervalMinutes: number;
   webdav: WebDavSyncSettings;
@@ -67,9 +68,19 @@ export interface SyncRemoteBackup {
   payload: unknown;
 }
 
+export interface SyncRemoteBackupMeta {
+  id: string;
+  prefix: string;
+  createdAt: number;
+  provider: SyncProviderType;
+  encrypted: boolean;
+}
+
 export interface SyncRemoteProvider {
   write: (prefix: string, backup: SyncRemoteBackup) => Promise<void>;
-  read: (prefix: string) => Promise<SyncRemoteBackup | undefined>;
+  list: () => Promise<SyncRemoteBackupMeta[]>;
+  read: (id: string) => Promise<SyncRemoteBackup | undefined>;
+  delete: (id: string) => Promise<void>;
 }
 
 export function assertValidSyncRemoteBackup(value: unknown): asserts value is SyncRemoteBackup {
@@ -86,6 +97,16 @@ export function assertValidSyncRemoteBackup(value: unknown): asserts value is Sy
   ) {
     throw new Error("备份文件格式无效，未覆盖本地数据");
   }
+}
+
+export function createSyncRemoteBackupMeta(id: string, backup: SyncRemoteBackup): SyncRemoteBackupMeta {
+  return {
+    id,
+    prefix: backup.prefix,
+    createdAt: backup.createdAt,
+    provider: backup.provider,
+    encrypted: backup.encrypted,
+  };
 }
 
 function isSyncProviderType(value: unknown): value is SyncProviderType {

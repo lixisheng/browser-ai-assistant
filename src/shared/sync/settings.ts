@@ -37,6 +37,7 @@ export const DEFAULT_SYNC_SETTINGS: SyncSettings = {
   autoSyncEnabled: false,
   provider: "chrome_sync",
   backupPrefix: "device-local",
+  maxBackupCount: 3,
   encryptionEnabled: false,
   intervalMinutes: 60,
   webdav: DEFAULT_WEBDAV_SETTINGS,
@@ -49,6 +50,7 @@ export function normalizeSyncSettings(value: Partial<SyncSettings> | undefined):
     autoSyncEnabled: value?.autoSyncEnabled ?? DEFAULT_SYNC_SETTINGS.autoSyncEnabled,
     provider: normalizeProvider(value?.provider),
     backupPrefix: value?.backupPrefix === undefined ? DEFAULT_SYNC_SETTINGS.backupPrefix : String(value.backupPrefix).trim(),
+    maxBackupCount: normalizeMaxBackupCount(value?.maxBackupCount),
     encryptionEnabled: value?.encryptionEnabled ?? DEFAULT_SYNC_SETTINGS.encryptionEnabled,
     intervalMinutes: normalizeIntervalMinutes(value?.intervalMinutes),
     webdav: normalizeWebDavSettings(value?.webdav),
@@ -97,6 +99,15 @@ function normalizeIntervalMinutes(value: unknown): number {
   }
 
   return Math.max(1, Math.round(numberValue));
+}
+
+function normalizeMaxBackupCount(value: unknown): number {
+  const numberValue = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(numberValue)) {
+    return DEFAULT_SYNC_SETTINGS.maxBackupCount;
+  }
+
+  return Math.min(30, Math.max(1, Math.round(numberValue)));
 }
 
 function normalizeWebDavSettings(value: Partial<WebDavSyncSettings> | undefined): WebDavSyncSettings {

@@ -1,15 +1,19 @@
-import { backupNow, resolveProviderFromSettings, restoreNow } from "../shared/sync/backupService";
+import { backupNow, listRemoteBackups, resolveProviderFromSettings, restoreNow } from "../shared/sync/backupService";
 import { getSyncSecrets, getSyncSettings } from "../shared/sync/settings";
-import type { SyncSettings } from "../shared/sync/types";
+import type { SyncRemoteBackupMeta, SyncSettings } from "../shared/sync/types";
 
 export const SYNC_ALARM_NAME = "browser-ai-assistant.sync-backup";
 
 export type SyncBackupMessage =
   | { type: "sync.backupNow" }
-  | { type: "sync.restoreNow" }
+  | { type: "sync.listRemoteBackups" }
+  | { type: "sync.restoreNow"; backupId: string }
   | { type: "sync.configureAlarm"; settings?: SyncSettings };
 
-export type SyncBackupResponse = { ok: true; message: string } | { ok: false; message: string };
+export type SyncBackupResponse =
+  | { ok: true; message: string }
+  | { ok: true; backups: SyncRemoteBackupMeta[] }
+  | { ok: false; message: string };
 
 export function getChromeSyncQuotaMessage(): string {
   return "备份失败：同步数据超过 Chrome Sync 配额，请减少本地历史记录或改用 WebDAV/S3";
@@ -26,8 +30,12 @@ export async function handleSyncBackupMessage(message: SyncBackupMessage): Promi
     const secrets = await getSyncSecrets();
     const provider = resolveProviderFromSettings(settings, secrets, chrome.storage.sync, fetch);
 
+    if (message.type === "sync.listRemoteBackups") {
+      return { ok: true, backups: await listRemoteBackups({ provider }) };
+    }
+
     if (message.type === "sync.restoreNow") {
-      await restoreNow({ provider });
+      await restoreNow({ provider, backupId: message.backupId });
       return { ok: true, message: "恢复完成" };
     }
 

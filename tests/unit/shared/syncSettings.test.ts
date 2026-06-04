@@ -17,6 +17,14 @@ describe("同步设置", () => {
     expect(normalizeSyncSettings({ intervalMinutes: 5.6 }).intervalMinutes).toBe(6);
   });
 
+  it("最大备份数量默认保留 3 份，并限制在 1 到 30 之间", () => {
+    expect(normalizeSyncSettings(undefined).maxBackupCount).toBe(3);
+    expect(normalizeSyncSettings({ maxBackupCount: 0 }).maxBackupCount).toBe(1);
+    expect(normalizeSyncSettings({ maxBackupCount: 5.6 }).maxBackupCount).toBe(6);
+    expect(normalizeSyncSettings({ maxBackupCount: 99 }).maxBackupCount).toBe(30);
+    expect(normalizeSyncSettings({ maxBackupCount: "abc" as unknown as number }).maxBackupCount).toBe(3);
+  });
+
   it("S3 Region 默认使用 auto", () => {
     expect(normalizeSyncSettings({ provider: "s3" }).s3.region).toBe("auto");
   });

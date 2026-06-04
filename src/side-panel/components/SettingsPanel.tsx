@@ -1075,12 +1075,15 @@ function RuleEditor({
 function SyncSettings() {
   const syncSettings = useAppStore((state) => state.syncSettings);
   const syncSecrets = useAppStore((state) => state.syncSecrets);
+  const remoteBackups = useAppStore((state) => state.remoteBackups);
   const syncOperation = useAppStore((state) => state.syncOperation);
   const updateSyncSettings = useAppStore((state) => state.updateSyncSettings);
   const updateSyncSecret = useAppStore((state) => state.updateSyncSecret);
+  const loadRemoteBackups = useAppStore((state) => state.loadRemoteBackups);
   const backupNow = useAppStore((state) => state.backupNow);
   const restoreNow = useAppStore((state) => state.restoreNow);
-  const [confirmRestore, setConfirmRestore] = useState(false);
+  const [restoreDialogOpen, setRestoreDialogOpen] = useState(false);
+  const [selectedBackupId, setSelectedBackupId] = useState("");
   const backupPrefixInput = useComposedTextInput(syncSettings.backupPrefix, (backupPrefix) => {
     void updateSyncSettings({ backupPrefix });
   });
@@ -1118,13 +1121,17 @@ function SyncSettings() {
     void updateSyncSettings({ s3: { ...syncSettings.s3, objectKeyPrefix } });
   });
   const handleRestore = () => {
-    if (!confirmRestore) {
-      setConfirmRestore(true);
+    setRestoreDialogOpen(true);
+    setSelectedBackupId("");
+    void loadRemoteBackups();
+  };
+  const handleConfirmRestore = () => {
+    if (!selectedBackupId) {
       return;
     }
 
-    setConfirmRestore(false);
-    void restoreNow();
+    setRestoreDialogOpen(false);
+    void restoreNow(selectedBackupId);
   };
 
   return (
@@ -1187,6 +1194,19 @@ function SyncSettings() {
           aria-label="备份前缀"
           disabled={!syncSettings.syncEnabled}
           {...backupPrefixInput}
+        />
+      </label>
+      <label className="grid gap-1 text-sm">
+        最大备份数量
+        <input
+          className="ui-input"
+          aria-label="最大备份数量"
+          disabled={!syncSettings.syncEnabled}
+          type="number"
+          min={1}
+          max={30}
+          value={syncSettings.maxBackupCount}
+          onChange={(event) => void updateSyncSettings({ maxBackupCount: Number(event.target.value) })}
         />
       </label>
       {syncSettings.autoSyncEnabled ? (
@@ -1322,9 +1342,82 @@ function SyncSettings() {
           手动备份
         </button>
         <button className="ui-button-secondary" type="button" disabled={!syncSettings.syncEnabled || syncOperation.loading} onClick={handleRestore}>
-          {confirmRestore ? "确认覆盖本地数据" : "手动恢复"}
+          手动恢复
         </button>
       </div>
+      {restoreDialogOpen ? (
+        <RestoreBackupDialog
+          backups={remoteBackups}
+          loading={syncOperation.loading}
+          selectedBackupId={selectedBackupId}
+          onSelectBackup={setSelectedBackupId}
+          onCancel={() => setRestoreDialogOpen(false)}
+          onConfirm={handleConfirmRestore}
+        />
+      ) : null}
     </section>
   );
+}
+
+interface RestoreBackupDialogProps {
+  backups: ReturnType<typeof useAppStore.getState>["remoteBackups"];
+  loading: boolean;
+  selectedBackupId: string;
+  onSelectBackup: (backupId: string) => void;
+  onCancel: () => void;
+  onConfirm: () => void;
+}
+
+function RestoreBackupDialog({ backups, loading, selectedBackupId, onSelectBackup, onCancel, onConfirm }: RestoreBackupDialogProps) {
+  return (
+    <>
+      <div className="dialog-overlay" aria-hidden="true" onClick={onCancel} />
+      <section className="model-settings-dialog" role="dialog" aria-modal="true" aria-label="选择远程备份恢复">
+        <div className="context-dialog-header">
+          <div className="min-w-0">
+            <h4 className="context-dialog-title">选择远程备份恢复</h4>
+            <p className="ui-muted mt-1 text-xs">恢复会覆盖本地业务数据，但会保留本地密钥和远程凭据</p>
+          </div>
+          <button className="ui-button-secondary context-dialog-close" type="button" aria-label="关闭恢复弹窗" onClick={onCancel}>
+            关闭
+          </button>
+        </div>
+        <div className="grid max-h-72 gap-2 overflow-y-auto">
+          {loading ? <p className="text-sm text-[var(--color-muted)]">正在读取远程备份</p> : null}
+          {!loading && backups.length === 0 ? <p className="text-sm text-[var(--color-muted)]">未找到远程备份</p> : null}
+          {backups.map((backup) => (
+            <label
+              key={backup.id}
+              className="rounded-lg border border-[var(--color-hairline)] bg-[var(--color-surface-soft)] p-3 text-sm"
+            >
+              <span className="sync-restore-backup-row flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+                <input
+                  className="shrink-0"
+                  type="radio"
+                  name="sync-restore-backup"
+                  checked={selectedBackupId === backup.id}
+                  onChange={() => onSelectBackup(backup.id)}
+                />
+                <span className="min-w-0 max-w-full truncate font-medium">{backup.prefix}</span>
+                <span className="shrink-0 text-xs text-[var(--color-muted)]">{formatBackupCreatedAt(backup.createdAt)}</span>
+                <span className="shrink-0 text-xs text-[var(--color-muted)]">{backup.encrypted ? "已加密" : "未加密"}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button className="ui-button-primary" type="button" disabled={!selectedBackupId || loading} onClick={onConfirm}>
+            确认覆盖本地数据并恢复
+          </button>
+          <button className="ui-button-secondary" type="button" onClick={onCancel}>
+            取消
+          </button>
+        </div>
+      </section>
+    </>
+  );
+}
+
+function formatBackupCreatedAt(createdAt: number): string {
+  return new Date(createdAt).toLocaleString("zh-CN");
 }

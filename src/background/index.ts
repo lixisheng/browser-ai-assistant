@@ -143,7 +143,7 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResp
     return true;
   }
 
-  if (message.type === "sync.backupNow" || message.type === "sync.restoreNow" || message.type === "sync.configureAlarm") {
+  if (message.type === "sync.backupNow" || message.type === "sync.listRemoteBackups" || message.type === "sync.restoreNow" || message.type === "sync.configureAlarm") {
     void handleSyncBackupMessage(message).then(sendResponse);
     return true;
   }

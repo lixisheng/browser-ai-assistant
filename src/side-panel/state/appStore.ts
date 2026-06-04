@@ -41,6 +41,7 @@ import {
   SYNC_WEBDAV_PASSWORD_KEY,
 } from "../../shared/sync/settings";
 import type { SyncSecrets, SyncSettings } from "../../shared/sync/types";
+import type { SyncRemoteBackupMeta } from "../../shared/sync/types";
 import type {
   ChatFolder,
   ChatImageAttachment,
@@ -119,6 +120,7 @@ interface AppState {
   contextMode: PageContextExtractMode;
   syncSettings: SyncSettings;
   syncSecrets: SyncSecrets;
+  remoteBackups: SyncRemoteBackupMeta[];
   syncOperation: SyncOperationState;
   failure?: RequestFailure;
   addExampleModel: () => void;
@@ -167,8 +169,9 @@ interface AppState {
   loadSyncSettings: () => Promise<void>;
   updateSyncSettings: (updates: Partial<SyncSettings>) => Promise<void>;
   updateSyncSecret: (key: keyof SyncSecrets, value: string) => Promise<void>;
+  loadRemoteBackups: () => Promise<void>;
   backupNow: () => Promise<void>;
-  restoreNow: () => Promise<void>;
+  restoreNow: (backupId: string) => Promise<void>;
   sendChatMessage: (content: string, attachments?: ChatImageAttachment[], promptInvocations?: ChatPromptInvocation[]) => Promise<void>;
   regenerateMessage: (messageId: string) => Promise<void>;
   editAndRegenerateUserMessage: (messageId: string, content: string, promptInvocations?: ChatPromptInvocation[]) => Promise<void>;
@@ -240,6 +243,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   contextMode: "text",
   syncSettings: DEFAULT_SYNC_SETTINGS,
   syncSecrets: DEFAULT_SYNC_SECRETS,
+  remoteBackups: [],
   syncOperation: {
     loading: false,
   },
@@ -1107,9 +1111,19 @@ export const useAppStore = create<AppState>()((set, get) => ({
         : { loading: false, error: response?.message ?? "备份失败，请重试" },
     });
   },
-  restoreNow: async () => {
+  loadRemoteBackups: async () => {
     set({ syncOperation: { loading: true } });
-    const response = await sendRuntimeMessage<{ ok: boolean; message?: string }>({ type: "sync.restoreNow" });
+    const response = await sendRuntimeMessage<{ ok: boolean; backups?: SyncRemoteBackupMeta[]; message?: string }>({ type: "sync.listRemoteBackups" });
+    set({
+      remoteBackups: response?.ok ? response.backups ?? [] : [],
+      syncOperation: response?.ok
+        ? { loading: false, message: response.backups?.length ? undefined : "未找到远程备份" }
+        : { loading: false, error: response?.message ?? "远程备份列表读取失败，请重试" },
+    });
+  },
+  restoreNow: async (backupId) => {
+    set({ syncOperation: { loading: true } });
+    const response = await sendRuntimeMessage<{ ok: boolean; message?: string }>({ type: "sync.restoreNow", backupId });
 
     if (response?.ok) {
       // 恢复已经在后台完成覆盖写入；这里并行刷新互不依赖的前端状态，避免串行等待拖慢恢复反馈。
@@ -1161,6 +1175,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       syncOperation: {
         loading: false,
       },
+      remoteBackups: [],
       failure: undefined,
     });
   },

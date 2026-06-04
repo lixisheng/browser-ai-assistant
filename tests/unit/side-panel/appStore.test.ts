@@ -237,6 +237,46 @@ describe("appStore", () => {
     expect(sendMessage).toHaveBeenCalledWith({ type: "sync.backupNow" }, expect.any(Function));
   });
 
+  it("可以加载远程备份列表并按指定备份恢复", async () => {
+    const sendMessage = vi.fn((message: { type: string; backupId?: string }, callback: (response: unknown) => void) => {
+      if (message.type === "sync.listRemoteBackups") {
+        callback({
+          ok: true,
+          backups: [
+            {
+              id: "browserAiAssistantBackup:home:1",
+              prefix: "home",
+              createdAt: 1,
+              provider: "chrome_sync",
+              encrypted: false,
+            },
+          ],
+        });
+        return undefined;
+      }
+
+      callback({ ok: true, message: "恢复完成" });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", { runtime: { sendMessage } });
+    await saveAppSetting({ key: SYNC_ENCRYPTION_SECRET_KEY, value: "local-secret", updatedAt: 1 });
+
+    await useAppStore.getState().loadRemoteBackups();
+    await useAppStore.getState().restoreNow("browserAiAssistantBackup:home:1");
+
+    expect(useAppStore.getState().remoteBackups).toEqual([
+      {
+        id: "browserAiAssistantBackup:home:1",
+        prefix: "home",
+        createdAt: 1,
+        provider: "chrome_sync",
+        encrypted: false,
+      },
+    ]);
+    expect(sendMessage).toHaveBeenCalledWith({ type: "sync.restoreNow", backupId: "browserAiAssistantBackup:home:1" }, expect.any(Function));
+    expect(useAppStore.getState().syncSecrets.encryptionSecret).toBe("local-secret");
+  });
+
   it("恢复备份后重新加载本地同步密钥和远程凭据", async () => {
     const sendMessage = vi.fn((_message: unknown, callback: (response: unknown) => void) => {
       callback({ ok: true, message: "恢复完成" });
@@ -247,7 +287,7 @@ describe("appStore", () => {
     await saveAppSetting({ key: SYNC_WEBDAV_PASSWORD_KEY, value: "webdav-password", updatedAt: 1 });
     await saveAppSetting({ key: SYNC_S3_SECRET_KEY, value: "s3-secret", updatedAt: 1 });
 
-    await useAppStore.getState().restoreNow();
+    await useAppStore.getState().restoreNow("browserAiAssistantBackup:work:1");
 
     expect(useAppStore.getState().syncSecrets).toMatchObject({
       encryptionSecret: "local-secret",

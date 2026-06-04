@@ -93,6 +93,10 @@ function createDataTransfer() {
   };
 }
 
+function formatBackupTestTime(createdAt: number): string {
+  return new Date(createdAt).toLocaleString("zh-CN");
+}
+
 function createShortcutRuntimeMock(options: { screenshotResponse?: unknown } = {}) {
   const sendMessage = vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
     if (message.type === "pageContext.extract") {
@@ -1540,6 +1544,7 @@ describe("App", () => {
     await user.click(screen.getByRole("checkbox", { name: "开启同步" }));
     expect(screen.getByRole("combobox", { name: "备份目标" })).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "备份前缀" })).toBeInTheDocument();
+    expect(screen.getByRole("spinbutton", { name: "最大备份数量" })).toHaveDisplayValue("3");
 
     await user.selectOptions(screen.getByRole("combobox", { name: "备份目标" }), "webdav");
     expect(screen.getByRole("textbox", { name: "WebDAV 地址" })).toBeInTheDocument();
@@ -1632,8 +1637,9 @@ describe("App", () => {
     expect(updateSyncSettings).toHaveBeenCalledWith({ backupPrefix: "备份" });
   });
 
-  it("恢复同步备份需要二次确认", async () => {
+  it("恢复同步备份可以在弹窗中选择指定远程备份并二次确认", async () => {
     const user = userEvent.setup();
+    const loadRemoteBackups = vi.fn(async () => undefined);
     const restoreNow = vi.fn(async () => undefined);
     await saveAppSetting({
       key: "syncSettings",
@@ -1641,6 +1647,23 @@ describe("App", () => {
       updatedAt: 1,
     });
     useAppStore.setState({
+      remoteBackups: [
+        {
+          id: "browserAiAssistantBackup:work:1",
+          prefix: "work",
+          createdAt: 1,
+          provider: "chrome_sync",
+          encrypted: false,
+        },
+        {
+          id: "browserAiAssistantBackup:home:2",
+          prefix: "home",
+          createdAt: 2,
+          provider: "chrome_sync",
+          encrypted: true,
+        },
+      ],
+      loadRemoteBackups,
       restoreNow,
     });
     render(<App />);
@@ -1649,11 +1672,19 @@ describe("App", () => {
     await user.click(screen.getByRole("tab", { name: "同步设置" }));
     await user.click(screen.getByRole("button", { name: "手动恢复" }));
 
-    expect(screen.getByRole("button", { name: "确认覆盖本地数据" })).toBeInTheDocument();
+    expect(loadRemoteBackups).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("dialog", { name: "选择远程备份恢复" })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: /home/ })).toBeInTheDocument();
+    const homeBackupRow = screen.getByText("home").closest(".sync-restore-backup-row");
+    expect(homeBackupRow).toBeInTheDocument();
+    expect(homeBackupRow).toHaveTextContent("home");
+    expect(homeBackupRow).toHaveTextContent(formatBackupTestTime(2));
+    expect(homeBackupRow).toHaveTextContent("已加密");
+    await user.click(screen.getByRole("radio", { name: /home/ }));
     expect(restoreNow).not.toHaveBeenCalled();
 
-    await user.click(screen.getByRole("button", { name: "确认覆盖本地数据" }));
-    expect(restoreNow).toHaveBeenCalledTimes(1);
+    await user.click(screen.getByRole("button", { name: "确认覆盖本地数据并恢复" }));
+    expect(restoreNow).toHaveBeenCalledWith("browserAiAssistantBackup:home:2");
   });
 
   it("可以在渠道管理中选择和取消 AI 标题生成模型", async () => {

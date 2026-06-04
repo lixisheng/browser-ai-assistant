@@ -58,6 +58,7 @@ function createChromeMock() {
           QUOTA_BYTES_PER_ITEM: 8192,
           set: vi.fn().mockResolvedValue(undefined),
           get: vi.fn().mockResolvedValue({}),
+          getKeys: vi.fn().mockResolvedValue([]),
           remove: vi.fn().mockResolvedValue(undefined),
         },
       },
@@ -213,15 +214,15 @@ describe("background 入口", () => {
     mock.alarmListeners[0]({ name: "browser-ai-assistant.sync-backup" } as chrome.alarms.Alarm);
 
     await vi.waitFor(() => {
-      expect(mock.chrome.storage.sync.set).toHaveBeenCalledWith(
-        expect.objectContaining({
-          "browserAiAssistantBackup:work": expect.objectContaining({
-            prefix: "work",
-            provider: "chrome_sync",
-          }),
-        }),
-      );
+      expect(mock.chrome.storage.sync.set).toHaveBeenCalled();
     });
+    const backupItems = mock.chrome.storage.sync.set.mock.calls[0][0] as Record<string, unknown>;
+    const backupKey = Object.keys(backupItems)[0];
+    expect(backupKey).toMatch(/^browserAiAssistantBackup:work:\d+$/);
+    expect(backupItems[backupKey]).toEqual(expect.objectContaining({
+      prefix: "work",
+      provider: "chrome_sync",
+    }));
   });
 
   it("处理手动备份 runtime 消息", async () => {
@@ -240,6 +241,91 @@ describe("background 入口", () => {
     await vi.waitFor(() => {
       expect(sendResponse).toHaveBeenCalledWith(expect.objectContaining({ ok: expect.any(Boolean) }));
     });
+  });
+
+  it("处理远程备份列表 runtime 消息", async () => {
+    const mock = createChromeMock();
+    const backup = {
+      version: 1,
+      createdAt: 1,
+      prefix: "work",
+      provider: "chrome_sync",
+      encrypted: false,
+      payload: { ok: true },
+    };
+    mock.chrome.storage.sync.getKeys.mockResolvedValue(["browserAiAssistantBackup:work:1"]);
+    mock.chrome.storage.sync.get.mockResolvedValue({ "browserAiAssistantBackup:work:1": backup });
+    vi.stubGlobal("chrome", mock.chrome);
+    await saveAppSetting({
+      key: "syncSettings",
+      value: { syncEnabled: true, backupPrefix: "work" },
+      updatedAt: 1,
+    });
+    await import("../../../src/background/index");
+    const sendResponse = vi.fn();
+
+    const keepChannelOpen = mock.messageListeners[0](
+      { type: "sync.listRemoteBackups" },
+      {} as chrome.runtime.MessageSender,
+      sendResponse,
+    );
+
+    expect(keepChannelOpen).toBe(true);
+    await vi.waitFor(() => {
+      expect(sendResponse).toHaveBeenCalledWith({
+        ok: true,
+        backups: [
+          {
+            id: "browserAiAssistantBackup:work:1",
+            prefix: "work",
+            createdAt: 1,
+            provider: "chrome_sync",
+            encrypted: false,
+          },
+        ],
+      });
+    });
+  });
+
+  it("处理指定远程备份恢复 runtime 消息", async () => {
+    const mock = createChromeMock();
+    const backup = {
+      version: 1,
+      createdAt: 1,
+      prefix: "home",
+      provider: "chrome_sync",
+      encrypted: false,
+      payload: {
+        version: 1,
+        modelConfigs: [],
+        modelProviders: [],
+        providerModels: [],
+        extractionRules: [],
+        chatSessions: [],
+        chatFolders: [],
+        appSettings: [],
+      },
+    };
+    mock.chrome.storage.sync.get.mockResolvedValue({ "browserAiAssistantBackup:home:1": backup });
+    vi.stubGlobal("chrome", mock.chrome);
+    await saveAppSetting({
+      key: "syncSettings",
+      value: { syncEnabled: true, backupPrefix: "work" },
+      updatedAt: 1,
+    });
+    await import("../../../src/background/index");
+    const sendResponse = vi.fn();
+
+    mock.messageListeners[0](
+      { type: "sync.restoreNow", backupId: "browserAiAssistantBackup:home:1" },
+      {} as chrome.runtime.MessageSender,
+      sendResponse,
+    );
+
+    await vi.waitFor(() => {
+      expect(sendResponse).toHaveBeenCalledWith({ ok: true, message: "恢复完成" });
+    });
+    expect(mock.chrome.storage.sync.get).toHaveBeenCalledWith("browserAiAssistantBackup:home:1");
   });
 
   it("WebDAV 配置备份时不写入 Chrome Sync", async () => {
@@ -286,7 +372,7 @@ describe("background 入口", () => {
     });
     expect(mock.chrome.storage.sync.set).not.toHaveBeenCalled();
     expect(fetcher).toHaveBeenCalledWith(
-      "https://dav.example.com/browser-ai/work.json",
+      expect.stringMatching(/^https:\/\/dav\.example\.com\/browser-ai\/work--\d+\.json$/),
       expect.objectContaining({ method: "PUT" }),
     );
   });
