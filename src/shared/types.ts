@@ -40,6 +40,7 @@ export interface ModelConfig extends ProviderModel {
 
 export interface ChatPreferenceValues {
   systemPrompt: string;
+  networkRelevancePrompt: string;
   temperature: number;
   maxTokens: number;
   topK?: number;
@@ -61,6 +62,45 @@ export interface ChatImageAttachment {
   name: string;
   mediaType: string;
   dataUrl: string;
+}
+
+export interface NetworkHeader {
+  name: string;
+  value: string;
+}
+
+export interface NetworkRequestMeta {
+  id: string;
+  url: string;
+  method: string;
+  status?: number;
+  statusText?: string;
+  mimeType?: string;
+  resourceType?: string;
+  startedAt?: string;
+  durationMs?: number;
+  requestHeaders?: NetworkHeader[];
+  responseHeaders?: NetworkHeader[];
+  requestBody?: string;
+  failed?: boolean;
+  error?: string;
+}
+
+export interface NetworkRequestDetail extends NetworkRequestMeta {
+  responseBody?: string;
+  responseBodyEncoding?: string;
+  truncated: boolean;
+  redacted: boolean;
+}
+
+export interface ChatNetworkContextAttachment {
+  id: string;
+  title: string;
+  summary: string;
+  requests: NetworkRequestDetail[];
+  createdAt: number;
+  redacted: boolean;
+  truncated: boolean;
 }
 
 export interface PromptTemplate {
@@ -101,6 +141,7 @@ export interface ChatMessage {
   contextMode: PageContextExtractMode;
   matchedRuleId?: string;
   attachments?: ChatImageAttachment[];
+  networkContextAttachment?: ChatNetworkContextAttachment;
   promptInvocations?: ChatPromptInvocation[];
   thinking?: string;
   streaming?: boolean;

@@ -1,5 +1,6 @@
 import { parseAssistantResponse } from "../shared/chat/parseAssistantResponse";
 import { createModelRequestPayload } from "../shared/models/modelRequestPayload";
+import type { OpenAIStructuredOutputFormat } from "../shared/models/types";
 import type { ChatMessage, ModelConfig } from "../shared/types";
 
 export interface ChatSendMessage {
@@ -7,6 +8,7 @@ export interface ChatSendMessage {
   model: ModelConfig;
   messages: ChatMessage[];
   stream: boolean;
+  structuredOutput?: OpenAIStructuredOutputFormat;
 }
 
 export type ChatSendResponse =
@@ -18,6 +20,8 @@ export type ChatSendResponse =
   | {
       ok: false;
       message: string;
+      status?: number;
+      errorBody?: string;
     };
 
 type Fetcher = typeof fetch;
@@ -33,7 +37,7 @@ export async function handleChatSendMessage(
   callbacks: ChatStreamCallbacks = {},
 ): Promise<ChatSendResponse> {
   try {
-    const payload = createModelRequestPayload(message.model, message.messages, message.stream);
+    const payload = createModelRequestPayload(message.model, message.messages, message.stream, message.structuredOutput);
     const response = await fetcher(payload.url, {
       method: "POST",
       headers: payload.headers,
@@ -41,9 +45,11 @@ export async function handleChatSendMessage(
     });
 
     if (!response.ok) {
+      const errorBody = message.structuredOutput ? await readSafeErrorBody(response) : undefined;
       return {
         ok: false,
         message: `模型请求失败：${response.status} ${response.statusText}`.trim(),
+        ...(message.structuredOutput ? { status: response.status, errorBody } : {}),
       };
     }
 
@@ -243,8 +249,9 @@ function isAnthropicStreamStop(data: unknown): boolean {
 }
 
 function extractAssistantContent(data: unknown): string {
-  if (isOpenAIResponse(data)) {
-    return data.choices[0].message.content;
+  const openAIContent = extractOpenAIAssistantContent(data);
+  if (openAIContent) {
+    return openAIContent;
   }
 
   if (isAnthropicResponse(data)) {
@@ -266,20 +273,52 @@ function extractAssistantContent(data: unknown): string {
   return "";
 }
 
-function isOpenAIResponse(data: unknown): data is { choices: Array<{ message: { content: string } }> } {
+function extractOpenAIAssistantContent(data: unknown): string {
   if (!data || typeof data !== "object" || !("choices" in data) || !Array.isArray(data.choices)) {
-    return false;
+    return "";
   }
 
   const firstChoice = data.choices[0];
   if (!firstChoice || typeof firstChoice !== "object" || !("message" in firstChoice)) {
-    return false;
+    return "";
   }
 
   const { message } = firstChoice;
-  return Boolean(message && typeof message === "object" && "content" in message && typeof message.content === "string");
+  if (!message || typeof message !== "object") {
+    return "";
+  }
+
+  if ("content" in message && typeof message.content === "string") {
+    return message.content;
+  }
+
+  if (!("tool_calls" in message) || !Array.isArray(message.tool_calls)) {
+    return "";
+  }
+
+  for (const toolCall of message.tool_calls) {
+    if (!toolCall || typeof toolCall !== "object" || !("function" in toolCall)) {
+      continue;
+    }
+    const toolFunction = toolCall.function;
+    if (toolFunction && typeof toolFunction === "object" && "arguments" in toolFunction && typeof toolFunction.arguments === "string") {
+      return toolFunction.arguments;
+    }
+  }
+
+  return "";
 }
 
 function isAnthropicResponse(data: unknown): data is { content: unknown[] } {
   return Boolean(data && typeof data === "object" && "content" in data && Array.isArray(data.content));
+}
+
+async function readSafeErrorBody(response: Response): Promise<string | undefined> {
+  try {
+    // 这里只在错误响应分支读取一次 body，用作结构化输出能力降级的诊断快照；读取后不会再复用该响应体。
+    const text = await response.text();
+    return text.slice(0, 2000);
+  } catch {
+    return undefined;
+  }
 }

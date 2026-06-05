@@ -1,6 +1,6 @@
 import type { ChatImageAttachment, ChatMessage, ModelConfig } from "../types";
 import { createEndpointUrl } from "./modelCatalog";
-import type { ModelRequestPayload } from "./types";
+import type { ModelRequestPayload, OpenAIStructuredOutputFormat } from "./types";
 
 type OpenAIMessageContent =
   | string
@@ -13,6 +13,7 @@ export function createOpenAIChatPayload(
   model: ModelConfig,
   messages: ChatMessage[],
   stream: boolean,
+  structuredOutput?: OpenAIStructuredOutputFormat,
 ): ModelRequestPayload {
   const body: Record<string, unknown> = {
     model: model.modelId,
@@ -27,6 +28,25 @@ export function createOpenAIChatPayload(
 
   if (typeof model.topK === "number") {
     body.top_k = model.topK;
+  }
+
+  if (structuredOutput?.type === "json_schema") {
+    body.response_format = structuredOutput;
+  }
+
+  if (structuredOutput?.type === "tool") {
+    body.tools = [
+      {
+        type: "function",
+        function: structuredOutput.tool,
+      },
+    ];
+    body.tool_choice = {
+      type: "function",
+      function: {
+        name: structuredOutput.tool.name,
+      },
+    };
   }
 
   return {

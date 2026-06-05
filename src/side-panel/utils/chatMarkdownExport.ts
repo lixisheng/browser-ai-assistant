@@ -1,3 +1,4 @@
+import { formatNetworkAttachmentForExport } from "../../shared/networkContext";
 import type { ChatMessage, ChatSession } from "../../shared/types";
 
 const roleLabels: Record<ChatMessage["role"], string> = {
@@ -126,13 +127,27 @@ function createExportBlocks(session: ChatSession, exportedAt: number): ExportBlo
 
 function formatMessageExportContent(message: ChatMessage): string {
   const promptInvocations = message.role === "user" ? (message.promptInvocations ?? []) : [];
+  const contentSections = [message.content];
+
+  if (message.networkContextAttachment) {
+    contentSections.push(
+      [
+        "# Network 请求详情附件",
+        "",
+        message.networkContextAttachment.summary,
+        "",
+        formatNetworkAttachmentForExport(message.networkContextAttachment.requests),
+      ].join("\n"),
+    );
+  }
+
   if (promptInvocations.length === 0) {
-    return message.content;
+    return contentSections.join("\n\n").trim();
   }
 
   const promptSections = promptInvocations.map((prompt) => [`## ${prompt.title}`, "```", prompt.contentSnapshot, "```"].join("\n"));
 
-  return ["# 调用的Prompt", "", promptSections.join("\n\n"), "", "# 用户输入", "", message.content].join("\n");
+  return ["# 调用的Prompt", "", promptSections.join("\n\n"), "", "# 用户输入", "", ...contentSections].join("\n");
 }
 
 function blockToHtml(block: ExportBlock): string {

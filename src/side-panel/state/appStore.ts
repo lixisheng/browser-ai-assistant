@@ -3,6 +3,16 @@ import { buildChatRequestMessages } from "../../shared/chat/buildChatRequestMess
 import { createModelConfig } from "../../shared/chat/modelConfig";
 import { createPageContextPrompt } from "../../shared/chat/pageContextPrompt";
 import type { RemoteModelInfo } from "../../shared/models/modelCatalog";
+import type { OpenAIStructuredOutputFormat } from "../../shared/models/types";
+import {
+  createNetworkContextPrompt,
+  createNetworkMetadataPrompt,
+  DEFAULT_NETWORK_RELEVANCE_PROMPT,
+  formatNetworkAttachmentSummary,
+  parseRelevantNetworkRequestIds,
+  redactNetworkRequestDetail,
+  redactNetworkRequestMeta,
+} from "../../shared/networkContext";
 import { createTitleGenerationMessages, generateSessionTitle } from "../../shared/models/titleGeneration";
 import {
   deleteChatSession,
@@ -46,6 +56,7 @@ import type {
   ChatFolder,
   ChatImageAttachment,
   ChatMessage,
+  ChatNetworkContextAttachment,
   ChatPromptInvocation,
   ChatPreferenceValues,
   ChatSession,
@@ -53,6 +64,8 @@ import type {
   EndpointType,
   ExtractionRule,
   ModelProvider,
+  NetworkRequestDetail,
+  NetworkRequestMeta,
   PageContextExtractMode,
   PromptTemplate,
   ProviderModel,
@@ -60,6 +73,10 @@ import type {
 } from "../../shared/types";
 
 const DEBUG_PREFIX = "[提取规则 AI 生成诊断]";
+
+function createSessionId(timestamp = Date.now()): string {
+  return `session-${timestamp}-${Math.random().toString(36).slice(2, 8)}`;
+}
 
 interface RequestFailure {
   message: string;
@@ -142,6 +159,8 @@ interface AppState {
   composerHasDraft: boolean;
   appendPageContextToSystemPrompt: boolean;
   streamMode: boolean;
+  networkContextEnabled: boolean;
+  networkContextStatus?: string;
   sending: boolean;
   contextMode: PageContextExtractMode;
   syncSettings: SyncSettings;
@@ -193,6 +212,8 @@ interface AppState {
   setComposerHasDraft: (hasDraft: boolean) => void;
   setAppendPageContextToSystemPrompt: (enabled: boolean) => void;
   setStreamMode: (streamMode: boolean) => void;
+  setNetworkContextEnabled: (enabled: boolean) => void;
+  checkNetworkContextConnection: () => Promise<void>;
   setContextMode: (contextMode: PageContextExtractMode) => void;
   loadSyncSettings: () => Promise<void>;
   updateSyncSettings: (updates: Partial<SyncSettings>) => Promise<void>;
@@ -234,6 +255,7 @@ const exampleModel: ProviderModel = {
 
 const DEFAULT_CHAT_PREFERENCES: ChatPreferenceValues = {
   systemPrompt: "你是网页助手",
+  networkRelevancePrompt: DEFAULT_NETWORK_RELEVANCE_PROMPT,
   temperature: 0.7,
   maxTokens: 1024,
   topK: undefined,
@@ -272,6 +294,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
   composerHasDraft: false,
   appendPageContextToSystemPrompt: true,
   streamMode: true,
+  networkContextEnabled: false,
+  networkContextStatus: undefined,
   sending: false,
   contextMode: "text",
   syncSettings: DEFAULT_SYNC_SETTINGS,
@@ -587,7 +611,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       ? resolveAvailableModelId(currentState.selectedModelId, currentState.models, currentState.providers)
       : resolveAvailableModelId(currentState.defaultChatModelId, currentState.models, currentState.providers);
     const session: ChatSession = {
-      id: `session-${now}`,
+      id: createSessionId(now),
       title: "新对话",
       archived: false,
       sortOrder: now,
@@ -1205,6 +1229,51 @@ export const useAppStore = create<AppState>()((set, get) => ({
   setComposerHasDraft: (hasDraft) => set({ composerHasDraft: hasDraft }),
   setAppendPageContextToSystemPrompt: (enabled) => set({ appendPageContextToSystemPrompt: enabled }),
   setStreamMode: (streamMode) => set({ streamMode }),
+  setNetworkContextEnabled: (enabled) => {
+    set({
+      networkContextEnabled: enabled,
+      networkContextStatus: enabled ? get().networkContextStatus : undefined,
+    });
+    if (enabled) {
+      void get().checkNetworkContextConnection();
+    }
+  },
+  checkNetworkContextConnection: async () => {
+    const current = get();
+    if (!current.networkContextEnabled) {
+      set({ networkContextStatus: undefined });
+      return;
+    }
+    if (current.sending) {
+      return;
+    }
+
+    try {
+      const snapshot = await sendRuntimeMessage<NetworkContextSnapshotResponse | undefined>({
+        type: "networkContext.getSnapshot",
+      });
+      if (!get().networkContextEnabled || get().sending) {
+        return;
+      }
+      if (!snapshot?.ok) {
+        set({ networkContextStatus: "未检测到当前标签页 DevTools Network 连接，请关闭 DevTools 后重新打开，再刷新页面" });
+        return;
+      }
+
+      const requestCount = snapshot.requests.length;
+      set({
+        networkContextStatus:
+          requestCount > 0
+            ? `已连接 DevTools Network，已采集 ${requestCount} 个请求`
+            : "已连接 DevTools Network，但暂未采集到请求，请刷新页面或触发接口请求",
+      });
+    } catch {
+      if (!get().networkContextEnabled || get().sending) {
+        return;
+      }
+      set({ networkContextStatus: "未检测到当前标签页 DevTools Network 连接，请关闭 DevTools 后重新打开，再刷新页面" });
+    }
+  },
   setContextMode: (contextMode) => {
     set((state) => ({
       contextMode,
@@ -1326,6 +1395,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
       composerHasDraft: false,
       appendPageContextToSystemPrompt: true,
       streamMode: true,
+      networkContextEnabled: false,
+      networkContextStatus: undefined,
       sending: false,
       contextMode: "text",
       syncSettings: DEFAULT_SYNC_SETTINGS,
@@ -1456,6 +1527,10 @@ function normalizeChatPreferences(value?: Partial<ChatPreferenceValues>): ChatPr
       typeof value?.systemPrompt === "string" && value.systemPrompt.trim()
         ? value.systemPrompt.trim()
         : DEFAULT_CHAT_PREFERENCES.systemPrompt,
+    networkRelevancePrompt:
+      typeof value?.networkRelevancePrompt === "string" && value.networkRelevancePrompt.trim()
+        ? value.networkRelevancePrompt.trim()
+        : DEFAULT_CHAT_PREFERENCES.networkRelevancePrompt,
     temperature: normalizeNumber(value?.temperature, DEFAULT_CHAT_PREFERENCES.temperature, 0, 2),
     maxTokens: Math.round(normalizeNumber(value?.maxTokens, DEFAULT_CHAT_PREFERENCES.maxTokens, 1, 200_000)),
     topK: normalizeOptionalInteger(value?.topK, 1, 1_000),
@@ -1586,7 +1661,31 @@ type ChatSendMessage = {
   model: ReturnType<typeof createModelConfig>;
   messages: ChatMessage[];
   stream: boolean;
+  structuredOutput?: OpenAIStructuredOutputFormat;
 };
+
+type NetworkContextSnapshotResponse =
+  | { ok: true; tabId?: number; requests: NetworkRequestMeta[] }
+  | { ok: false; message?: string };
+
+type NetworkContextDetailsResponse =
+  | { ok: true; details: NetworkRequestDetail[] }
+  | { ok: false; message?: string };
+
+type NetworkRelevanceResponse =
+  | { ok: true; content: string }
+  | { ok: false; message?: string; status?: number; errorBody?: string };
+
+type PreparedNetworkContext =
+  | {
+      ok: true;
+      userMessage: ChatMessage;
+      attachment?: ChatNetworkContextAttachment;
+    }
+  | {
+      ok: false;
+      message: string;
+    };
 
 interface SendChatMessageWithStateInput {
   content: string;
@@ -1613,6 +1712,7 @@ interface EditAndRegenerateUserMessageInput {
 interface RunChatRequestInput {
   state: AppState;
   privateMode?: boolean;
+  allowNetworkContext?: boolean;
   pageContextPrompt: string;
   session: ChatSession;
   userMessage: ChatMessage;
@@ -1671,7 +1771,7 @@ async function sendChatMessageWithState(input: SendChatMessageWithStateInput): P
   const session =
     baseSession ??
     {
-      id: `session-${now}`,
+      id: createSessionId(now),
       title: createDefaultSessionTitle(createVisibleUserTitleContent(trimmedContent, promptInvocations)),
       archived: false,
       sortOrder: now,
@@ -1715,6 +1815,7 @@ async function sendChatMessageWithState(input: SendChatMessageWithStateInput): P
     fallbackTitle: session.messages.length === 0 ? createDefaultSessionTitle(createVisibleUserTitleContent(trimmedContent, promptInvocations)) : session.title,
     model,
     provider,
+    allowNetworkContext: true,
     get: input.get,
     set: input.set,
   });
@@ -1870,6 +1971,23 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
         chatSessions: upsertSession(current.chatSessions, nextSession),
       }));
     }
+
+    const preparedNetworkContext =
+      input.allowNetworkContext && input.state.networkContextEnabled
+        ? await prepareNetworkContextForRequest({
+            userMessage: input.userMessage,
+            modelConfig,
+            endpointType: input.provider.endpointType,
+            networkRelevancePrompt: input.state.chatPreferences.networkRelevancePrompt,
+            set: input.set,
+          })
+        : ({ ok: true, userMessage: input.userMessage } satisfies PreparedNetworkContext);
+    if (!preparedNetworkContext.ok) {
+      input.set({ failure: { message: preparedNetworkContext.message }, networkContextStatus: undefined });
+      return;
+    }
+    input.set({ networkContextStatus: undefined });
+
     const titleGenerationPromise = !input.privateMode && input.shouldGenerateTitle
       ? generateTitleForSession({
         sessionId: nextSession.id,
@@ -1889,7 +2007,7 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
         model: modelConfig,
         pageContext: input.pageContextPrompt,
         existingMessages: input.existingMessages,
-        userMessage: input.userMessage,
+        userMessage: preparedNetworkContext.userMessage,
         systemPrompt: effectiveChatPreferences.systemPrompt,
         appendPageContextToSystemPrompt: input.state.appendPageContextToSystemPrompt,
       }),
@@ -1907,6 +2025,7 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
         contextMode: input.state.contextMode,
         matchedRuleId: input.state.pageContext.matchedRuleId,
         privateMode: input.privateMode,
+        networkContextAttachment: preparedNetworkContext.attachment,
         request,
       });
       if (streamResult.completed) {
@@ -1944,6 +2063,7 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
       contextPrompt: input.pageContextPrompt,
       contextMode: input.state.contextMode,
       matchedRuleId: input.state.pageContext.matchedRuleId,
+      networkContextAttachment: preparedNetworkContext.attachment,
     };
     if (input.privateMode) {
       input.set((current) => {
@@ -1993,8 +2113,205 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
       },
     });
   } finally {
-    input.set({ sending: false });
+    input.set({ sending: false, networkContextStatus: undefined });
   }
+}
+
+const MAX_NETWORK_METADATA_REQUESTS = 80;
+const MAX_RELEVANT_NETWORK_REQUESTS = 10;
+const NETWORK_RELEVANCE_SCHEMA = {
+  type: "object",
+  properties: {
+    requestIds: {
+      type: "array",
+      items: { type: "string" },
+    },
+  },
+  required: ["requestIds"],
+  additionalProperties: false,
+};
+const NETWORK_RELEVANCE_JSON_SCHEMA_OUTPUT = {
+  type: "json_schema",
+  json_schema: {
+    name: "network_relevance",
+    strict: true,
+    schema: NETWORK_RELEVANCE_SCHEMA,
+  },
+} satisfies OpenAIStructuredOutputFormat;
+const NETWORK_RELEVANCE_TOOL_OUTPUT = {
+  type: "tool",
+  tool: {
+    name: "select_network_requests",
+    description: "筛选与用户需求最相关的 DevTools Network 请求 ID。",
+    parameters: NETWORK_RELEVANCE_SCHEMA,
+  },
+} satisfies OpenAIStructuredOutputFormat;
+
+async function prepareNetworkContextForRequest(input: {
+  userMessage: ChatMessage;
+  modelConfig: ChatSendMessage["model"];
+  endpointType: EndpointType;
+  networkRelevancePrompt: string;
+  set: StoreSetter;
+}): Promise<PreparedNetworkContext> {
+  input.set({ networkContextStatus: "正在读取 DevTools Network 请求" });
+  const snapshot = await sendRuntimeMessage<NetworkContextSnapshotResponse | undefined>({
+    type: "networkContext.getSnapshot",
+  });
+  if (!snapshot?.ok) {
+    return { ok: false, message: snapshot?.message ?? "获取 Network 请求失败，请确认 DevTools 已打开" };
+  }
+
+  const requests = snapshot.requests.slice(-MAX_NETWORK_METADATA_REQUESTS).map(redactNetworkRequestMeta);
+  if (requests.length === 0) {
+    return { ok: false, message: "未采集到可用于分析的 Network 请求，请先打开 DevTools Network 并刷新页面" };
+  }
+
+  input.set({ networkContextStatus: "正在筛选相关 Network 请求" });
+  const relevanceResponse = await selectRelevantNetworkRequests({
+    modelConfig: input.modelConfig,
+    messages: createNetworkRelevanceMessages({
+      model: input.modelConfig,
+      endpointType: input.endpointType,
+      userDemand: input.userMessage.content,
+      requests,
+      promptTemplate: input.networkRelevancePrompt,
+    }),
+  });
+  if (!relevanceResponse?.ok) {
+    return { ok: false, message: relevanceResponse?.message ?? "Network 请求相关性筛选失败" };
+  }
+
+  const requestIds = parseRelevantNetworkRequestIds(
+    relevanceResponse.content,
+    requests,
+  ).slice(0, MAX_RELEVANT_NETWORK_REQUESTS);
+  if (requestIds.length === 0) {
+    return { ok: false, message: "未筛选到与本次需求相关的 Network 请求" };
+  }
+
+  input.set({ networkContextStatus: "正在补充 Network 请求详情" });
+  const detailsResponse = await sendRuntimeMessage<NetworkContextDetailsResponse | undefined>({
+    type: "networkContext.getDetails",
+    tabId: snapshot.tabId,
+    requestIds,
+  });
+  if (!detailsResponse?.ok) {
+    return { ok: false, message: detailsResponse?.message ?? "读取 Network 请求详情失败" };
+  }
+
+  const details = detailsResponse.details.map(redactNetworkRequestDetail);
+  if (details.length === 0) {
+    return { ok: false, message: "未读取到筛选请求的完整详情" };
+  }
+
+  const networkPrompt = createNetworkContextPrompt({
+    userDemand: input.userMessage.content,
+    details,
+  });
+  const attachment: ChatNetworkContextAttachment = {
+    id: `network-${Date.now()}`,
+    title: "Network 请求详情",
+    summary: formatNetworkAttachmentSummary(details),
+    requests: details,
+    createdAt: Date.now(),
+    redacted: details.some((detail) => detail.redacted),
+    truncated: details.some((detail) => detail.truncated),
+  };
+
+  return {
+    ok: true,
+    userMessage: {
+      ...input.userMessage,
+      content: [input.userMessage.content, "", "请结合以下 DevTools Network 请求详情回答用户需求：", networkPrompt].join("\n"),
+    },
+    attachment,
+  };
+}
+
+async function selectRelevantNetworkRequests(input: {
+  modelConfig: ChatSendMessage["model"];
+  messages: ChatMessage[];
+}): Promise<NetworkRelevanceResponse | undefined> {
+  const attempts: Array<{
+    structuredOutput?: OpenAIStructuredOutputFormat;
+  }> = [
+    { structuredOutput: NETWORK_RELEVANCE_JSON_SCHEMA_OUTPUT },
+    { structuredOutput: NETWORK_RELEVANCE_TOOL_OUTPUT },
+    {},
+  ];
+
+  let lastFailure: NetworkRelevanceResponse | undefined;
+  for (const attempt of attempts) {
+    const response = await sendRuntimeMessage<NetworkRelevanceResponse | undefined>({
+      type: "chat.send",
+      model: input.modelConfig,
+      messages: input.messages,
+      stream: false,
+      structuredOutput: attempt.structuredOutput,
+    });
+    if (response?.ok) {
+      return response;
+    }
+
+    lastFailure = response;
+    if (!isStructuredOutputUnsupported(response)) {
+      return response;
+    }
+  }
+
+  return lastFailure;
+}
+
+function isStructuredOutputUnsupported(response: NetworkRelevanceResponse | undefined): boolean {
+  if (!response || response.ok) {
+    return false;
+  }
+
+  const text = `${response.message ?? ""}\n${response.errorBody ?? ""}`.toLowerCase();
+  return (
+    response.status === 400 ||
+    response.status === 404 ||
+    response.status === 422
+  ) && /response[_\s-]?format|json[_\s-]?schema|tool[_\s-]?choice|tool_calls?|function[_\s-]?calling|functions?|unsupported|not\s+supported|unknown\s+parameter|invalid\s+parameter|extra_forbidden/.test(text);
+}
+
+function createNetworkRelevanceMessages(input: {
+  model: ChatSendMessage["model"];
+  endpointType: EndpointType;
+  userDemand: string;
+  requests: NetworkRequestMeta[];
+  promptTemplate: string;
+}): ChatMessage[] {
+  const now = Date.now();
+  const baseMessage = {
+    modelId: input.model.id,
+    endpointType: input.endpointType,
+    streamMode: false,
+    systemPrompt: "你是 Network 请求相关性筛选器，只能返回 JSON。",
+    contextPrompt: "",
+    contextMode: "text" as const,
+    createdAt: now,
+  };
+
+  return [
+    {
+      ...baseMessage,
+      id: `network-relevance-${now}-system`,
+      role: "system",
+      content: "你只负责根据用户需求筛选相关 Network 请求。只返回 JSON，不要解释。",
+    },
+    {
+      ...baseMessage,
+      id: `network-relevance-${now}-user`,
+      role: "user",
+      content: createNetworkMetadataPrompt({
+        userDemand: input.userDemand,
+        requests: input.requests,
+        promptTemplate: input.promptTemplate,
+      }),
+    },
+  ];
 }
 
 async function generateTitleForSession(input: GenerateTitleForSessionInput): Promise<void> {
@@ -2178,6 +2495,7 @@ interface StreamingChatInput {
   contextMode: PageContextExtractMode;
   matchedRuleId?: string;
   privateMode?: boolean;
+  networkContextAttachment?: ChatNetworkContextAttachment;
   request: ChatSendMessage;
 }
 
@@ -2199,6 +2517,7 @@ async function sendStreamingChatMessage(input: StreamingChatInput): Promise<Stre
     contextPrompt: input.contextPrompt,
     contextMode: input.contextMode,
     matchedRuleId: input.matchedRuleId,
+    networkContextAttachment: input.networkContextAttachment,
     streaming: true,
   };
 

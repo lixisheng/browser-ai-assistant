@@ -356,6 +356,91 @@ describe("聊天模型请求处理", () => {
     });
   });
 
+  it("OpenAI 工具调用响应会读取 function arguments 作为正文", async () => {
+    const fetcher = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({
+        choices: [
+          {
+            message: {
+              tool_calls: [
+                {
+                  type: "function",
+                  function: {
+                    name: "select_network_requests",
+                    arguments: '{"requestIds":["req-1"]}',
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    });
+
+    const result = await handleChatSendMessage(
+      {
+        type: "chat.send",
+        model: createModel(),
+        messages: [createMessage("user", "筛选请求")],
+        stream: false,
+        structuredOutput: {
+          type: "json_schema",
+          json_schema: {
+            name: "network_relevance",
+            schema: {
+              type: "object",
+              properties: {},
+            },
+          },
+        },
+      },
+      fetcher,
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      content: '{"requestIds":["req-1"]}',
+      thinking: undefined,
+    });
+  });
+
+  it("模型接口失败时返回内部降级诊断但用户提示仍为中文摘要", async () => {
+    const fetcher = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 400,
+      statusText: "Bad Request",
+      text: vi.fn().mockResolvedValue('{"error":{"message":"response_format json_schema is not supported"}}'),
+    });
+
+    const result = await handleChatSendMessage(
+      {
+        type: "chat.send",
+        model: createModel(),
+        messages: [createMessage("user", "筛选请求")],
+        stream: false,
+        structuredOutput: {
+          type: "json_schema",
+          json_schema: {
+            name: "network_relevance",
+            schema: {
+              type: "object",
+              properties: {},
+            },
+          },
+        },
+      },
+      fetcher,
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      message: "模型请求失败：400 Bad Request",
+      status: 400,
+      errorBody: '{"error":{"message":"response_format json_schema is not supported"}}',
+    });
+  });
+
   it("请求异常包含敏感信息时返回固定脱敏错误", async () => {
     const fetcher = vi
       .fn()

@@ -128,6 +128,7 @@ export function MessageList({ messages, onRegenerateMessage, onEditAndRegenerate
                 {message.content.trim() ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown> : null}
               </div>
             )}
+            {message.role === "assistant" && message.networkContextAttachment ? <NetworkContextAttachmentView message={message} /> : null}
             <div className={`message-regenerate-action message-regenerate-action-${message.role}`}>
               {message.role === "user" ? (
                 <button
@@ -192,6 +193,37 @@ export function MessageList({ messages, onRegenerateMessage, onEditAndRegenerate
         </>
       ) : null}
     </section>
+  );
+}
+
+function NetworkContextAttachmentView({ message }: { message: ChatMessage }) {
+  const attachment = message.networkContextAttachment;
+  if (!attachment) {
+    return null;
+  }
+
+  return (
+    <details className="message-network-attachment">
+      <summary>
+        <span>{attachment.title}</span>
+        <span className="message-network-count">{attachment.requests.length}</span>
+      </summary>
+      <p className="message-network-summary">{attachment.summary}</p>
+      <ul className="message-network-request-list">
+        {attachment.requests.map((request) => (
+          <li key={request.id} className="message-network-request-item">
+            <span className="message-network-request-line">
+              {request.method || "UNKNOWN"} {request.status ?? "unknown"} {request.url}
+            </span>
+            <span className="message-network-flags">
+              {request.redacted ? "已脱敏" : "原文"}
+              {request.truncated ? " · 已截断" : ""}
+            </span>
+            <pre>{JSON.stringify(request, null, 2)}</pre>
+          </li>
+        ))}
+      </ul>
+    </details>
   );
 }
 

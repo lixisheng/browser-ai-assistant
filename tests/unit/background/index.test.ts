@@ -3,6 +3,31 @@ import { clearDatabase, saveAppSetting, saveModelProvider } from "../../../src/s
 
 type Listener<T extends (...args: never[]) => void> = T;
 
+function createPortMock(name: string) {
+  const messageListeners: Array<(message: unknown) => void> = [];
+  const disconnectListeners: Array<() => void> = [];
+  return {
+    name,
+    sender: {},
+    postMessage: vi.fn(),
+    disconnect: vi.fn(),
+    onMessage: {
+      addListener: vi.fn((listener: (message: unknown) => void) => messageListeners.push(listener)),
+      removeListener: vi.fn(),
+    },
+    onDisconnect: {
+      addListener: vi.fn((listener: () => void) => disconnectListeners.push(listener)),
+      removeListener: vi.fn(),
+    },
+    emitMessage: (message: unknown) => messageListeners.forEach((listener) => listener(message)),
+    emitDisconnect: () => disconnectListeners.forEach((listener) => listener()),
+  } as unknown as chrome.runtime.Port & {
+    emitMessage: (message: unknown) => void;
+    emitDisconnect: () => void;
+    postMessage: ReturnType<typeof vi.fn>;
+  };
+}
+
 function createChromeMock() {
   const installedListeners: Array<Listener<() => void>> = [];
   const startupListeners: Array<Listener<() => void>> = [];
@@ -14,6 +39,7 @@ function createChromeMock() {
   > = [];
   const connectListeners: Array<Listener<(port: chrome.runtime.Port) => void>> = [];
   const alarmListeners: Array<Listener<(alarm: chrome.alarms.Alarm) => void>> = [];
+  const tabUpdatedListeners: Array<Listener<(tabId: number, changeInfo: { status?: string }, tab: chrome.tabs.Tab) => void>> = [];
 
   return {
     installedListeners,
@@ -24,6 +50,7 @@ function createChromeMock() {
     messageListeners,
     connectListeners,
     alarmListeners,
+    tabUpdatedListeners,
     chrome: {
       runtime: {
         onInstalled: {
@@ -85,6 +112,11 @@ function createChromeMock() {
       },
       tabs: {
         query: vi.fn().mockResolvedValue([{ id: 7 }]),
+        onUpdated: {
+          addListener: vi.fn((listener: Listener<(tabId: number, changeInfo: { status?: string }, tab: chrome.tabs.Tab) => void>) =>
+            tabUpdatedListeners.push(listener),
+          ),
+        },
         captureVisibleTab: vi.fn().mockResolvedValue("data:image/png;base64,QUJD"),
         sendMessage: vi.fn().mockResolvedValue({
           ok: true,
@@ -108,6 +140,7 @@ describe("background 入口", () => {
   });
 
   afterEach(async () => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     await clearDatabase();
   });
@@ -475,6 +508,334 @@ describe("background 入口", () => {
     expect(mock.chrome.tabs.query).not.toHaveBeenCalledWith({ active: true, currentWindow: true });
   });
 
+  it("DevTools Network 未连接时返回中文错误", async () => {
+    const mock = createChromeMock();
+    vi.stubGlobal("chrome", mock.chrome);
+    await import("../../../src/background/index");
+    const sendResponse = vi.fn();
+
+    const keepChannelOpen = mock.messageListeners[0](
+      { type: "networkContext.getSnapshot", tabId: 7 },
+      {} as chrome.runtime.MessageSender,
+      sendResponse,
+    );
+
+    expect(keepChannelOpen).toBe(true);
+    await vi.waitFor(() => {
+      expect(sendResponse).toHaveBeenCalledWith({
+        ok: false,
+        message: "请先打开当前标签页 DevTools，并刷新页面后再使用 Network 上下文",
+      });
+    });
+  });
+
+  it("DevTools Network 连接后返回当前标签页请求快照", async () => {
+    const mock = createChromeMock();
+    vi.stubGlobal("chrome", mock.chrome);
+    await import("../../../src/background/index");
+    const port = createPortMock("network.devtools");
+    mock.connectListeners[0](port);
+    port.emitMessage({
+      type: "networkContext.devtoolsConnected",
+      tabId: 7,
+      requests: [{ id: "req-1", url: "https://api.example.com/users", method: "GET", status: 200 }],
+    });
+    const sendResponse = vi.fn();
+
+    mock.messageListeners[0](
+      { type: "networkContext.getSnapshot", tabId: 7 },
+      {} as chrome.runtime.MessageSender,
+      sendResponse,
+    );
+
+    await vi.waitFor(() => {
+      expect(sendResponse).toHaveBeenCalledWith({
+        ok: true,
+        tabId: 7,
+        requests: [{ id: "req-1", url: "https://api.example.com/users", method: "GET", status: 200 }],
+      });
+    });
+  });
+
+  it("当前标签页刷新导致 DevTools port 短暂断开时保留快照并允许重连覆盖", async () => {
+    vi.useFakeTimers();
+    const mock = createChromeMock();
+    vi.stubGlobal("chrome", mock.chrome);
+    await import("../../../src/background/index");
+    const oldPort = createPortMock("network.devtools");
+    mock.connectListeners[0](oldPort);
+    oldPort.emitMessage({
+      type: "networkContext.devtoolsConnected",
+      tabId: 7,
+      requests: [{ id: "req-old", url: "https://api.example.com/old", method: "GET", status: 200 }],
+    });
+    oldPort.emitDisconnect();
+    const disconnectedSendResponse = vi.fn();
+
+    mock.messageListeners[0](
+      { type: "networkContext.getSnapshot", tabId: 7 },
+      {} as chrome.runtime.MessageSender,
+      disconnectedSendResponse,
+    );
+
+    await vi.waitFor(() => {
+      expect(disconnectedSendResponse).toHaveBeenCalledWith({
+        ok: true,
+        tabId: 7,
+        requests: [{ id: "req-old", url: "https://api.example.com/old", method: "GET", status: 200 }],
+      });
+    });
+
+    const newPort = createPortMock("network.devtools");
+    mock.connectListeners[0](newPort);
+    newPort.emitMessage({
+      type: "networkContext.devtoolsConnected",
+      tabId: 7,
+      requests: [{ id: "req-new", url: "https://api.example.com/new", method: "GET", status: 200 }],
+    });
+    vi.advanceTimersByTime(5000);
+    const reconnectedSendResponse = vi.fn();
+
+    mock.messageListeners[0](
+      { type: "networkContext.getSnapshot", tabId: 7 },
+      {} as chrome.runtime.MessageSender,
+      reconnectedSendResponse,
+    );
+
+    await vi.waitFor(() => {
+      expect(reconnectedSendResponse).toHaveBeenCalledWith({
+        ok: true,
+        tabId: 7,
+        requests: [{ id: "req-new", url: "https://api.example.com/new", method: "GET", status: 200 }],
+      });
+    });
+    vi.useRealTimers();
+  });
+
+  it("监听标签页刷新状态并等待 DevTools 重新上报新快照", async () => {
+    const mock = createChromeMock();
+    vi.stubGlobal("chrome", mock.chrome);
+    await import("../../../src/background/index");
+    const port = createPortMock("network.devtools");
+    mock.connectListeners[0](port);
+    port.emitMessage({
+      type: "networkContext.devtoolsConnected",
+      tabId: 7,
+      requests: [{ id: "req-old", url: "https://api.example.com/old", method: "GET", status: 200 }],
+    });
+
+    mock.tabUpdatedListeners[0](7, { status: "loading" }, { id: 7 } as chrome.tabs.Tab);
+    const loadingSendResponse = vi.fn();
+    mock.messageListeners[0](
+      { type: "networkContext.getSnapshot", tabId: 7 },
+      {} as chrome.runtime.MessageSender,
+      loadingSendResponse,
+    );
+
+    await vi.waitFor(() => {
+      expect(loadingSendResponse).toHaveBeenCalledWith({
+        ok: false,
+        message: "当前标签页正在刷新，请等待页面加载完成并产生 Network 请求后再使用 Network 上下文",
+      });
+    });
+
+    mock.tabUpdatedListeners[0](7, { status: "complete" }, { id: 7 } as chrome.tabs.Tab);
+    port.emitMessage({
+      type: "networkContext.devtoolsConnected",
+      tabId: 7,
+      requests: [{ id: "req-new", url: "https://api.example.com/new", method: "GET", status: 200 }],
+    });
+    const completeSendResponse = vi.fn();
+    mock.messageListeners[0](
+      { type: "networkContext.getSnapshot", tabId: 7 },
+      {} as chrome.runtime.MessageSender,
+      completeSendResponse,
+    );
+
+    await vi.waitFor(() => {
+      expect(completeSendResponse).toHaveBeenCalledWith({
+        ok: true,
+        tabId: 7,
+        requests: [{ id: "req-new", url: "https://api.example.com/new", method: "GET", status: 200 }],
+      });
+    });
+  });
+
+  it("未传 tabId 且当前活动标签页不匹配时不能使用其他 DevTools Network 连接", async () => {
+    const mock = createChromeMock();
+    mock.chrome.tabs.query.mockResolvedValueOnce([{ id: 99 }]);
+    vi.stubGlobal("chrome", mock.chrome);
+    await import("../../../src/background/index");
+    const port = createPortMock("network.devtools");
+    mock.connectListeners[0](port);
+    port.emitMessage({
+      type: "networkContext.devtoolsConnected",
+      tabId: 7,
+      requests: [{ id: "req-1", url: "https://api.example.com/users", method: "GET", status: 200 }],
+    });
+    const sendResponse = vi.fn();
+
+    mock.messageListeners[0](
+      { type: "networkContext.getSnapshot" },
+      {} as chrome.runtime.MessageSender,
+      sendResponse,
+    );
+
+    await vi.waitFor(() => {
+      expect(sendResponse).toHaveBeenCalledWith(expect.objectContaining({
+        ok: false,
+        message: expect.stringContaining("请先打开当前标签页 DevTools，并刷新页面后再使用 Network 上下文"),
+      }));
+    });
+    expect(sendResponse.mock.calls[0][0].message).toContain("已连接 DevTools 标签页：7");
+  });
+
+  it("打开侧边栏后 Network 请求优先使用侧边栏绑定的业务标签页 DevTools 连接", async () => {
+    const mock = createChromeMock();
+    mock.chrome.tabs.query.mockResolvedValueOnce([{ id: 99 }]);
+    vi.stubGlobal("chrome", mock.chrome);
+    await import("../../../src/background/index");
+    const port = createPortMock("network.devtools");
+    mock.connectListeners[0](port);
+    port.emitMessage({
+      type: "networkContext.devtoolsConnected",
+      tabId: 7,
+      requests: [{ id: "req-1", url: "https://api.example.com/users", method: "GET", status: 200 }],
+    });
+    await mock.actionListeners[0]({ id: 7 } as chrome.tabs.Tab);
+    const sendResponse = vi.fn();
+
+    mock.messageListeners[0](
+      { type: "networkContext.getSnapshot" },
+      {} as chrome.runtime.MessageSender,
+      sendResponse,
+    );
+
+    await vi.waitFor(() => {
+      expect(sendResponse).toHaveBeenCalledWith({
+        ok: true,
+        tabId: 7,
+        requests: [{ id: "req-1", url: "https://api.example.com/users", method: "GET", status: 200 }],
+      });
+    });
+    expect(mock.chrome.tabs.query).not.toHaveBeenCalledWith({ active: true, currentWindow: true });
+  });
+
+  it("将 Network 详情请求转发给 DevTools 连接", async () => {
+    const mock = createChromeMock();
+    vi.stubGlobal("chrome", mock.chrome);
+    await import("../../../src/background/index");
+    const port = createPortMock("network.devtools");
+    mock.connectListeners[0](port);
+    port.emitMessage({
+      type: "networkContext.devtoolsConnected",
+      tabId: 7,
+      requests: [{ id: "req-1", url: "https://api.example.com/users", method: "GET", status: 200 }],
+    });
+    const sendResponse = vi.fn();
+
+    mock.messageListeners[0](
+      { type: "networkContext.getDetails", tabId: 7, requestIds: ["req-1"] },
+      {} as chrome.runtime.MessageSender,
+      sendResponse,
+    );
+    await vi.waitFor(() => expect(port.postMessage).toHaveBeenCalled());
+    const requestMessage = port.postMessage.mock.calls[0][0] as { rpcId: string };
+    port.emitMessage({
+      type: "networkContext.detailsResponse",
+      rpcId: requestMessage.rpcId,
+      response: {
+        ok: true,
+        details: [{ id: "req-1", url: "https://api.example.com/users", method: "GET", status: 200, truncated: false, redacted: false }],
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(sendResponse).toHaveBeenCalledWith({
+        ok: true,
+        details: [{ id: "req-1", url: "https://api.example.com/users", method: "GET", status: 200, truncated: false, redacted: false }],
+      });
+    });
+  });
+
+  it("Network 详情请求在 DevTools 未响应时会超时返回中文错误", async () => {
+    vi.useFakeTimers();
+    const mock = createChromeMock();
+    vi.stubGlobal("chrome", mock.chrome);
+    await import("../../../src/background/index");
+    const port = createPortMock("network.devtools");
+    mock.connectListeners[0](port);
+    port.emitMessage({
+      type: "networkContext.devtoolsConnected",
+      tabId: 7,
+      requests: [{ id: "req-1", url: "https://api.example.com/users", method: "GET", status: 200 }],
+    });
+    const sendResponse = vi.fn();
+
+    mock.messageListeners[0](
+      { type: "networkContext.getDetails", tabId: 7, requestIds: ["req-1"] },
+      {} as chrome.runtime.MessageSender,
+      sendResponse,
+    );
+    await vi.waitFor(() => expect(port.postMessage).toHaveBeenCalled());
+
+    await vi.advanceTimersByTimeAsync(30000);
+
+    expect(sendResponse).toHaveBeenCalledWith({
+      ok: false,
+      message: "读取 Network 请求详情超时，请确认 DevTools Network 仍处于打开状态",
+    });
+
+    const requestMessage = port.postMessage.mock.calls[0][0] as { rpcId: string };
+    port.emitMessage({
+      type: "networkContext.detailsResponse",
+      rpcId: requestMessage.rpcId,
+      response: {
+        ok: true,
+        details: [{ id: "req-1", url: "https://api.example.com/users", method: "GET", status: 200, truncated: false, redacted: false }],
+      },
+    });
+
+    expect(sendResponse).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
+  it("Network 详情请求转发给 DevTools 失败时立即清理并返回中文错误", async () => {
+    vi.useFakeTimers();
+    const mock = createChromeMock();
+    vi.stubGlobal("chrome", mock.chrome);
+    await import("../../../src/background/index");
+    const port = createPortMock("network.devtools");
+    port.postMessage.mockImplementation(() => {
+      throw new Error("port disconnected");
+    });
+    mock.connectListeners[0](port);
+    port.emitMessage({
+      type: "networkContext.devtoolsConnected",
+      tabId: 7,
+      requests: [{ id: "req-1", url: "https://api.example.com/users", method: "GET", status: 200 }],
+    });
+    const sendResponse = vi.fn();
+
+    mock.messageListeners[0](
+      { type: "networkContext.getDetails", tabId: 7, requestIds: ["req-1"] },
+      {} as chrome.runtime.MessageSender,
+      sendResponse,
+    );
+
+    await vi.waitFor(() => {
+      expect(sendResponse).toHaveBeenCalledWith({
+        ok: false,
+        message: "读取 Network 请求详情失败，请确认 DevTools Network 仍处于打开状态",
+      });
+    });
+
+    await vi.advanceTimersByTimeAsync(30000);
+
+    expect(sendResponse).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
   it("没有活动标签页时返回中文错误", async () => {
     const mock = createChromeMock();
     mock.chrome.tabs.query.mockResolvedValueOnce([]);
@@ -745,4 +1106,5 @@ describe("background 入口", () => {
       });
     });
   });
+
 });

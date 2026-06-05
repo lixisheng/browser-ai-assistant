@@ -862,6 +862,9 @@ function ChatPreferenceSettings() {
   const systemPromptInput = useComposedTextInput(chatPreferences.systemPrompt, (systemPrompt) => {
     void updateChatPreferences({ systemPrompt });
   });
+  const networkRelevancePromptInput = useComposedTextInput(chatPreferences.networkRelevancePrompt, (networkRelevancePrompt) => {
+    void updateChatPreferences({ networkRelevancePrompt });
+  });
 
   return (
     <section className="grid w-full gap-3" aria-label="聊天偏好">
@@ -873,6 +876,15 @@ function ChatPreferenceSettings() {
           aria-label="全局系统提示词"
           {...systemPromptInput}
         />
+      </label>
+      <label className="grid gap-1 text-sm">
+        Network 请求相关性筛选 Prompt
+        <textarea
+          className="ui-input min-h-40"
+          aria-label="Network 请求相关性筛选 Prompt"
+          {...networkRelevancePromptInput}
+        />
+        <span className="ui-muted text-xs">可使用 {"{{userDemand}}"} 和 {"{{networkRequests}}"} 占位符；缺失时会自动追加必要上下文。</span>
       </label>
       <div className="chat-preference-grid">
         <GlobalPreferenceNumberInput

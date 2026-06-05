@@ -217,6 +217,34 @@
 * 文档或配置之外的代码改动，最小验证通常至少包括 `npm run typecheck` 和相关 `vitest` 文件；涉及构建、content script、background 或 manifest 时还必须执行 `npm run build:extension`。
 * 涉及侧边栏关键交互、响应式布局、扩展加载、页面提取或导出菜单时，除单元测试外应补充 `npm run test:e2e` 或等价 Playwright 冒烟验证。
 
+### 10.13 DevTools Network 上下文
+
+* Network 上下文只在用户显式开启本轮开关后触发；默认关闭，避免无意采集或发送请求详情。
+* 相关性筛选属于内部预处理：只能使用当前用户需求和 Network 元数据摘要，不得写入 `ChatMessage`、不得保存到会话历史、不得进入后续主对话上下文。
+* 正式模型请求才允许注入筛选出的完整请求详情；注入内容必须基于当前用户需求和已筛选详情构造，不能把筛选阶段的 AI 对话内容拼进主请求。
+* Network 详情附件必须挂载到本轮 assistant 消息上，而不是用户消息；聊天面板、历史持久化和导出都要能看到摘要和可读详情。
+* 采集、筛选、详情读取和附件展示都必须默认脱敏敏感 header、query 和 body 字段，并保留 `redacted`、`truncated` 标记；新增原文发送入口前必须增加显式确认和对应测试。
+* DevTools 未连接、没有请求、筛选为空或详情部分读取失败时，必须返回明确中文提示，且不得发送空详情正式分析请求。
+* 当前标签页刷新时必须通过 `chrome.tabs.onUpdated` 显式记录刷新状态，并配合 DevTools recorder 的 `chrome.devtools.network.onNavigated` 清空旧请求缓存、重新读取 HAR、重新上报连接；刷新中不得使用旧快照分析，应返回明确中文提示。
+* background 对 DevTools port 短暂断开应保留最近快照一小段时间，避免刷新期间立即误报未连接；同 tab 重连后必须取消旧清理并用新快照覆盖。
+* DevTools recorder 不能只在脚本加载时 `chrome.runtime.connect` 一次；必须监听 port disconnect，自动重连，并在每次重连后重新读取 HAR、上报当前 inspected tab 的快照，避免“先打开 DevTools，稍后打开 Side Panel”时 service worker 已重启导致连接丢失。
+* Background 转发 Network 详情请求给 DevTools 后必须设置超时并清理 pending 记录；DevTools 崩溃、不响应或端口异常时不得让聊天发送流程永久等待。
+* 流式模式下应先完成筛选和详情补全，再创建/展示流式 assistant 正文；附件应随 assistant 占位消息一起保存并在完成后保留。
+* Side Panel 请求 Network 上下文时必须绑定当前激活标签页对应的 DevTools 连接；未显式传 `tabId` 时只能匹配当前 active tab，不得回退到其他唯一 DevTools 连接，避免把插件自身页面、Side Panel 或 Service Worker 的 DevTools 当成业务页面上下文。
+* 打开 Side Panel 时 background 必须记录本次侧边栏绑定的业务 `tabId`，Network 请求未显式传 `tabId` 时应优先使用该绑定 tab，而不是重新依赖 `chrome.tabs.query({ active: true })` 猜测。
+* Network 快照成功后必须返回并固定使用该 DevTools 连接的 `tabId`；后续筛选模型调用可能改变浏览器 active tab，读取详情时不得再次依赖当前 active tab 推断连接。
+* Network 相关性筛选结果解析必须兼容模型只返回 JSON、返回编号文本，以及误传完整 OpenAI 兼容响应对象的情况；完整响应对象应递归读取 `choices[].message.content` 后再解析 `requestIds`。
+* Network 相关性筛选解析必须兼容模型把元数据列表序号误当作 `req-N` ID 返回的情况；当真实请求 ID 不存在该 `req-N` 时，应按元数据顺序映射到第 N 条请求，避免误判筛选为空。
+* Network 相关性筛选内部模型请求必须优先使用 OpenAI Chat Completions 兼容的 `response_format: { type: "json_schema", ... }` 约束结构化输出，只允许返回 `requestIds` 数组。
+* 如果模型明确不支持 `json_schema`，Network 相关性筛选应降级到 Tool Calling / Function Calling；如果工具调用也明确不支持，最后才降级到提示词 JSON 约束。
+* Network 请求相关性筛选 Prompt 属于全局聊天偏好；默认值必须等同当前硬编码筛选 Prompt，并支持 `{{userDemand}}`、`{{networkRequests}}` 占位符，缺失占位符时运行时必须补齐必要上下文。
+* 修改 Network 请求相关性筛选 Prompt 设置时，必须复用组合输入安全封装，避免中文输入法中间态落库。
+* Network 结构化输出约束只应用于筛选调用；正式聊天分析请求不得携带筛选专用 `structuredOutput`，Anthropic Messages 分支也不得盲目透传 OpenAI 专用 `response_format`、`tools` 或 `tool_choice` 字段。
+* 结构化输出降级可读取模型失败响应中的有限错误摘要用于内部能力判断，但用户可见错误仍必须是中文摘要，不得透出 API Key、请求头或远端原始敏感报文。
+* Side Panel 开启 Network 上下文后必须立即检测并定时刷新当前标签页 DevTools Network 连接状态；检测只读取请求元数据快照，不触发 AI 请求、不写入聊天历史。
+* 未检测到当前标签页 DevTools Network 连接时，输入区必须提前显示“关闭 DevTools 后重新打开，再刷新页面”的中文处理建议，不能等用户发送消息后才提示。
+* Network 连接状态检测必须静默执行，不要在输入区展示“正在检测”这类短暂中间态；UI 只展示最近一次稳定检测结果，例如未连接提示、已连接但无请求、已采集请求数量。
+
 ## 11. 前端设计系统约束
 
 本项目的前端视觉风格采用 VoltAgent `awesome-design-md` 中的 Claude 设计规范，来源：`https://github.com/VoltAgent/awesome-design-md/blob/main/design-md/claude/DESIGN.md`。

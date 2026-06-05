@@ -47,6 +47,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         sidePanel: resolve(rootDir, "index.html"),
+        devtools: resolve(rootDir, "devtools.html"),
         "background/index": resolve(rootDir, "src/background/index.ts"),
       },
       output: {

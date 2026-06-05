@@ -1,6 +1,13 @@
 import { handleModelCatalogMessage, type ModelCatalogMessage } from "./modelCatalogMessageHandler";
 import { handleChatSendMessage, type ChatSendMessage } from "./modelRequestHandler";
 import {
+  handleNetworkContextMessage,
+  handleNetworkDevtoolsPort,
+  handleNetworkTabUpdated,
+  setPreferredNetworkContextTabId,
+  type NetworkContextMessage,
+} from "./networkContextMessageHandler";
+import {
   handlePageContextListTabsMessage,
   handlePageContextMessage,
   type PageContextExtractMessage,
@@ -42,6 +49,7 @@ async function openSidePanel(tabId?: number) {
     return;
   }
 
+  setPreferredNetworkContextTabId(tabId);
   await chrome.sidePanel.open({ tabId });
 }
 
@@ -65,6 +73,10 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   void openSidePanel(tab?.id);
 });
 
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  handleNetworkTabUpdated(tabId, changeInfo);
+});
+
 type RuntimeMessage =
   | ModelCatalogMessage
   | PageContextExtractMessage
@@ -73,7 +85,8 @@ type RuntimeMessage =
   | CurrentTabUrlMessage
   | ChatSendMessage
   | TabCaptureVisibleMessage
-  | SyncBackupMessage;
+  | SyncBackupMessage
+  | NetworkContextMessage;
 
 interface ChatStreamStartMessage {
   type: "chat.stream.start";
@@ -154,6 +167,11 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResp
     return true;
   }
 
+  if (message.type === "networkContext.getSnapshot" || message.type === "networkContext.getDetails") {
+    void handleNetworkContextMessage(message).then(sendResponse);
+    return true;
+  }
+
   if (message.type === "sync.backupNow" || message.type === "sync.listRemoteBackups" || message.type === "sync.restoreNow" || message.type === "sync.configureAlarm") {
     void handleSyncBackupMessage(message).then(sendResponse);
     return true;
@@ -172,6 +190,8 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 });
 
 chrome.runtime.onConnect.addListener((port) => {
+  handleNetworkDevtoolsPort(port);
+
   if (port.name !== "chat.stream") {
     return;
   }

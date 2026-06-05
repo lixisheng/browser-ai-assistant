@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAppStore } from "../../../src/side-panel/state/appStore";
+import { DEFAULT_NETWORK_RELEVANCE_PROMPT } from "../../../src/shared/networkContext";
 import {
   clearDatabase,
   getAppSetting,
@@ -17,7 +18,7 @@ import {
   SYNC_S3_SECRET_KEY,
   SYNC_WEBDAV_PASSWORD_KEY,
 } from "../../../src/shared/sync/settings";
-import type { ChatMessage, ChatPromptInvocation, ModelProvider, PromptTemplate, ProviderModel } from "../../../src/shared/types";
+import type { ChatMessage, ChatPromptInvocation, ModelProvider, NetworkRequestDetail, PromptTemplate, ProviderModel } from "../../../src/shared/types";
 
 const repositoryMockState = vi.hoisted(() => ({
   failSaveChatSession: false,
@@ -135,6 +136,29 @@ function createChatMessage(partial: Partial<ChatMessage>): ChatMessage {
   };
 }
 
+function createNetworkDetail(partial: Partial<NetworkRequestDetail> = {}): NetworkRequestDetail {
+  return {
+    id: "req-1",
+    url: "https://api.example.com/login?token=secret&safe=1",
+    method: "POST",
+    status: 500,
+    statusText: "Internal Server Error",
+    mimeType: "application/json",
+    resourceType: "xhr",
+    durationMs: 130,
+    requestHeaders: [
+      { name: "Authorization", value: "Bearer secret" },
+      { name: "Content-Type", value: "application/json" },
+    ],
+    responseHeaders: [{ name: "Content-Type", value: "application/json" }],
+    requestBody: '{"password":"123456","name":"张三"}',
+    responseBody: '{"error":"用户名或密码错误","access_token":"secret"}',
+    truncated: false,
+    redacted: false,
+    ...partial,
+  };
+}
+
 function setStaleContextTabState(): void {
   useAppStore.setState({
     contextTabs: [
@@ -160,6 +184,7 @@ describe("appStore", () => {
     repositoryMockState.releaseSaveChatSession = undefined;
     repositoryMockState.releaseSaveChatFolder = undefined;
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
     useAppStore.getState().reset();
     await clearDatabase();
   });
@@ -1232,6 +1257,7 @@ describe("appStore", () => {
     expect(useAppStore.getState().chatPreferences.historyDrawerDefaultOpen).toBe(true);
     expect(useAppStore.getState().chatPreferences.injectPageContextByDefault).toBe(true);
     expect(useAppStore.getState().chatPreferences.extractHtmlByDefault).toBe(false);
+    expect(useAppStore.getState().chatPreferences.networkRelevancePrompt).toBe(DEFAULT_NETWORK_RELEVANCE_PROMPT);
     expect(useAppStore.getState().appendPageContextToSystemPrompt).toBe(true);
     expect(useAppStore.getState().contextMode).toBe("text");
   });
@@ -1438,6 +1464,625 @@ describe("appStore", () => {
 
     expect(sendMessage.mock.calls.filter(([message]) => (message as { type: string }).type === "chat.send")).toHaveLength(1);
     expect(useAppStore.getState().chatSessions[0]?.title).toBe("第一问");
+  });
+
+  it("开启 Network 上下文后先内部筛选再把脱敏详情注入正式请求并挂到 AI 消息附件", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const detail = createNetworkDetail();
+    const sendMessage = vi.fn((message: { type: string; messages?: ChatMessage[]; requestIds?: string[]; tabId?: number }, callback: (response: unknown) => void) => {
+      if (message.type === "networkContext.getSnapshot") {
+        callback({
+          ok: true,
+          tabId: 7,
+          requests: [
+            {
+              id: "req-1",
+              url: detail.url,
+              method: detail.method,
+              status: detail.status,
+              mimeType: detail.mimeType,
+              resourceType: detail.resourceType,
+              durationMs: detail.durationMs,
+            },
+          ],
+        });
+        return undefined;
+      }
+
+      if (message.type === "networkContext.getDetails") {
+        callback({
+          ok: true,
+          details: message.requestIds?.includes("req-1") ? [detail] : [],
+        });
+        return undefined;
+      }
+
+      if (message.type === "chat.send") {
+        const userContent = message.messages?.at(-1)?.content ?? "";
+        callback({
+          ok: true,
+          content: userContent.includes("Network 请求元数据") ? '{"requestIds":["req-1"]}' : "AI 登录接口分析",
+        });
+        return undefined;
+      }
+
+      callback({ ok: true });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage,
+      },
+    });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    useAppStore.getState().setStreamMode(false);
+    useAppStore.getState().setNetworkContextEnabled(true);
+
+    await useAppStore.getState().sendChatMessage("分析登录接口为什么失败");
+
+    const chatRequests = sendMessage.mock.calls
+      .map(([message]) => message as { type: string; messages?: ChatMessage[]; structuredOutput?: unknown; stream?: boolean })
+      .filter((message) => message.type === "chat.send");
+    expect(chatRequests).toHaveLength(2);
+    expect(chatRequests[0].structuredOutput).toMatchObject({
+      type: "json_schema",
+      json_schema: {
+        name: "network_relevance",
+        strict: true,
+      },
+    });
+    expect(chatRequests[1].structuredOutput).toBeUndefined();
+    expect(chatRequests[0].messages?.at(-1)?.content).toContain("Network 请求元数据");
+    expect(chatRequests[0].messages?.at(-1)?.content).toContain("分析登录接口为什么失败");
+    expect(chatRequests[0].messages?.map((message) => message.content)).not.toContain("AI 登录接口分析");
+    expect(chatRequests[1].messages?.at(-1)?.content).toContain("Network context:");
+    expect(chatRequests[1].messages?.at(-1)?.content).toContain("POST https://api.example.com/login?token=[已脱敏]&safe=1");
+    expect(chatRequests[1].messages?.at(-1)?.content).toContain('"password":"[已脱敏]"');
+    expect(chatRequests[1].messages?.at(-1)?.content).toContain("分析登录接口为什么失败");
+    const detailRequest = sendMessage.mock.calls
+      .map(([message]) => message as { type: string; tabId?: number })
+      .find((message) => message.type === "networkContext.getDetails");
+    expect(detailRequest?.tabId).toBe(7);
+
+    const session = useAppStore.getState().chatSessions[0];
+    expect(session.messages.map((message) => message.content)).toEqual(["分析登录接口为什么失败", "AI 登录接口分析"]);
+    expect(session.messages[1].networkContextAttachment).toMatchObject({
+      title: "Network 请求详情",
+      redacted: true,
+      truncated: false,
+      requests: [
+        expect.objectContaining({
+          id: "req-1",
+          url: "https://api.example.com/login?token=[已脱敏]&safe=1",
+          redacted: true,
+        }),
+      ],
+    });
+  });
+
+  it("Network 相关性筛选使用聊天偏好中的自定义 Prompt 模板", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const detail = createNetworkDetail();
+    const sendMessage = vi.fn((message: { type: string; messages?: ChatMessage[]; requestIds?: string[] }, callback: (response: unknown) => void) => {
+      if (message.type === "networkContext.getSnapshot") {
+        callback({
+          ok: true,
+          requests: [
+            {
+              id: "req-1",
+              url: detail.url,
+              method: detail.method,
+              status: detail.status,
+            },
+          ],
+        });
+        return undefined;
+      }
+
+      if (message.type === "networkContext.getDetails") {
+        callback({ ok: true, details: message.requestIds?.includes("req-1") ? [detail] : [] });
+        return undefined;
+      }
+
+      if (message.type === "chat.send") {
+        const userContent = message.messages?.at(-1)?.content ?? "";
+        callback({ ok: true, content: userContent.includes("自定义 Network 筛选") ? '{"requestIds":["req-1"]}' : "AI 登录接口分析" });
+        return undefined;
+      }
+
+      callback({ ok: true });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage,
+      },
+    });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await saveAppSetting({
+      key: "chatPreferences",
+      value: {
+        systemPrompt: "全局系统提示",
+        temperature: 0.4,
+        maxTokens: 2048,
+        networkRelevancePrompt: "自定义 Network 筛选：{{userDemand}}\n候选：\n{{networkRequests}}",
+      },
+      updatedAt: 2,
+    });
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    useAppStore.getState().setStreamMode(false);
+    useAppStore.getState().setNetworkContextEnabled(true);
+
+    await useAppStore.getState().sendChatMessage("分析登录接口");
+
+    const chatRequests = sendMessage.mock.calls
+      .map(([message]) => message as { type: string; messages?: ChatMessage[] })
+      .filter((message) => message.type === "chat.send");
+    expect(chatRequests[0].messages?.at(-1)?.content).toContain("自定义 Network 筛选：分析登录接口");
+    expect(chatRequests[0].messages?.at(-1)?.content).toContain("1. id=req-1");
+    expect(chatRequests[1].messages?.at(-1)?.content).not.toContain("自定义 Network 筛选");
+    expect(useAppStore.getState().chatSessions[0].messages[1].content).toBe("AI 登录接口分析");
+  });
+
+  it("Network 相关性筛选在模型不支持 json_schema 时降级到工具调用", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const detail = createNetworkDetail();
+    const sendMessage = vi.fn((message: { type: string; messages?: ChatMessage[]; requestIds?: string[]; structuredOutput?: { type: string } }, callback: (response: unknown) => void) => {
+      if (message.type === "networkContext.getSnapshot") {
+        callback({
+          ok: true,
+          requests: [
+            {
+              id: "req-1",
+              url: detail.url,
+              method: detail.method,
+              status: detail.status,
+            },
+          ],
+        });
+        return undefined;
+      }
+
+      if (message.type === "networkContext.getDetails") {
+        callback({ ok: true, details: [detail] });
+        return undefined;
+      }
+
+      if (message.type === "chat.send") {
+        if (message.structuredOutput?.type === "json_schema") {
+          callback({
+            ok: false,
+            message: "模型请求失败：400 Bad Request",
+            status: 400,
+            errorBody: "response_format json_schema is not supported",
+          });
+          return undefined;
+        }
+
+        callback({
+          ok: true,
+          content: message.structuredOutput?.type === "tool" ? '{"requestIds":["req-1"]}' : "AI 登录接口分析",
+        });
+        return undefined;
+      }
+
+      callback({ ok: true });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage,
+      },
+    });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    useAppStore.getState().setStreamMode(false);
+    useAppStore.getState().setNetworkContextEnabled(true);
+
+    await useAppStore.getState().sendChatMessage("分析登录接口为什么失败");
+
+    const chatRequests = sendMessage.mock.calls
+      .map(([message]) => message as { type: string; structuredOutput?: { type: string } })
+      .filter((message) => message.type === "chat.send");
+    expect(chatRequests).toHaveLength(3);
+    expect(chatRequests[0].structuredOutput?.type).toBe("json_schema");
+    expect(chatRequests[1].structuredOutput?.type).toBe("tool");
+    expect(chatRequests[2].structuredOutput).toBeUndefined();
+    expect(useAppStore.getState().chatSessions[0].messages[1].networkContextAttachment?.requests).toHaveLength(1);
+  });
+
+  it("Network 相关性筛选在结构化输出都不支持时降级到提示词 JSON", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const detail = createNetworkDetail();
+    const sendMessage = vi.fn((message: { type: string; messages?: ChatMessage[]; requestIds?: string[]; structuredOutput?: { type: string } }, callback: (response: unknown) => void) => {
+      if (message.type === "networkContext.getSnapshot") {
+        callback({
+          ok: true,
+          requests: [
+            {
+              id: "req-1",
+              url: detail.url,
+              method: detail.method,
+              status: detail.status,
+            },
+          ],
+        });
+        return undefined;
+      }
+
+      if (message.type === "networkContext.getDetails") {
+        callback({ ok: true, details: [detail] });
+        return undefined;
+      }
+
+      if (message.type === "chat.send") {
+        if (message.structuredOutput?.type === "json_schema") {
+          callback({
+            ok: false,
+            message: "模型请求失败：400 Bad Request",
+            status: 400,
+            errorBody: "unknown parameter response_format",
+          });
+          return undefined;
+        }
+
+        if (message.structuredOutput?.type === "tool") {
+          callback({
+            ok: false,
+            message: "模型请求失败：400 Bad Request",
+            status: 400,
+            errorBody: "tools are not supported",
+          });
+          return undefined;
+        }
+
+        const userContent = message.messages?.at(-1)?.content ?? "";
+        callback({ ok: true, content: userContent.includes("Network context:") ? "AI 登录接口分析" : '{"requestIds":["req-1"]}' });
+        return undefined;
+      }
+
+      callback({ ok: true });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage,
+      },
+    });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    useAppStore.getState().setStreamMode(false);
+    useAppStore.getState().setNetworkContextEnabled(true);
+
+    await useAppStore.getState().sendChatMessage("分析登录接口为什么失败");
+
+    const chatRequests = sendMessage.mock.calls
+      .map(([message]) => message as { type: string; structuredOutput?: { type: string } })
+      .filter((message) => message.type === "chat.send");
+    expect(chatRequests).toHaveLength(4);
+    expect(chatRequests[0].structuredOutput?.type).toBe("json_schema");
+    expect(chatRequests[1].structuredOutput?.type).toBe("tool");
+    expect(chatRequests[2].structuredOutput).toBeUndefined();
+    expect(chatRequests[3].structuredOutput).toBeUndefined();
+    expect(useAppStore.getState().chatSessions[0].messages[1].content).toBe("AI 登录接口分析");
+  });
+
+  it("Network 提示词兜底后读取详情会固定使用快照绑定的 DevTools 标签页", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const detail = createNetworkDetail();
+    const sendMessage = vi.fn((message: { type: string; messages?: ChatMessage[]; requestIds?: string[]; tabId?: number; structuredOutput?: { type: string } }, callback: (response: unknown) => void) => {
+      if (message.type === "networkContext.getSnapshot") {
+        callback({
+          ok: true,
+          tabId: 7,
+          requests: [
+            {
+              id: "req-1",
+              url: detail.url,
+              method: detail.method,
+              status: detail.status,
+            },
+          ],
+        });
+        return undefined;
+      }
+
+      if (message.type === "networkContext.getDetails") {
+        callback(
+          message.tabId === 7
+            ? { ok: true, details: [detail] }
+            : { ok: false, message: "请先打开当前标签页 DevTools，并刷新页面后再使用 Network 上下文" },
+        );
+        return undefined;
+      }
+
+      if (message.type === "chat.send") {
+        if (message.structuredOutput?.type === "json_schema") {
+          callback({
+            ok: false,
+            message: "模型请求失败：400 Bad Request",
+            status: 400,
+            errorBody: "unknown parameter response_format",
+          });
+          return undefined;
+        }
+
+        if (message.structuredOutput?.type === "tool") {
+          callback({
+            ok: false,
+            message: "模型请求失败：400 Bad Request",
+            status: 400,
+            errorBody: "tools are not supported",
+          });
+          return undefined;
+        }
+
+        const userContent = message.messages?.at(-1)?.content ?? "";
+        callback({ ok: true, content: userContent.includes("Network context:") ? "AI 登录接口分析" : '{"requestIds":["req-1"]}' });
+        return undefined;
+      }
+
+      callback({ ok: true });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage,
+      },
+    });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    useAppStore.getState().setStreamMode(false);
+    useAppStore.getState().setNetworkContextEnabled(true);
+
+    await useAppStore.getState().sendChatMessage("分析登录接口为什么失败");
+
+    expect(useAppStore.getState().failure).toBeUndefined();
+    const detailRequest = sendMessage.mock.calls
+      .map(([message]) => message as { type: string; tabId?: number })
+      .find((message) => message.type === "networkContext.getDetails");
+    expect(detailRequest?.tabId).toBe(7);
+    expect(useAppStore.getState().chatSessions[0].messages[1].content).toBe("AI 登录接口分析");
+  });
+
+  it("Network 相关性筛选可将模型返回的 req-N 编号映射到真实请求 ID", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const requests = Array.from({ length: 9 }, (_, index) => ({
+      id: `chrome-request-${index + 1}`,
+      url: `https://api.example.com/items/${index + 1}`,
+      method: "GET",
+      status: 200,
+      resourceType: "fetch",
+    }));
+    const details = requests.map((request) => createNetworkDetail({ id: request.id, url: request.url, method: request.method, status: request.status }));
+    const sendMessage = vi.fn((message: { type: string; messages?: ChatMessage[]; requestIds?: string[]; structuredOutput?: { type: string } }, callback: (response: unknown) => void) => {
+      if (message.type === "networkContext.getSnapshot") {
+        callback({
+          ok: true,
+          requests,
+        });
+        return undefined;
+      }
+
+      if (message.type === "networkContext.getDetails") {
+        callback({
+          ok: true,
+          details: details.filter((detail) => message.requestIds?.includes(detail.id)),
+        });
+        return undefined;
+      }
+
+      if (message.type === "chat.send") {
+        const userContent = message.messages?.at(-1)?.content ?? "";
+        callback({
+          ok: true,
+          content: userContent.includes("Network context:")
+            ? "AI 全部接口分析"
+            : JSON.stringify({
+                choices: [
+                  {
+                    message: {
+                      content: "{\"requestIds\":[\"req-8\",\"req-9\"]}",
+                      reasoning_content: "选择第 8 和第 9 个接口。",
+                      role: "assistant",
+                    },
+                  },
+                ],
+              }),
+        });
+        return undefined;
+      }
+
+      callback({ ok: true });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage,
+      },
+    });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    useAppStore.getState().setStreamMode(false);
+    useAppStore.getState().setNetworkContextEnabled(true);
+
+    await useAppStore.getState().sendChatMessage("帮我分析一下所有接口");
+
+    expect(useAppStore.getState().failure).toBeUndefined();
+    const detailRequest = sendMessage.mock.calls
+      .map(([message]) => message as { type: string; requestIds?: string[] })
+      .find((message) => message.type === "networkContext.getDetails");
+    expect(detailRequest?.requestIds).toEqual(["chrome-request-8", "chrome-request-9"]);
+    expect(useAppStore.getState().chatSessions[0].messages[1].content).toBe("AI 全部接口分析");
+  });
+
+  it("开启 Network 上下文但 DevTools 未连接时不发送空详情分析请求", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const sendMessage = vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+      if (message.type === "networkContext.getSnapshot") {
+        callback({
+          ok: false,
+          message: "请先打开当前标签页 DevTools，并刷新页面后再使用 Network 上下文",
+        });
+        return undefined;
+      }
+
+      callback({ ok: true, content: "不应发送" });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage,
+      },
+    });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    useAppStore.getState().setStreamMode(false);
+    useAppStore.getState().setNetworkContextEnabled(true);
+
+    await useAppStore.getState().sendChatMessage("分析接口失败原因");
+
+    expect(sendMessage.mock.calls.filter(([message]) => (message as { type: string }).type === "chat.send")).toHaveLength(0);
+    expect(useAppStore.getState().failure?.message).toBe("请先打开当前标签页 DevTools，并刷新页面后再使用 Network 上下文");
+  });
+
+  it("开启 Network 上下文后会立即检测 DevTools 连接并提前提示未连接", async () => {
+    const sendMessage = vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+      if (message.type === "networkContext.getSnapshot") {
+        callback({
+          ok: false,
+          message: "请先打开当前标签页 DevTools，并刷新页面后再使用 Network 上下文",
+        });
+        return undefined;
+      }
+
+      callback({ ok: true });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage,
+      },
+    });
+
+    useAppStore.getState().setNetworkContextEnabled(true);
+
+    await vi.waitFor(() => {
+      expect(useAppStore.getState().networkContextStatus).toBe("未检测到当前标签页 DevTools Network 连接，请关闭 DevTools 后重新打开，再刷新页面");
+    });
+    expect(sendMessage.mock.calls.filter(([message]) => (message as { type: string }).type === "networkContext.getSnapshot")).toHaveLength(1);
+  });
+
+  it("Network 状态检测期间不展示正在检测的中间状态", async () => {
+    const snapshotCallbacks: Array<(response: unknown) => void> = [];
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage: vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+          if (message.type === "networkContext.getSnapshot") {
+            snapshotCallbacks.push(callback);
+            return undefined;
+          }
+
+          callback({ ok: true });
+          return undefined;
+        }),
+      },
+    });
+
+    useAppStore.getState().setNetworkContextEnabled(true);
+
+    expect(useAppStore.getState().networkContextStatus).toBeUndefined();
+    snapshotCallbacks.shift()?.({
+      ok: false,
+      message: "请先打开当前标签页 DevTools，并刷新页面后再使用 Network 上下文",
+    });
+    await vi.waitFor(() => {
+      expect(useAppStore.getState().networkContextStatus).toBe("未检测到当前标签页 DevTools Network 连接，请关闭 DevTools 后重新打开，再刷新页面");
+    });
+
+    const checkPromise = useAppStore.getState().checkNetworkContextConnection();
+    expect(useAppStore.getState().networkContextStatus).toBe("未检测到当前标签页 DevTools Network 连接，请关闭 DevTools 后重新打开，再刷新页面");
+
+    snapshotCallbacks.shift()?.({
+      ok: true,
+      requests: [{ id: "req-1", url: "https://api.example.com/a", method: "GET" }],
+    });
+    await checkPromise;
+
+    expect(useAppStore.getState().networkContextStatus).toBe("已连接 DevTools Network，已采集 1 个请求");
+  });
+
+  it("Network 状态检测连接成功但没有请求时提示刷新或触发接口", async () => {
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage: vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+          callback(message.type === "networkContext.getSnapshot" ? { ok: true, requests: [] } : { ok: true });
+          return undefined;
+        }),
+      },
+    });
+
+    useAppStore.setState({ networkContextEnabled: true });
+
+    await useAppStore.getState().checkNetworkContextConnection();
+
+    expect(useAppStore.getState().networkContextStatus).toBe("已连接 DevTools Network，但暂未采集到请求，请刷新页面或触发接口请求");
+  });
+
+  it("Network 状态检测连接成功且已有请求时提示采集数量", async () => {
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage: vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+          callback(
+            message.type === "networkContext.getSnapshot"
+              ? {
+                  ok: true,
+                  requests: [
+                    { id: "req-1", url: "https://api.example.com/a", method: "GET" },
+                    { id: "req-2", url: "https://api.example.com/b", method: "POST" },
+                  ],
+                }
+              : { ok: true },
+          );
+          return undefined;
+        }),
+      },
+    });
+
+    useAppStore.setState({ networkContextEnabled: true });
+
+    await useAppStore.getState().checkNetworkContextConnection();
+
+    expect(useAppStore.getState().networkContextStatus).toBe("已连接 DevTools Network，已采集 2 个请求");
   });
 
   it("配置 AI 标题生成模型后首轮发送时并行生成标题", async () => {
@@ -2995,6 +3640,26 @@ describe("appStore", () => {
     expect(useAppStore.getState().selectedModelId).toBe("model-second");
     await expect(getChatSession(firstSession.id)).resolves.toMatchObject({ selectedModelId: "model-second" });
     await expect(getChatSession(secondSession.id)).resolves.toMatchObject({ selectedModelId: "model-1" });
+  });
+
+  it("同一毫秒连续创建会话时也会生成不同会话 ID", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(123456);
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+
+    const firstSession = await useAppStore.getState().createChatSession();
+    const secondSession = await useAppStore.getState().createChatSession();
+
+    expect(firstSession.id).not.toBe(secondSession.id);
+    expect(firstSession.id).toMatch(/^session-123456-/);
+    expect(secondSession.id).toMatch(/^session-123456-/);
+
+    nowSpy.mockRestore();
   });
 
   it("重新加载聊天数据时优先使用当前会话保存的模型而不是默认对话模型", async () => {

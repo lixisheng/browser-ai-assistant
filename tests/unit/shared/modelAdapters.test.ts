@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createAnthropicMessagesPayload } from "../../../src/shared/models/anthropicMessagesAdapter";
 import { createListModelsRequest, createModelConfig, parseModelListResponse, testProviderModel } from "../../../src/shared/models/modelCatalog";
+import { createModelRequestPayload } from "../../../src/shared/models/modelRequestPayload";
 import { createOpenAIChatPayload } from "../../../src/shared/models/openaiChatAdapter";
 import { validateModelConfig } from "../../../src/shared/models/modelValidation";
 import type { ChatMessage, ModelConfig, ModelProvider, ProviderModel } from "../../../src/shared/types";
@@ -139,6 +140,113 @@ describe("模型适配器", () => {
         },
       ],
     });
+  });
+
+  it("OpenAI-compatible 请求支持 JSON Schema 结构化输出", () => {
+    const payload = createOpenAIChatPayload(createModel(), messages, false, {
+      type: "json_schema",
+      json_schema: {
+        name: "network_relevance",
+        strict: true,
+        schema: {
+          type: "object",
+          properties: {
+            requestIds: {
+              type: "array",
+              items: { type: "string" },
+            },
+          },
+          required: ["requestIds"],
+          additionalProperties: false,
+        },
+      },
+    });
+
+    expect(payload.body).toMatchObject({
+      response_format: {
+        type: "json_schema",
+        json_schema: expect.objectContaining({
+          name: "network_relevance",
+          strict: true,
+        }),
+      },
+    });
+  });
+
+  it("模型请求构造只向 OpenAI-compatible 分支透传结构化输出参数", () => {
+    const structuredOutput = {
+      type: "json_schema" as const,
+      json_schema: {
+        name: "network_relevance",
+        strict: true,
+        schema: {
+          type: "object",
+          properties: {
+            requestIds: {
+              type: "array",
+              items: { type: "string" },
+            },
+          },
+          required: ["requestIds"],
+          additionalProperties: false,
+        },
+      },
+    };
+
+    const openAiPayload = createModelRequestPayload(createModel(), messages, false, structuredOutput);
+    expect(openAiPayload.body).toMatchObject({
+      response_format: structuredOutput,
+    });
+
+    const anthropicPayload = createModelRequestPayload(
+      createModel({
+        endpointType: "anthropic_messages",
+        endpointUrl: "https://api.anthropic.com/v1/messages",
+      }),
+      messages,
+      false,
+      structuredOutput,
+    );
+    expect(anthropicPayload.body).not.toHaveProperty("response_format");
+  });
+
+  it("OpenAI-compatible 请求支持通过工具调用约束结构化输出", () => {
+    const payload = createOpenAIChatPayload(createModel(), messages, false, {
+      type: "tool",
+      tool: {
+        name: "select_network_requests",
+        description: "筛选相关请求",
+        parameters: {
+          type: "object",
+          properties: {
+            requestIds: {
+              type: "array",
+              items: { type: "string" },
+            },
+          },
+          required: ["requestIds"],
+          additionalProperties: false,
+        },
+      },
+    });
+
+    expect(payload.body).toMatchObject({
+      tools: [
+        {
+          type: "function",
+          function: expect.objectContaining({
+            name: "select_network_requests",
+          }),
+        },
+      ],
+      tool_choice: {
+        type: "function",
+        function: {
+          name: "select_network_requests",
+        },
+      },
+    });
+    expect(payload.body).not.toHaveProperty("response_format");
   });
 
   it("OpenAI-compatible 渠道只保存基础端点时自动补全 Chat Completions 路径", () => {

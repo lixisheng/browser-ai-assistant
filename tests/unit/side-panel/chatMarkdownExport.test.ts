@@ -157,6 +157,53 @@ Prompt2 的内容
     expect(createChatSessionPrintHtml(session, 1700000200000)).toContain("# 调用的Prompt");
   });
 
+  it("导出助手消息时包含 Network 请求详情附件", () => {
+    const session = createSession({
+      title: "Network 分析",
+      messages: [
+        createMessage({
+          id: "message-assistant-network",
+          role: "assistant",
+          content: "登录接口返回 500，建议检查服务端错误日志。",
+          networkContextAttachment: {
+            id: "network-1",
+            title: "Network 请求详情",
+            summary: "已注入 1 个 Network 请求：POST 500 https://api.example.com/login",
+            createdAt: 1700000100000,
+            redacted: true,
+            truncated: false,
+            requests: [
+              {
+                id: "req-1",
+                url: "https://api.example.com/login",
+                method: "POST",
+                status: 500,
+                statusText: "Internal Server Error",
+                mimeType: "application/json",
+                resourceType: "xhr",
+                durationMs: 120,
+                requestHeaders: [{ name: "Authorization", value: "[已脱敏]" }],
+                responseHeaders: [{ name: "Content-Type", value: "application/json" }],
+                requestBody: '{"password":"[已脱敏]"}',
+                responseBody: '{"error":"failed"}',
+                redacted: true,
+                truncated: false,
+              },
+            ],
+          },
+          createdAt: 1700000000000,
+        }),
+      ],
+    });
+
+    const markdown = createChatSessionMarkdown(session, 1700000200000);
+
+    expect(markdown).toContain("# Network 请求详情附件");
+    expect(markdown).toContain("已注入 1 个 Network 请求：POST 500 https://api.example.com/login");
+    expect(markdown).toContain("Authorization: [已脱敏]");
+    expect(createChatSessionPrintHtml(session, 1700000200000)).toContain("Network 请求详情附件");
+  });
+
   it("生成适合下载的 Markdown 文件名", () => {
     const session = createSession({ title: "资料/会话:*?" });
 

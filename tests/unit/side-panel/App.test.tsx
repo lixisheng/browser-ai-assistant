@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { App } from "../../../src/side-panel/App";
 import { useAppStore } from "../../../src/side-panel/state/appStore";
+import { DEFAULT_NETWORK_RELEVANCE_PROMPT } from "../../../src/shared/networkContext";
 import {
   clearDatabase,
   getProviderModels,
@@ -298,6 +299,7 @@ describe("App", () => {
     expect(screen.getByRole("region", { name: "聊天偏好" })).toBeInTheDocument();
     expect(screen.queryByRole("group", { name: "聊天偏好" })).not.toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "全局系统提示词" })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Network 请求相关性筛选 Prompt" })).toBeInTheDocument();
     expect(screen.getByRole("spinbutton", { name: "全局 temperature" })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "发送快捷键" })).toHaveDisplayValue("Enter");
     expect(screen.getByRole("checkbox", { name: "默认展开左侧历史面板" })).toBeInTheDocument();
@@ -343,6 +345,36 @@ describe("App", () => {
     expect(systemPromptInput).toHaveDisplayValue("你是网页助手，始终");
     expect(updateChatPreferences).toHaveBeenCalledTimes(1);
     expect(updateChatPreferences).toHaveBeenCalledWith({ systemPrompt: "你是网页助手，始终" });
+  });
+
+  it("Network 请求相关性筛选 Prompt 使用中文输入法组合输入时只保存最终模板", async () => {
+    const updateChatPreferences = vi.fn(async (updates) => {
+      useAppStore.setState((state) => ({
+        chatPreferences: {
+          ...state.chatPreferences,
+          ...updates,
+        },
+      }));
+    });
+    useAppStore.setState({ updateChatPreferences });
+
+    render(<App />);
+
+    await userEvent.click(screen.getByRole("button", { name: "设置" }));
+    await userEvent.click(screen.getByRole("tab", { name: "聊天偏好" }));
+
+    const promptInput = screen.getByRole("textbox", { name: "Network 请求相关性筛选 Prompt" });
+    fireEvent.compositionStart(promptInput);
+    fireEvent.change(promptInput, { target: { value: "筛选 xiangguan 请求：{{userDemand}}\n{{networkRequests}}" } });
+
+    expect(promptInput).toHaveDisplayValue("筛选 xiangguan 请求：{{userDemand}}\n{{networkRequests}}");
+    expect(updateChatPreferences).not.toHaveBeenCalled();
+
+    fireEvent.compositionEnd(promptInput, { target: { value: "筛选相关请求：{{userDemand}}\n{{networkRequests}}" } });
+
+    expect(promptInput).toHaveDisplayValue("筛选相关请求：{{userDemand}}\n{{networkRequests}}");
+    expect(updateChatPreferences).toHaveBeenCalledTimes(1);
+    expect(updateChatPreferences).toHaveBeenCalledWith({ networkRelevancePrompt: "筛选相关请求：{{userDemand}}\n{{networkRequests}}" });
   });
 
   it("全局系统提示词支持清空并跟随外部偏好同步", async () => {
@@ -740,6 +772,7 @@ describe("App", () => {
     useAppStore.setState({
       chatPreferences: {
         systemPrompt: "你是网页助手",
+        networkRelevancePrompt: DEFAULT_NETWORK_RELEVANCE_PROMPT,
         temperature: 0.7,
         maxTokens: 1024,
         sendShortcut: "enter",
@@ -765,6 +798,7 @@ describe("App", () => {
     useAppStore.setState({
       chatPreferences: {
         systemPrompt: "你是网页助手",
+        networkRelevancePrompt: DEFAULT_NETWORK_RELEVANCE_PROMPT,
         temperature: 0.7,
         maxTokens: 1024,
         sendShortcut: "enter",
@@ -790,6 +824,7 @@ describe("App", () => {
     useAppStore.setState({
       chatPreferences: {
         systemPrompt: "你是网页助手",
+        networkRelevancePrompt: DEFAULT_NETWORK_RELEVANCE_PROMPT,
         temperature: 0.7,
         maxTokens: 1024,
         sendShortcut: "enter",
@@ -902,6 +937,51 @@ describe("App", () => {
     expect(styles).toContain("min-width: 0;");
     expect(styles).toContain(".message-bubble pre");
     expect(styles).toContain("overflow-x: auto;");
+  });
+
+  it("助手消息旁展示可展开的 Network 请求详情附件", async () => {
+    await saveChatSession(
+      createChatSession({
+        id: "session-network-attachment",
+        title: "Network 分析",
+        messages: [
+          createChatMessage({
+            id: "message-network-attachment",
+            role: "assistant",
+            content: "登录接口返回 500。",
+            networkContextAttachment: {
+              id: "network-1",
+              title: "Network 请求详情",
+              summary: "已注入 1 个 Network 请求：POST 500 https://api.example.com/login",
+              createdAt: 2,
+              redacted: true,
+              truncated: false,
+              requests: [
+                {
+                  id: "req-1",
+                  url: "https://api.example.com/login",
+                  method: "POST",
+                  status: 500,
+                  requestHeaders: [{ name: "Authorization", value: "[已脱敏]" }],
+                  responseHeaders: [{ name: "Content-Type", value: "application/json" }],
+                  responseBody: '{"error":"failed"}',
+                  redacted: true,
+                  truncated: false,
+                },
+              ],
+            },
+          }),
+        ],
+      }),
+    );
+
+    render(<App />);
+
+    const attachment = await screen.findByText("Network 请求详情");
+    expect(attachment.closest(".message-network-attachment")).toBeInTheDocument();
+    expect(screen.getByText("已注入 1 个 Network 请求：POST 500 https://api.example.com/login")).toBeInTheDocument();
+    expect(screen.getByText(/Authorization/)).toBeInTheDocument();
+    expect(readFileSync(resolve(process.cwd(), "src/side-panel/styles.css"), "utf8")).toContain(".message-network-attachment");
   });
 
   it("用户和 AI 消息下方提供重新生成按钮，并在确认后重新请求", async () => {
@@ -2800,6 +2880,31 @@ describe("App", () => {
     expect(screen.getByRole("switch", { name: "提取模式" })).toHaveAttribute("aria-checked", "true");
     expect(screen.queryByText("提取文本")).not.toBeInTheDocument();
     expect(screen.getByText("提取所有")).toBeInTheDocument();
+  });
+
+  it("开启 Network 上下文后在发送前展示 DevTools 未连接提示", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage: vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+          callback(
+            message.type === "networkContext.getSnapshot"
+              ? {
+                  ok: false,
+                  message: "请先打开当前标签页 DevTools，并刷新页面后再使用 Network 上下文",
+                }
+              : { ok: true },
+          );
+          return undefined;
+        }),
+      },
+    });
+
+    render(<App />);
+
+    await user.click(screen.getByRole("switch", { name: "Network 上下文" }));
+
+    expect(await screen.findByText("未检测到当前标签页 DevTools Network 连接，请关闭 DevTools 后重新打开，再刷新页面")).toBeInTheDocument();
   });
 
   it("聊天页展示气泡消息、思考过程和提取模式开关", async () => {

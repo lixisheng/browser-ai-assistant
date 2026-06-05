@@ -48,6 +48,8 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
   const sendShortcut = useAppStore((state) => state.chatPreferences.sendShortcut);
   const promptTemplates = useAppStore((state) => state.promptTemplates);
   const streamMode = useAppStore((state) => state.streamMode);
+  const networkContextEnabled = useAppStore((state) => state.networkContextEnabled);
+  const networkContextStatus = useAppStore((state) => state.networkContextStatus);
   const contextMode = useAppStore((state) => state.contextMode);
   const appendPageContextToSystemPrompt = useAppStore((state) => state.appendPageContextToSystemPrompt);
   const sending = useAppStore((state) => state.sending);
@@ -56,6 +58,8 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
   const contextTabsLoading = useAppStore((state) => state.contextTabsLoading);
   const contextTabsError = useAppStore((state) => state.contextTabsError);
   const setStreamMode = useAppStore((state) => state.setStreamMode);
+  const setNetworkContextEnabled = useAppStore((state) => state.setNetworkContextEnabled);
+  const checkNetworkContextConnection = useAppStore((state) => state.checkNetworkContextConnection);
   const setContextMode = useAppStore((state) => state.setContextMode);
   const setComposerHasDraft = useAppStore((state) => state.setComposerHasDraft);
   const setAppendPageContextToSystemPrompt = useAppStore((state) => state.setAppendPageContextToSystemPrompt);
@@ -67,6 +71,19 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
   useEffect(() => {
     setComposerHasDraft(input.trim().length > 0 || attachments.length > 0 || promptInvocations.length > 0);
   }, [attachments.length, input, promptInvocations.length, setComposerHasDraft]);
+
+  useEffect(() => {
+    if (!networkContextEnabled) {
+      return undefined;
+    }
+
+    void checkNetworkContextConnection();
+    const timer = window.setInterval(() => {
+      void checkNetworkContextConnection();
+    }, 3000);
+
+    return () => window.clearInterval(timer);
+  }, [checkNetworkContextConnection, networkContextEnabled]);
 
   useEffect(() => {
     if (!contextDialogOpen) {
@@ -315,6 +332,7 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
         />
       </div>
       {pageContext.truncated ? <p className="text-sm text-[var(--color-warning)]">内容已截断，请细化 CSS/XPath</p> : null}
+      {networkContextStatus ? <p className="text-sm text-[var(--color-muted)]">{networkContextStatus}</p> : null}
       {pageContext.error ? <p className="text-sm text-[var(--color-error)]">{pageContext.error}</p> : null}
       {attachmentError ? <p className="text-sm text-[var(--color-error)]">{attachmentError}</p> : null}
       <div className="chat-input-shell">
@@ -377,6 +395,12 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
       <div className="composer-actions">
         <div className="composer-switches">
           <ComposerSwitch ariaLabel="流式响应" checked={streamMode} label="流式响应" onToggle={() => setStreamMode(!streamMode)} />
+          <ComposerSwitch
+            ariaLabel="Network 上下文"
+            checked={networkContextEnabled}
+            label="Network"
+            onToggle={() => setNetworkContextEnabled(!networkContextEnabled)}
+          />
           <ComposerSwitch
             ariaLabel="提取模式"
             checked={contextMode === "all"}
