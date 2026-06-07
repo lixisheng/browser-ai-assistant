@@ -4,6 +4,10 @@ Browser AI Assistant 是一个基于 Chrome Manifest V3 的浏览器侧边栏 AI
 
 项目强调本地可控：模型渠道、API Key、提取规则、聊天历史、提示词和同步配置默认保存在浏览器本地 IndexedDB 中。只有用户显式开启同步后，数据才会备份到 Chrome Sync、WebDAV 或 S3 兼容存储。
 
+## 使用教程
+
+完整安装、配置、使用流程和常见问题请查看 [插件教程](./docs/插件教程.md)。
+
 ## 产品预览
 
 ### AI 多标签页对话
