@@ -1,5 +1,6 @@
 import type { ChatMessage, ModelConfig } from "../types";
 import { formatNetworkAttachmentForExport, redactNetworkRequestDetail } from "../networkContext";
+import { createTavilySearchContextPrompt } from "../webSearch/tavily";
 import { truncateText } from "../utils/text";
 
 interface BuildChatRequestMessagesInput {
@@ -14,7 +15,7 @@ interface BuildChatRequestMessagesInput {
 export function buildChatRequestMessages(input: BuildChatRequestMessagesInput): ChatMessage[] {
   const effectiveSystemPrompt = input.systemPrompt ?? input.model.systemPrompt;
   const shouldAppendPageContext = input.appendPageContextToSystemPrompt ?? true;
-  const existingMessages = input.existingMessages.map(expandAssistantNetworkContextAttachment);
+  const existingMessages = input.existingMessages.map(expandAssistantContextAttachments);
   const pageContext = shouldAppendPageContext
     ? fitPageContextToModelBudget({
     systemPrompt: effectiveSystemPrompt,
@@ -55,6 +56,23 @@ function expandAssistantNetworkContextAttachment(message: ChatMessage): ChatMess
       "",
       "后续追问需要继续参考以下历史 DevTools Network 请求详情：",
       formatNetworkAttachmentForExport(message.networkContextAttachment.requests.map(redactNetworkRequestDetail)),
+    ].join("\n").trim(),
+  };
+}
+
+function expandAssistantContextAttachments(message: ChatMessage): ChatMessage {
+  const messageWithNetwork = expandAssistantNetworkContextAttachment(message);
+  if (messageWithNetwork.role !== "assistant" || !messageWithNetwork.webSearchContextAttachment) {
+    return messageWithNetwork;
+  }
+
+  return {
+    ...messageWithNetwork,
+    content: [
+      messageWithNetwork.content,
+      "",
+      "后续追问需要继续参考以下历史网络搜索结果：",
+      createTavilySearchContextPrompt(messageWithNetwork.webSearchContextAttachment),
     ].join("\n").trim(),
   };
 }

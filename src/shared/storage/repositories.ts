@@ -1,6 +1,18 @@
 import { db } from "./db";
 import type { SyncDataSnapshot } from "../sync/types";
-import type { AppSetting, ChatFolder, ChatSession, ExtractionRule, ModelConfig, ModelProvider, PromptTemplate, ProviderModel } from "../types";
+import type {
+  AppSetting,
+  ChatFolder,
+  ChatMessage,
+  ChatSession,
+  ChatWebSearchContextAttachment,
+  ChatWebSearchResult,
+  ExtractionRule,
+  ModelConfig,
+  ModelProvider,
+  PromptTemplate,
+  ProviderModel,
+} from "../types";
 
 export async function saveModelConfig(model: ModelConfig): Promise<void> {
   await db.modelConfigs.put(model);
@@ -273,9 +285,60 @@ function normalizeChatSession(session: ChatSession): ChatSession {
   return {
     ...session,
     archived: session.archived ?? false,
-    messages: session.messages.map((message) => ({
-      ...message,
-      contextMode: message.contextMode ?? "text",
-    })),
+    messages: session.messages.map(normalizeChatMessage),
+  };
+}
+
+function normalizeChatMessage(message: ChatMessage): ChatMessage {
+  return {
+    ...message,
+    contextMode: message.contextMode ?? "text",
+    webSearchContextAttachment: normalizeChatWebSearchContextAttachment(message.webSearchContextAttachment),
+  };
+}
+
+function normalizeChatWebSearchContextAttachment(value: unknown): ChatWebSearchContextAttachment | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+
+  const attachment = value as Partial<ChatWebSearchContextAttachment>;
+  if (attachment.provider !== "tavily" || typeof attachment.query !== "string" || !Array.isArray(attachment.results)) {
+    return undefined;
+  }
+
+  const results = attachment.results
+    .map(normalizeChatWebSearchResult)
+    .filter((result): result is ChatWebSearchResult => Boolean(result));
+
+  return {
+    provider: "tavily",
+    query: attachment.query.trim(),
+    answer: typeof attachment.answer === "string" && attachment.answer.trim() ? attachment.answer.trim() : undefined,
+    results,
+    createdAt: typeof attachment.createdAt === "number" && Number.isFinite(attachment.createdAt) ? attachment.createdAt : Date.now(),
+    truncated: typeof attachment.truncated === "boolean" ? attachment.truncated : false,
+  };
+}
+
+function normalizeChatWebSearchResult(value: unknown): ChatWebSearchResult | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+
+  const result = value as Partial<ChatWebSearchResult>;
+  const url = typeof result.url === "string" ? result.url.trim() : "";
+  const content = typeof result.content === "string" ? result.content.trim() : "";
+  if (!url || !content) {
+    return undefined;
+  }
+
+  return {
+    title: typeof result.title === "string" && result.title.trim() ? result.title.trim() : url,
+    url,
+    content,
+    rawContent: typeof result.rawContent === "string" && result.rawContent.trim() ? result.rawContent.trim() : undefined,
+    score: typeof result.score === "number" && Number.isFinite(result.score) ? result.score : undefined,
+    publishedDate: typeof result.publishedDate === "string" && result.publishedDate.trim() ? result.publishedDate.trim() : undefined,
   };
 }

@@ -1,5 +1,5 @@
 import { create, type StoreApi } from "zustand";
-import { buildChatRequestMessages } from "../../shared/chat/buildChatRequestMessages";
+import { buildChatRequestMessages, buildPromptExpandedUserContent } from "../../shared/chat/buildChatRequestMessages";
 import { createModelConfig } from "../../shared/chat/modelConfig";
 import { createPageContextPrompt } from "../../shared/chat/pageContextPrompt";
 import type { RemoteModelInfo } from "../../shared/models/modelCatalog";
@@ -53,8 +53,18 @@ import {
   SYNC_S3_SECRET_KEY,
   SYNC_WEBDAV_PASSWORD_KEY,
 } from "../../shared/sync/settings";
+import {
+  DEFAULT_WEB_SEARCH_SETTINGS,
+  getWebSearchSettings,
+  normalizeTavilyIncludeAnswer,
+  normalizeTavilyIncludeRawContent,
+  normalizeTavilyMaxResults,
+  normalizeWebSearchSettings,
+  saveWebSearchSettings,
+} from "../../shared/webSearch/settings";
 import type { SyncSecrets, SyncSettings } from "../../shared/sync/types";
 import type { SyncRemoteBackupMeta } from "../../shared/sync/types";
+import { createTavilySearchContextPrompt, WEB_SEARCH_FAILURE_MESSAGE } from "../../shared/webSearch/tavily";
 import type {
   ChatFolder,
   ChatImageAttachment,
@@ -64,6 +74,7 @@ import type {
   ChatPreferenceValues,
   ChatSession,
   ChatSessionPreferenceOverrides,
+  ChatWebSearchContextAttachment,
   EndpointType,
   ExtractionRule,
   ModelProvider,
@@ -74,6 +85,10 @@ import type {
   PromptTemplate,
   ProviderModel,
   SendShortcut,
+  TavilyIncludeAnswer,
+  TavilyIncludeRawContent,
+  WebSearchPolicy,
+  WebSearchSettings,
 } from "../../shared/types";
 
 const DEBUG_PREFIX = "[提取规则 AI 生成诊断]";
@@ -165,10 +180,13 @@ interface AppState {
   streamMode: boolean;
   networkContextEnabled: boolean;
   networkContextStatus?: string;
+  webSearchEnabled: boolean;
+  webSearchStatus?: string;
   sending: boolean;
   contextMode: PageContextExtractMode;
   syncSettings: SyncSettings;
   syncSecrets: SyncSecrets;
+  webSearchSettings: WebSearchSettings;
   remoteBackups: SyncRemoteBackupMeta[];
   syncOperation: SyncOperationState;
   failure?: RequestFailure;
@@ -217,11 +235,13 @@ interface AppState {
   setAppendPageContextToSystemPrompt: (enabled: boolean) => void;
   setStreamMode: (streamMode: boolean) => void;
   setNetworkContextEnabled: (enabled: boolean) => void;
+  setWebSearchEnabled: (enabled: boolean) => void;
   checkNetworkContextConnection: () => Promise<void>;
   setContextMode: (contextMode: PageContextExtractMode) => void;
   loadSyncSettings: () => Promise<void>;
   updateSyncSettings: (updates: Partial<SyncSettings>) => Promise<void>;
   updateSyncSecret: (key: keyof SyncSecrets, value: string) => Promise<void>;
+  updateWebSearchSettings: (updates: Partial<WebSearchSettings>) => Promise<void>;
   loadRemoteBackups: () => Promise<void>;
   backupNow: () => Promise<void>;
   restoreNow: (backupId: string) => Promise<void>;
@@ -262,6 +282,7 @@ const DEFAULT_CHAT_PREFERENCES: ChatPreferenceValues = {
   networkRelevancePrompt: DEFAULT_NETWORK_RELEVANCE_PROMPT,
   networkRelevanceBatchSize: 50,
   networkRequestTypeFilters: DEFAULT_NETWORK_REQUEST_TYPE_FILTERS,
+  webSearchPolicy: "first_message",
   temperature: 0.7,
   maxTokens: 1024,
   topK: undefined,
@@ -304,10 +325,13 @@ export const useAppStore = create<AppState>()((set, get) => ({
   streamMode: true,
   networkContextEnabled: false,
   networkContextStatus: undefined,
+  webSearchEnabled: false,
+  webSearchStatus: undefined,
   sending: false,
   contextMode: "text",
   syncSettings: DEFAULT_SYNC_SETTINGS,
   syncSecrets: DEFAULT_SYNC_SECRETS,
+  webSearchSettings: DEFAULT_WEB_SEARCH_SETTINGS,
   remoteBackups: [],
   syncOperation: {
     loading: false,
@@ -572,11 +596,12 @@ export const useAppStore = create<AppState>()((set, get) => ({
     }
   },
   loadChannelConfig: async () => {
-    const [providers, models, savedDefaultChatModelId, savedChatPreferences] = await Promise.all([
+    const [providers, models, savedDefaultChatModelId, savedChatPreferences, webSearchSettings] = await Promise.all([
       getModelProviders(),
       getProviderModels(),
       getAppSetting<string>("defaultChatModelId"),
       getAppSetting<Partial<ChatPreferenceValues>>("chatPreferences"),
+      getWebSearchSettings(),
     ]);
     const defaultChatModelId = resolveConfiguredModelId(savedDefaultChatModelId ?? "", models, providers);
     const currentSelectedModelId = get().selectedModelId;
@@ -594,6 +619,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       models,
       defaultChatModelId,
       chatPreferences,
+      webSearchSettings,
       appendPageContextToSystemPrompt: chatPreferences.injectPageContextByDefault,
       contextMode: resolveDefaultContextMode(chatPreferences),
       pageContext: {
@@ -1246,6 +1272,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       void get().checkNetworkContextConnection();
     }
   },
+  setWebSearchEnabled: (enabled) => set({ webSearchEnabled: enabled, webSearchStatus: enabled ? get().webSearchStatus : undefined }),
   checkNetworkContextConnection: async () => {
     const current = get();
     if (!current.networkContextEnabled) {
@@ -1334,6 +1361,21 @@ export const useAppStore = create<AppState>()((set, get) => ({
     }));
 
   },
+  updateWebSearchSettings: async (updates) => {
+    const current = get().webSearchSettings;
+    const nextSettings = normalizeWebSearchSettings({
+      ...current,
+      ...updates,
+      tavily: {
+        ...current.tavily,
+        ...updates.tavily,
+      },
+      updatedAt: Date.now(),
+    });
+
+    await saveWebSearchSettings(nextSettings);
+    set({ webSearchSettings: nextSettings });
+  },
   backupNow: async () => {
     set({ syncOperation: { loading: true } });
     const response = await sendRuntimeMessage<{ ok: boolean; message?: string }>({ type: "sync.backupNow" });
@@ -1405,10 +1447,13 @@ export const useAppStore = create<AppState>()((set, get) => ({
       streamMode: true,
       networkContextEnabled: false,
       networkContextStatus: undefined,
+      webSearchEnabled: false,
+      webSearchStatus: undefined,
       sending: false,
       contextMode: "text",
       syncSettings: DEFAULT_SYNC_SETTINGS,
       syncSecrets: DEFAULT_SYNC_SECRETS,
+      webSearchSettings: DEFAULT_WEB_SEARCH_SETTINGS,
       syncOperation: {
         loading: false,
       },
@@ -1541,6 +1586,7 @@ function normalizeChatPreferences(value?: Partial<ChatPreferenceValues>): ChatPr
         : DEFAULT_CHAT_PREFERENCES.networkRelevancePrompt,
     networkRelevanceBatchSize: Math.round(normalizeNumber(value?.networkRelevanceBatchSize, DEFAULT_CHAT_PREFERENCES.networkRelevanceBatchSize, 1, 10_000)),
     networkRequestTypeFilters: normalizeNetworkRequestTypeFilters(value?.networkRequestTypeFilters),
+    webSearchPolicy: normalizeWebSearchPolicy(value?.webSearchPolicy),
     temperature: normalizeNumber(value?.temperature, DEFAULT_CHAT_PREFERENCES.temperature, 0, 2),
     maxTokens: Math.round(normalizeNumber(value?.maxTokens, DEFAULT_CHAT_PREFERENCES.maxTokens, 1, 200_000)),
     topK: normalizeOptionalInteger(value?.topK, 1, 1_000),
@@ -1573,6 +1619,10 @@ function normalizeNetworkRequestTypeFilters(value: unknown): NetworkRequestTypeF
   return Array.from(new Set(filters));
 }
 
+function normalizeWebSearchPolicy(value: unknown): WebSearchPolicy {
+  return value === "every_message" || value === "first_message" ? value : DEFAULT_CHAT_PREFERENCES.webSearchPolicy;
+}
+
 function isSendShortcutValue(value: unknown): value is SendShortcut {
   return typeof value === "string" && ["enter", "shift_enter", "ctrl_enter", "ctrl_shift_enter", "alt_enter"].includes(value);
 }
@@ -1590,6 +1640,18 @@ function normalizeChatPreferenceOverrides(value?: ChatSessionPreferenceOverrides
   }
   if (value?.networkRequestTypeFilters !== undefined) {
     overrides.networkRequestTypeFilters = normalizeNetworkRequestTypeFilters(value.networkRequestTypeFilters);
+  }
+  if (value?.webSearchPolicy !== undefined) {
+    overrides.webSearchPolicy = normalizeWebSearchPolicy(value.webSearchPolicy);
+  }
+  if (value?.webSearchIncludeAnswer !== undefined) {
+    overrides.webSearchIncludeAnswer = normalizeTavilyIncludeAnswer(value.webSearchIncludeAnswer);
+  }
+  if (value?.webSearchIncludeRawContent !== undefined) {
+    overrides.webSearchIncludeRawContent = normalizeTavilyIncludeRawContent(value.webSearchIncludeRawContent);
+  }
+  if (value?.webSearchMaxResults !== undefined) {
+    overrides.webSearchMaxResults = normalizeTavilyMaxResults(value.webSearchMaxResults);
   }
   if (value?.temperature !== undefined) {
     overrides.temperature = normalizeNumber(value.temperature, DEFAULT_CHAT_PREFERENCES.temperature, 0, 2);
@@ -1612,6 +1674,7 @@ function resolveEffectiveChatPreferences(
     systemPrompt: overrides?.systemPrompt ?? preferences.systemPrompt,
     networkRelevanceBatchSize: overrides?.networkRelevanceBatchSize ?? preferences.networkRelevanceBatchSize,
     networkRequestTypeFilters: overrides?.networkRequestTypeFilters ?? preferences.networkRequestTypeFilters,
+    webSearchPolicy: overrides?.webSearchPolicy ?? preferences.webSearchPolicy,
     temperature: overrides?.temperature ?? preferences.temperature,
     maxTokens: overrides?.maxTokens ?? preferences.maxTokens,
     topK: overrides?.topK ?? preferences.topK,
@@ -1621,6 +1684,7 @@ function resolveEffectiveChatPreferences(
     systemPrompt: normalizedOverrides.systemPrompt ?? preferences.systemPrompt,
     networkRelevanceBatchSize: normalizedOverrides.networkRelevanceBatchSize ?? preferences.networkRelevanceBatchSize,
     networkRequestTypeFilters: normalizedOverrides.networkRequestTypeFilters ?? preferences.networkRequestTypeFilters,
+    webSearchPolicy: normalizedOverrides.webSearchPolicy ?? preferences.webSearchPolicy,
     temperature: normalizedOverrides.temperature ?? preferences.temperature,
     maxTokens: normalizedOverrides.maxTokens ?? preferences.maxTokens,
     topK: normalizedOverrides.topK,
@@ -1711,11 +1775,26 @@ type NetworkRelevanceResponse =
   | { ok: true; content: string }
   | { ok: false; message?: string; status?: number; errorBody?: string };
 
+type WebSearchResponse =
+  | { ok: true; attachment: ChatWebSearchContextAttachment }
+  | { ok: false; message?: string };
+
 type PreparedNetworkContext =
   | {
       ok: true;
       userMessage: ChatMessage;
       attachment?: ChatNetworkContextAttachment;
+    }
+  | {
+      ok: false;
+      message: string;
+    };
+
+type PreparedWebSearchContext =
+  | {
+      ok: true;
+      userMessage: ChatMessage;
+      attachment?: ChatWebSearchContextAttachment;
     }
   | {
       ok: false;
@@ -1763,7 +1842,15 @@ interface RunChatRequestInput {
 }
 
 type EffectiveChatPreferences = Required<
-  Pick<ChatSessionPreferenceOverrides, "systemPrompt" | "networkRelevanceBatchSize" | "networkRequestTypeFilters" | "temperature" | "maxTokens">
+  Pick<
+    ChatSessionPreferenceOverrides,
+    | "systemPrompt"
+    | "networkRelevanceBatchSize"
+    | "networkRequestTypeFilters"
+    | "webSearchPolicy"
+    | "temperature"
+    | "maxTokens"
+  >
 > &
   Pick<ChatSessionPreferenceOverrides, "topK">;
 
@@ -2028,10 +2115,32 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
           })
         : ({ ok: true, userMessage: input.userMessage } satisfies PreparedNetworkContext);
     if (!preparedNetworkContext.ok) {
-      input.set({ failure: { message: preparedNetworkContext.message }, networkContextStatus: undefined });
+      input.set({ failure: { message: preparedNetworkContext.message }, networkContextStatus: undefined, webSearchStatus: undefined });
       return;
     }
     input.set({ networkContextStatus: undefined });
+
+    const preparedWebSearchContext =
+      !input.state.networkContextEnabled && shouldRunWebSearch({
+        enabled: input.state.webSearchEnabled,
+        policy: effectiveChatPreferences.webSearchPolicy,
+        existingMessages: input.existingMessages,
+      })
+        ? await prepareWebSearchContextForRequest({
+            userMessage: preparedNetworkContext.userMessage,
+            tavily: {
+              includeAnswer: input.session.chatPreferenceOverrides?.webSearchIncludeAnswer ?? input.state.webSearchSettings.tavily.includeAnswer,
+              includeRawContent: input.session.chatPreferenceOverrides?.webSearchIncludeRawContent ?? input.state.webSearchSettings.tavily.includeRawContent,
+              maxResults: input.session.chatPreferenceOverrides?.webSearchMaxResults ?? input.state.webSearchSettings.tavily.maxResults,
+            },
+            set: input.set,
+          })
+        : ({ ok: true, userMessage: preparedNetworkContext.userMessage } satisfies PreparedWebSearchContext);
+    if (!preparedWebSearchContext.ok) {
+      input.set({ failure: { message: preparedWebSearchContext.message }, webSearchStatus: undefined });
+      return;
+    }
+    input.set({ webSearchStatus: undefined });
 
     const titleGenerationPromise = !input.privateMode && input.shouldGenerateTitle
       ? generateTitleForSession({
@@ -2052,7 +2161,7 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
         model: modelConfig,
         pageContext: input.pageContextPrompt,
         existingMessages: input.existingMessages,
-        userMessage: preparedNetworkContext.userMessage,
+        userMessage: preparedWebSearchContext.userMessage,
         systemPrompt: effectiveChatPreferences.systemPrompt,
         appendPageContextToSystemPrompt: input.state.appendPageContextToSystemPrompt,
       }),
@@ -2071,6 +2180,7 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
         matchedRuleId: input.state.pageContext.matchedRuleId,
         privateMode: input.privateMode,
         networkContextAttachment: preparedNetworkContext.attachment,
+        webSearchContextAttachment: preparedWebSearchContext.attachment,
         request,
       });
       if (streamResult.completed) {
@@ -2109,6 +2219,7 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
       contextMode: input.state.contextMode,
       matchedRuleId: input.state.pageContext.matchedRuleId,
       networkContextAttachment: preparedNetworkContext.attachment,
+      webSearchContextAttachment: preparedWebSearchContext.attachment,
     };
     if (input.privateMode) {
       input.set((current) => {
@@ -2158,7 +2269,7 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
       },
     });
   } finally {
-    input.set({ sending: false, networkContextStatus: undefined });
+    input.set({ sending: false, networkContextStatus: undefined, webSearchStatus: undefined });
   }
 }
 
@@ -2324,6 +2435,54 @@ function collectHistoricalNetworkRequestUrls(messages: ChatMessage[]): Set<strin
   }
 
   return urls;
+}
+
+function shouldRunWebSearch(input: { enabled: boolean; policy: WebSearchPolicy; existingMessages: ChatMessage[] }): boolean {
+  if (!input.enabled) {
+    return false;
+  }
+
+  if (input.policy === "every_message") {
+    return true;
+  }
+
+  return input.existingMessages.length === 0;
+}
+
+async function prepareWebSearchContextForRequest(input: {
+  userMessage: ChatMessage;
+  tavily: {
+    includeAnswer: TavilyIncludeAnswer;
+    includeRawContent: TavilyIncludeRawContent;
+    maxResults: number;
+  };
+  set: StoreSetter;
+}): Promise<PreparedWebSearchContext> {
+  input.set({ webSearchStatus: "正在进行网络搜索" });
+  const searchQuery = input.userMessage.promptInvocations?.length ? buildPromptExpandedUserContent(input.userMessage) : input.userMessage.content;
+  const response = await sendRuntimeMessage<WebSearchResponse | undefined>({
+    type: "webSearch.search",
+    query: searchQuery,
+    tavily: input.tavily,
+  });
+
+  if (!response?.ok) {
+    return { ok: false, message: response?.message ?? WEB_SEARCH_FAILURE_MESSAGE };
+  }
+
+  return {
+    ok: true,
+    attachment: response.attachment,
+    userMessage: {
+      ...input.userMessage,
+      content: [
+        input.userMessage.content,
+        "",
+        "请结合以下网络搜索结果回答用户需求：",
+        createTavilySearchContextPrompt(response.attachment),
+      ].join("\n").trim(),
+    },
+  };
 }
 
 async function selectRelevantNetworkRequestBatches(input: {
@@ -2675,6 +2834,7 @@ interface StreamingChatInput {
   matchedRuleId?: string;
   privateMode?: boolean;
   networkContextAttachment?: ChatNetworkContextAttachment;
+  webSearchContextAttachment?: ChatWebSearchContextAttachment;
   request: ChatSendMessage;
 }
 
@@ -2697,6 +2857,7 @@ async function sendStreamingChatMessage(input: StreamingChatInput): Promise<Stre
     contextMode: input.contextMode,
     matchedRuleId: input.matchedRuleId,
     networkContextAttachment: input.networkContextAttachment,
+    webSearchContextAttachment: input.webSearchContextAttachment,
     streaming: true,
   };
 

@@ -840,6 +840,7 @@ describe("App", () => {
         networkRelevancePrompt: DEFAULT_NETWORK_RELEVANCE_PROMPT,
         networkRelevanceBatchSize: 50,
         networkRequestTypeFilters: ["all"],
+        webSearchPolicy: "first_message",
         temperature: 0.7,
         maxTokens: 1024,
         sendShortcut: "enter",
@@ -868,6 +869,7 @@ describe("App", () => {
         networkRelevancePrompt: DEFAULT_NETWORK_RELEVANCE_PROMPT,
         networkRelevanceBatchSize: 50,
         networkRequestTypeFilters: ["all"],
+        webSearchPolicy: "first_message",
         temperature: 0.7,
         maxTokens: 1024,
         sendShortcut: "enter",
@@ -896,6 +898,7 @@ describe("App", () => {
         networkRelevancePrompt: DEFAULT_NETWORK_RELEVANCE_PROMPT,
         networkRelevanceBatchSize: 50,
         networkRequestTypeFilters: ["all"],
+        webSearchPolicy: "first_message",
         temperature: 0.7,
         maxTokens: 1024,
         sendShortcut: "enter",
@@ -1073,6 +1076,46 @@ describe("App", () => {
     expect(readFileSync(resolve(process.cwd(), "src/side-panel/styles.css"), "utf8")).toContain(".message-network-attachment");
     expect(readFileSync(resolve(process.cwd(), "src/side-panel/styles.css"), "utf8")).toContain(".message-network-request-item summary");
     expect(readFileSync(resolve(process.cwd(), "src/side-panel/styles.css"), "utf8")).toContain("overflow-wrap: anywhere;");
+  });
+
+  it("助手消息旁展示网络搜索附件时使用独立样式类名", async () => {
+    await saveChatSession(
+      createChatSession({
+        id: "session-web-search-attachment",
+        title: "网络搜索",
+        messages: [
+          createChatMessage({
+            id: "message-web-search-attachment",
+            role: "assistant",
+            content: "已参考 Tavily 搜索结果。",
+            webSearchContextAttachment: {
+              provider: "tavily",
+              query: "Tavily 搜索 API",
+              answer: "Tavily 提供网络搜索 API。",
+              results: [
+                {
+                  title: "Tavily Search",
+                  url: "https://docs.tavily.com/documentation/api-reference/endpoint/search",
+                  content: "Search endpoint documentation.",
+                },
+              ],
+              createdAt: 2,
+              truncated: false,
+            },
+          }),
+        ],
+      }),
+    );
+
+    render(<App />);
+
+    const attachment = await screen.findByText("网络搜索结果");
+    expect(attachment.closest(".message-web-search-attachment")).toBeInTheDocument();
+    expect(attachment.closest(".message-network-attachment")).not.toBeInTheDocument();
+
+    const styles = readFileSync(resolve(process.cwd(), "src/side-panel/styles.css"), "utf8");
+    expect(styles).toContain(".message-web-search-attachment");
+    expect(styles).toContain(".message-web-search-result-item summary");
   });
 
   it("助手消息旁 Network 历史脏附件展示前会重新脱敏", async () => {

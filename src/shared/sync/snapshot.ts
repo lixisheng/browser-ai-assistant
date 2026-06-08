@@ -2,6 +2,7 @@ import { exportAllDataForSync, getAppSetting, replaceAllDataFromSync } from "../
 import { SYNC_SECRET_SETTING_KEYS } from "./settings";
 import type { SyncDataSnapshot } from "./types";
 import type { AppSetting } from "../types";
+import { normalizeWebSearchSettings, WEB_SEARCH_SETTINGS_KEY } from "../webSearch/settings";
 
 export async function exportSyncSnapshot(): Promise<SyncDataSnapshot> {
   const snapshot = await exportAllDataForSync();
@@ -9,16 +10,17 @@ export async function exportSyncSnapshot(): Promise<SyncDataSnapshot> {
 
   return {
     ...snapshot,
-    appSettings: snapshot.appSettings.filter((setting) => !secretKeys.has(setting.key)),
+    appSettings: snapshot.appSettings.filter((setting) => !secretKeys.has(setting.key)).map(sanitizeAppSettingForSync),
   };
 }
 
 export async function restoreSyncSnapshot(snapshot: SyncDataSnapshot): Promise<void> {
   assertValidSnapshot(snapshot);
   const localSecretSettings = await readLocalSecretSettings();
+  const localWebSearchSettings = await getAppSetting(WEB_SEARCH_SETTINGS_KEY);
   await replaceAllDataFromSync({
     ...snapshot,
-    appSettings: mergeAppSettings(snapshot.appSettings, localSecretSettings),
+    appSettings: mergeAppSettings(mergeWebSearchSettingsForRestore(snapshot.appSettings, localWebSearchSettings), localSecretSettings),
   });
 }
 
@@ -43,6 +45,49 @@ async function readLocalSecretSettings(): Promise<AppSetting[]> {
 function mergeAppSettings(remoteSettings: AppSetting[], localSettings: AppSetting[]): AppSetting[] {
   const localKeys = new Set(localSettings.map((setting) => setting.key));
   return [...remoteSettings.filter((setting) => !localKeys.has(setting.key)), ...localSettings];
+}
+
+function sanitizeAppSettingForSync(setting: AppSetting): AppSetting {
+  if (setting.key !== WEB_SEARCH_SETTINGS_KEY) {
+    return setting;
+  }
+
+  const webSearchSettings = normalizeUnknownWebSearchSettings(setting.value);
+  return {
+    ...setting,
+    value: {
+      ...webSearchSettings,
+      tavily: {
+        ...webSearchSettings.tavily,
+        apiKeysText: "",
+      },
+    },
+  };
+}
+
+function mergeWebSearchSettingsForRestore(remoteSettings: AppSetting[], localValue: unknown): AppSetting[] {
+  const localWebSearchSettings = normalizeUnknownWebSearchSettings(localValue);
+  return remoteSettings.map((setting) => {
+    if (setting.key !== WEB_SEARCH_SETTINGS_KEY) {
+      return setting;
+    }
+
+    const remoteWebSearchSettings = normalizeUnknownWebSearchSettings(setting.value);
+    return {
+      ...setting,
+      value: {
+        ...remoteWebSearchSettings,
+        tavily: {
+          ...remoteWebSearchSettings.tavily,
+          apiKeysText: localWebSearchSettings.tavily.apiKeysText,
+        },
+      },
+    };
+  });
+}
+
+function normalizeUnknownWebSearchSettings(value: unknown) {
+  return normalizeWebSearchSettings(value && typeof value === "object" ? (value as Parameters<typeof normalizeWebSearchSettings>[0]) : undefined);
 }
 
 function assertValidSnapshot(value: SyncDataSnapshot): void {

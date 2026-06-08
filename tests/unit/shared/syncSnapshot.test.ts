@@ -138,3 +138,98 @@ describe("同步快照", () => {
     expect(await getPromptTemplates()).toEqual([]);
   });
 });
+
+describe("网络搜索同步快照", () => {
+  afterEach(async () => {
+    await clearDatabase();
+  });
+
+  it("导出同步快照时只过滤 Tavily API Key 并保留非密钥配置", async () => {
+    await saveAppSetting({
+      key: "webSearchSettings",
+      value: {
+        provider: "tavily",
+        tavily: {
+          apiKeysText: "tvly-secret",
+          apiKeyStrategy: "random",
+          includeAnswer: "advanced",
+          includeRawContent: "markdown",
+          maxResults: 12,
+        },
+        updatedAt: 1,
+      },
+      updatedAt: 1,
+    });
+
+    const snapshot = await exportSyncSnapshot();
+
+    expect(snapshot.appSettings.find((setting) => setting.key === "webSearchSettings")).toMatchObject({
+      value: {
+        provider: "tavily",
+        tavily: {
+          apiKeysText: "",
+          apiKeyStrategy: "random",
+          includeAnswer: "advanced",
+          includeRawContent: "markdown",
+          maxResults: 12,
+        },
+      },
+    });
+    expect(JSON.stringify(snapshot)).not.toContain("tvly-secret");
+  });
+
+  it("恢复同步快照时保留本地 Tavily API Key 并应用远端非密钥配置", async () => {
+    await saveAppSetting({
+      key: "webSearchSettings",
+      value: {
+        provider: "tavily",
+        tavily: {
+          apiKeysText: "local-tvly-secret",
+          apiKeyStrategy: "round_robin",
+          includeAnswer: "basic",
+          includeRawContent: false,
+          maxResults: 5,
+        },
+        updatedAt: 1,
+      },
+      updatedAt: 1,
+    });
+
+    await restoreSyncSnapshot({
+      version: 1,
+      modelConfigs: [],
+      modelProviders: [],
+      providerModels: [],
+      extractionRules: [],
+      chatSessions: [],
+      chatFolders: [],
+      appSettings: [
+        {
+          key: "webSearchSettings",
+          value: {
+            provider: "tavily",
+            tavily: {
+              apiKeysText: "",
+              apiKeyStrategy: "random",
+              includeAnswer: "advanced",
+              includeRawContent: "markdown",
+              maxResults: 12,
+            },
+            updatedAt: 2,
+          },
+          updatedAt: 2,
+        },
+      ],
+    });
+
+    expect(await getAppSetting("webSearchSettings")).toMatchObject({
+      tavily: {
+        apiKeysText: "local-tvly-secret",
+        apiKeyStrategy: "random",
+        includeAnswer: "advanced",
+        includeRawContent: "markdown",
+        maxResults: 12,
+      },
+    });
+  });
+});

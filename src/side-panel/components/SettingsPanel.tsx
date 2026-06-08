@@ -1,7 +1,17 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { DragEvent } from "react";
 import { NETWORK_REQUEST_TYPE_FILTER_OPTIONS } from "../../shared/networkContext";
-import type { ChatPreferenceValues, ExtractionRule, ModelProvider, NetworkRequestTypeFilter, PromptTemplate, ProviderModel, SendShortcut } from "../../shared/types";
+import type {
+  ChatPreferenceValues,
+  ExtractionRule,
+  ModelProvider,
+  NetworkRequestTypeFilter,
+  PromptTemplate,
+  ProviderModel,
+  SendShortcut,
+  WebSearchPolicy,
+} from "../../shared/types";
+import { parseTavilyIncludeAnswerInput, parseTavilyIncludeRawContentInput } from "../../shared/webSearch/settings";
 import { useAppStore } from "../state/appStore";
 import { resolveNetworkTypeFilterSelection } from "../utils/networkTypeFilterSelection";
 import { formatModelLabelWithVision, ModelVisionIcon } from "./ModelVisionIndicator";
@@ -109,15 +119,29 @@ function ChannelManagement() {
   const setTitleModel = useAppStore((state) => state.setTitleModel);
   const defaultChatModelId = useAppStore((state) => state.defaultChatModelId);
   const setDefaultChatModel = useAppStore((state) => state.setDefaultChatModel);
+  const webSearchSettings = useAppStore((state) => state.webSearchSettings);
+  const updateWebSearchSettings = useAppStore((state) => state.updateWebSearchSettings);
   const remoteModelsByProvider = useAppStore((state) => state.remoteModels);
   const channelOperations = useAppStore((state) => state.channelOperations);
   const modelConnectivity = useAppStore((state) => state.modelConnectivity);
   const visibleProviders = providers.length > 0 ? providers : [draftProvider];
   const [selectedProviderId, setSelectedProviderId] = useState(visibleProviders[0].id);
+  const [expandedProviderId, setExpandedProviderId] = useState<string>();
   const [remoteModelQuery, setRemoteModelQuery] = useState("");
   const [settingsModelId, setSettingsModelId] = useState<string>();
-  const realSelectedProvider = providers.find((provider) => provider.id === selectedProviderId);
-  const selectedProvider = realSelectedProvider ?? providers[0] ?? draftProvider;
+  const [showTavilyApiKey, setShowTavilyApiKey] = useState(false);
+  useEffect(() => {
+    if (providers.length === 0) {
+      setSelectedProviderId(draftProvider.id);
+      return;
+    }
+    if (!providers.some((provider) => provider.id === selectedProviderId)) {
+      setSelectedProviderId(providers[0].id);
+    }
+  }, [providers, selectedProviderId]);
+
+  const realSelectedProvider = providers.find((provider) => provider.id === selectedProviderId) ?? providers[0];
+  const selectedProvider = realSelectedProvider ?? draftProvider;
   const realProviderModels = useMemo(
     () => models.filter((model) => model.providerId === selectedProvider.id),
     [models, selectedProvider.id],
@@ -171,6 +195,7 @@ function ChannelManagement() {
   const handleAddProvider = () => {
     const provider = addProvider();
     setSelectedProviderId(provider.id);
+    setExpandedProviderId(provider.id);
   };
   const handleAddModel = () => {
     const provider = ensureSelectedProvider();
@@ -182,12 +207,17 @@ function ChannelManagement() {
   };
   const handleDeleteProvider = () => {
     deleteProvider(selectedProvider.id);
-    setSelectedProviderId(providers.find((provider) => provider.id !== selectedProvider.id)?.id ?? draftProvider.id);
+    const nextProviderId = providers.find((provider) => provider.id !== selectedProvider.id)?.id ?? draftProvider.id;
+    setSelectedProviderId(nextProviderId);
+    setExpandedProviderId(undefined);
   };
   const handleTestModel = (modelId: string) => {
     void testModel(selectedProvider.id, modelId);
   };
   const settingsModel = settingsModelId ? models.find((model) => model.id === settingsModelId) : undefined;
+  const tavilyApiKeyInput = useComposedTextInput(webSearchSettings.tavily.apiKeysText, (apiKeysText) => {
+    void updateWebSearchSettings({ tavily: { ...webSearchSettings.tavily, apiKeysText } });
+  });
 
   return (
     <section className="grid w-full gap-4" aria-label="渠道管理">
@@ -204,12 +234,15 @@ function ChannelManagement() {
             key={provider.id}
             className={[
               "rounded-lg border p-3 text-left transition",
-              provider.id === selectedProvider.id
+              provider.id === selectedProviderId
                 ? "border-[var(--color-primary)] bg-[var(--color-surface-card)]"
                 : "border-[var(--color-hairline)] bg-[var(--color-canvas)] hover:bg-[var(--color-surface-soft)]",
             ].join(" ")}
             type="button"
-            onClick={() => setSelectedProviderId(provider.id)}
+            onClick={() => {
+              setSelectedProviderId(provider.id);
+              setExpandedProviderId((current) => (current === provider.id ? undefined : provider.id));
+            }}
           >
             <span className="block text-sm font-medium">{provider.name}</span>
             <span className="ui-muted mt-1 block truncate text-xs">{provider.endpointUrl}</span>
@@ -217,6 +250,7 @@ function ChannelManagement() {
         ))}
       </div>
 
+      {expandedProviderId === selectedProvider.id ? (
       <section className="grid gap-3 border-t border-[var(--color-hairline)] pt-4" aria-label="当前渠道详情">
         <div className="flex flex-wrap gap-2">
           <button className="ui-button-secondary" type="button" onClick={handleFetchRemoteModels} disabled={channelOperation?.loading}>
@@ -271,7 +305,7 @@ function ChannelManagement() {
           />
         </label>
       </section>
-
+      ) : null}
       <section className="grid gap-3 border-t border-[var(--color-hairline)] pt-4" aria-label="AI 标题生成">
         <label className="grid gap-1 text-sm">
           默认对话模型
@@ -416,6 +450,110 @@ function ChannelManagement() {
           })}
         </div>
       </section>
+
+      <section className="grid gap-3 border-t border-[var(--color-hairline)] pt-4" aria-label="网络搜索配置">
+        <h4 className="text-sm font-semibold">网络搜索</h4>
+        <label className="grid gap-1 text-sm">
+          Tavily API Key
+          <span className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+            <input
+              className="ui-input min-w-0"
+              aria-label="Tavily API Key"
+              type={showTavilyApiKey ? "text" : "password"}
+              {...tavilyApiKeyInput}
+            />
+            <button
+              className="ui-button-secondary px-2"
+              type="button"
+              aria-label={showTavilyApiKey ? "隐藏 Tavily API Key 明文" : "显示 Tavily API Key 明文"}
+              onClick={() => setShowTavilyApiKey((visible) => !visible)}
+            >
+              <TavilyApiKeyVisibilityIcon visible={showTavilyApiKey} />
+            </button>
+          </span>
+          <span className="ui-muted text-xs">多个 API Key 请使用英文逗号分隔。</span>
+        </label>
+        <label className="grid gap-1 text-sm">
+          Tavily API Key 使用策略
+          <select
+            className="ui-input"
+            aria-label="Tavily API Key 使用策略"
+            value={webSearchSettings.tavily.apiKeyStrategy}
+            onChange={(event) =>
+              void updateWebSearchSettings({
+                tavily: {
+                  ...webSearchSettings.tavily,
+                  apiKeyStrategy: event.target.value === "random" ? "random" : "round_robin",
+                },
+              })
+            }
+          >
+            <option value="round_robin">轮询</option>
+            <option value="random">随机</option>
+          </select>
+        </label>
+        <div className="chat-preference-grid">
+          <label className="chat-preference-field">
+            综合答案
+            <select
+              className="ui-input chat-preference-shortcut-select"
+              aria-label="Tavily 综合答案"
+              value={String(webSearchSettings.tavily.includeAnswer)}
+              onChange={(event) =>
+                void updateWebSearchSettings({
+                  tavily: {
+                    ...webSearchSettings.tavily,
+                    includeAnswer: parseTavilyIncludeAnswerInput(event.target.value),
+                  },
+                })
+              }
+            >
+              <option value="basic">基础答案</option>
+              <option value="advanced">深入答案</option>
+              <option value="true">开启</option>
+              <option value="false">关闭</option>
+            </select>
+          </label>
+          <label className="chat-preference-field">
+            原始内容
+            <select
+              className="ui-input chat-preference-shortcut-select"
+              aria-label="Tavily 原始内容"
+              value={String(webSearchSettings.tavily.includeRawContent)}
+              onChange={(event) =>
+                void updateWebSearchSettings({
+                  tavily: {
+                    ...webSearchSettings.tavily,
+                    includeRawContent: parseTavilyIncludeRawContentInput(event.target.value),
+                  },
+                })
+              }
+            >
+              <option value="false">关闭</option>
+              <option value="true">开启</option>
+              <option value="markdown">Markdown</option>
+              <option value="text">纯文本</option>
+            </select>
+          </label>
+          <GlobalPreferenceNumberInput
+            label="Tavily 最大结果数"
+            value={webSearchSettings.tavily.maxResults}
+            min={1}
+            max={20}
+            step={1}
+            onChange={(value) =>
+              value === undefined
+                ? undefined
+                : void updateWebSearchSettings({
+                    tavily: {
+                      ...webSearchSettings.tavily,
+                      maxResults: value,
+                    },
+                  })
+            }
+          />
+        </div>
+      </section>
       {settingsModel ? (
         <ModelSettingsDialog
           model={settingsModel}
@@ -466,6 +604,21 @@ function ModelSettingsDialog({ model, onClose, onChangeSupportsVision }: ModelSe
         </p>
       </section>
     </>
+  );
+}
+
+function TavilyApiKeyVisibilityIcon({ visible }: { visible: boolean }) {
+  return (
+    <span
+      className={visible ? "tavily-api-key-visibility-icon tavily-api-key-visibility-icon-open" : "tavily-api-key-visibility-icon tavily-api-key-visibility-icon-closed"}
+      aria-hidden="true"
+    >
+      <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24">
+        <path d="M2.75 12s3.25-5.5 9.25-5.5 9.25 5.5 9.25 5.5-3.25 5.5-9.25 5.5S2.75 12 2.75 12Z" />
+        {visible ? <circle cx="12" cy="12" r="2.75" /> : null}
+        {visible ? null : <path d="M4.5 4.5 19.5 19.5" />}
+      </svg>
+    </span>
   );
 }
 
@@ -928,6 +1081,18 @@ function ChatPreferenceSettings() {
           onChange={(value) => void updateChatPreferences({ topK: value })}
         />
       </div>
+      <label className="chat-preference-field">
+        网络搜索时机
+        <select
+          className="ui-input chat-preference-shortcut-select"
+          aria-label="网络搜索时机"
+          value={chatPreferences.webSearchPolicy}
+          onChange={(event) => void updateChatPreferences({ webSearchPolicy: event.target.value as WebSearchPolicy })}
+        >
+          <option value="first_message">仅首轮搜索</option>
+          <option value="every_message">每轮搜索</option>
+        </select>
+      </label>
       <fieldset className="chat-preference-network-types">
         <legend className="text-sm">默认采集 Network 请求类型</legend>
         <div className="chat-preference-network-type-list">

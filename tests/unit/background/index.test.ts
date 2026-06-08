@@ -1108,3 +1108,36 @@ describe("background 入口", () => {
   });
 
 });
+
+describe("background 网络搜索入口异常兜底", () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  it("webSearch.search 处理异常时仍返回响应，避免 runtime 端口关闭", async () => {
+    const mock = createChromeMock();
+    vi.stubGlobal("chrome", mock.chrome);
+    vi.doMock("../../../src/background/webSearchMessageHandler", () => ({
+      handleWebSearchMessage: vi.fn().mockRejectedValue(new Error("IndexedDB broken with tvly-secret")),
+    }));
+    await import("../../../src/background/index");
+    const sendResponse = vi.fn();
+
+    const keepChannelOpen = mock.messageListeners[0](
+      {
+        type: "webSearch.search",
+        query: "Tavily API",
+      },
+      {} as chrome.runtime.MessageSender,
+      sendResponse,
+    );
+
+    expect(keepChannelOpen).toBe(true);
+    await vi.waitFor(() => {
+      expect(sendResponse).toHaveBeenCalledWith({
+        ok: false,
+        message: "网络搜索失败，请检查 Tavily 配置后重试",
+      });
+    });
+  });
+});

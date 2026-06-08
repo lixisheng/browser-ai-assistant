@@ -3,6 +3,11 @@ export type ChatRole = "system" | "user" | "assistant";
 export type PageContextExtractMode = "text" | "all";
 export type SendShortcut = "enter" | "shift_enter" | "ctrl_enter" | "ctrl_shift_enter" | "alt_enter";
 export type NetworkRequestTypeFilter = "all" | "fetch_xhr" | "doc" | "css" | "js" | "font" | "img" | "media" | "manifest" | "ws" | "wasm" | "other";
+export type WebSearchProviderType = "tavily";
+export type WebSearchApiKeyStrategy = "round_robin" | "random";
+export type WebSearchPolicy = "first_message" | "every_message";
+export type TavilyIncludeAnswer = boolean | "basic" | "advanced";
+export type TavilyIncludeRawContent = boolean | "markdown" | "text";
 
 export interface ModelProvider {
   id: string;
@@ -44,6 +49,7 @@ export interface ChatPreferenceValues {
   networkRelevancePrompt: string;
   networkRelevanceBatchSize: number;
   networkRequestTypeFilters: NetworkRequestTypeFilter[];
+  webSearchPolicy: WebSearchPolicy;
   temperature: number;
   maxTokens: number;
   topK?: number;
@@ -57,9 +63,27 @@ export interface ChatSessionPreferenceOverrides {
   systemPrompt?: string;
   networkRelevanceBatchSize?: number;
   networkRequestTypeFilters?: NetworkRequestTypeFilter[];
+  webSearchPolicy?: WebSearchPolicy;
+  webSearchIncludeAnswer?: TavilyIncludeAnswer;
+  webSearchIncludeRawContent?: TavilyIncludeRawContent;
+  webSearchMaxResults?: number;
   temperature?: number;
   maxTokens?: number;
   topK?: number;
+}
+
+export interface TavilyWebSearchSettings {
+  apiKeysText: string;
+  apiKeyStrategy: WebSearchApiKeyStrategy;
+  includeAnswer: TavilyIncludeAnswer;
+  includeRawContent: TavilyIncludeRawContent;
+  maxResults: number;
+}
+
+export interface WebSearchSettings {
+  provider: WebSearchProviderType;
+  tavily: TavilyWebSearchSettings;
+  updatedAt: number;
 }
 
 export interface ChatImageAttachment {
@@ -108,6 +132,24 @@ export interface ChatNetworkContextAttachment {
   truncated: boolean;
 }
 
+export interface ChatWebSearchResult {
+  title: string;
+  url: string;
+  content: string;
+  rawContent?: string;
+  score?: number;
+  publishedDate?: string;
+}
+
+export interface ChatWebSearchContextAttachment {
+  provider: WebSearchProviderType;
+  query: string;
+  answer?: string;
+  results: ChatWebSearchResult[];
+  createdAt: number;
+  truncated: boolean;
+}
+
 export interface PromptTemplate {
   id: string;
   title: string;
@@ -147,6 +189,7 @@ export interface ChatMessage {
   matchedRuleId?: string;
   attachments?: ChatImageAttachment[];
   networkContextAttachment?: ChatNetworkContextAttachment;
+  webSearchContextAttachment?: ChatWebSearchContextAttachment;
   promptInvocations?: ChatPromptInvocation[];
   thinking?: string;
   streaming?: boolean;

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { formatNetworkAttachmentSummary, redactNetworkRequestDetail } from "../../shared/networkContext";
+import { formatTavilySearchAttachmentSummary } from "../../shared/webSearch/tavily";
 import type { ChatImageAttachment, ChatMessage, ChatPromptInvocation } from "../../shared/types";
 import { PromptInlineEditor, PromptTokenContent } from "./PromptInlineEditor";
 
@@ -130,6 +131,7 @@ export function MessageList({ messages, onRegenerateMessage, onEditAndRegenerate
               </div>
             )}
             {message.role === "assistant" && message.networkContextAttachment ? <NetworkContextAttachmentView message={message} /> : null}
+            {message.role === "assistant" && message.webSearchContextAttachment ? <WebSearchContextAttachmentView message={message} /> : null}
             <div className={`message-regenerate-action message-regenerate-action-${message.role}`}>
               {message.role === "user" ? (
                 <button
@@ -226,6 +228,36 @@ function NetworkContextAttachmentView({ message }: { message: ChatMessage }) {
                 </span>
               </summary>
               <pre>{JSON.stringify(request, null, 2)}</pre>
+            </details>
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
+}
+
+function WebSearchContextAttachmentView({ message }: { message: ChatMessage }) {
+  const attachment = message.webSearchContextAttachment;
+  if (!attachment) {
+    return null;
+  }
+
+  return (
+    <details className="message-web-search-attachment">
+      <summary>
+        <span>网络搜索结果</span>
+        <span className="message-web-search-count">{attachment.results.length}</span>
+      </summary>
+      <p className="message-web-search-summary">{formatTavilySearchAttachmentSummary(attachment)}</p>
+      <ul className="message-web-search-result-list">
+        {attachment.results.map((result, index) => (
+          <li key={`${result.url}-${index}`} className="message-web-search-result-item">
+            <details>
+              <summary>
+                <span className="message-web-search-result-line">{result.title || result.url}</span>
+                <span className="message-web-search-flags">{attachment.provider}</span>
+              </summary>
+              <pre>{JSON.stringify(result, null, 2)}</pre>
             </details>
           </li>
         ))}

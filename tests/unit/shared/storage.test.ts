@@ -295,6 +295,36 @@ describe("存储仓库", () => {
     expect(await getChatSession("session-1")).toEqual(session);
   });
 
+  it("读取聊天会话时会丢弃结构异常的网络搜索附件", async () => {
+    const session = {
+      id: "session-web-search-dirty",
+      title: "脏附件会话",
+      archived: false,
+      sortOrder: 1,
+      createdAt: 1,
+      updatedAt: 2,
+      messages: [
+        {
+          id: "message-dirty",
+          role: "assistant",
+          content: "旧数据",
+          createdAt: 1,
+          webSearchContextAttachment: {
+            provider: "tavily",
+            query: "Tavily",
+            results: "not-array",
+            createdAt: 1,
+            truncated: false,
+          },
+        },
+      ],
+    } as unknown as ChatSession;
+
+    await saveChatSession(session);
+
+    expect((await getChatSession("session-web-search-dirty"))?.messages[0].webSearchContextAttachment).toBeUndefined();
+  });
+
   it("保存并读取聊天文件夹", async () => {
     const folder: ChatFolder = {
       id: "folder-1",

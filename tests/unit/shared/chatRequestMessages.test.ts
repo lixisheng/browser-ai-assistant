@@ -363,3 +363,42 @@ describe("聊天请求消息构造", () => {
   });
 
 });
+
+describe("网络搜索上下文消息构造", () => {
+  it("后续请求会携带历史 AI 消息中的网络搜索附件且不修改原消息", () => {
+    const model = createModelConfig(createProvider(), createModel());
+    const assistantMessage = {
+      ...createMessage("message-search-assistant", "assistant", "根据搜索结果，Tavily 提供 Web 搜索能力。", 1),
+      webSearchContextAttachment: {
+        provider: "tavily",
+        query: "Tavily API",
+        answer: "Tavily 是搜索 API。",
+        results: [
+          {
+            title: "Tavily Docs",
+            url: "https://docs.tavily.com/search",
+            content: "官方文档内容",
+            score: 0.9,
+            publishedDate: "2026-01-01",
+          },
+        ],
+        createdAt: 2,
+        truncated: false,
+      },
+    } satisfies ChatMessage;
+    const userMessage = createMessage("message-search-user", "user", "继续分析", 2);
+
+    const result = buildChatRequestMessages({
+      model,
+      pageContext: "",
+      existingMessages: [assistantMessage],
+      userMessage,
+    });
+
+    expect(result[1].content).toContain("后续追问需要继续参考以下历史网络搜索结果：");
+    expect(result[1].content).toContain("网络搜索上下文：");
+    expect(result[1].content).toContain("Tavily Docs");
+    expect(result[1].content).toContain("https://docs.tavily.com/search");
+    expect(assistantMessage.content).toBe("根据搜索结果，Tavily 提供 Web 搜索能力。");
+  });
+});

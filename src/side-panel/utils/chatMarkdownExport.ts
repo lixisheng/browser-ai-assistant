@@ -1,4 +1,5 @@
 import { formatNetworkAttachmentForExport, formatNetworkAttachmentSummary, redactNetworkRequestDetail } from "../../shared/networkContext";
+import { createTavilySearchContextPrompt, formatTavilySearchAttachmentSummary } from "../../shared/webSearch/tavily";
 import type { ChatMessage, ChatSession } from "../../shared/types";
 
 const roleLabels: Record<ChatMessage["role"], string> = {
@@ -138,6 +139,18 @@ function formatMessageExportContent(message: ChatMessage): string {
         formatNetworkAttachmentSummary(networkRequests),
         "",
         formatNetworkAttachmentForExport(networkRequests),
+      ].join("\n"),
+    );
+  }
+
+  if (message.webSearchContextAttachment) {
+    contentSections.push(
+      [
+        "# 网络搜索结果附件",
+        "",
+        formatTavilySearchAttachmentSummary(message.webSearchContextAttachment),
+        "",
+        createTavilySearchContextPrompt(message.webSearchContextAttachment),
       ].join("\n"),
     );
   }

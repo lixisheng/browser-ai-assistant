@@ -69,6 +69,181 @@ vi.mock("../../../src/shared/storage/repositories", async (importOriginal) => {
   };
 });
 
+describe("appStore 网络搜索", () => {
+  afterEach(async () => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    useAppStore.getState().reset();
+    await clearDatabase();
+  });
+
+  it("开启网络搜索后首轮普通聊天会先搜索并把结果挂到 AI 消息附件", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const sendMessage = vi.fn((message: { type: string; query?: string }, callback: (response: unknown) => void) => {
+      if (message.type === "webSearch.search") {
+        callback({
+          ok: true,
+          attachment: {
+            provider: "tavily",
+            query: message.query,
+            answer: "Tavily 是搜索 API。",
+            results: [{ title: "Tavily Docs", url: "https://docs.tavily.com/search", content: "官方文档内容" }],
+            createdAt: 1,
+            truncated: false,
+          },
+        });
+        return undefined;
+      }
+
+      if (message.type === "chat.send") {
+        callback({ ok: true, content: "AI 搜索回复" });
+        return undefined;
+      }
+
+      callback({ ok: true });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", { runtime: { sendMessage } });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    useAppStore.getState().setStreamMode(false);
+    useAppStore.getState().setWebSearchEnabled(true);
+
+    await useAppStore.getState().sendChatMessage("Tavily API 是什么");
+    await useAppStore.getState().sendChatMessage("继续");
+
+    const webSearchCalls = sendMessage.mock.calls
+      .map(([message]) => message as { type: string; query?: string })
+      .filter((message) => message.type === "webSearch.search");
+    expect(webSearchCalls).toEqual([
+      {
+        type: "webSearch.search",
+        query: "Tavily API 是什么",
+        tavily: {
+          includeAnswer: "basic",
+          includeRawContent: false,
+          maxResults: 5,
+        },
+      },
+    ]);
+
+    const firstChatRequest = sendMessage.mock.calls
+      .map(([message]) => message as { type: string; messages?: ChatMessage[] })
+      .find((message) => message.type === "chat.send");
+    expect(firstChatRequest?.messages?.at(-1)?.content).toContain("网络搜索上下文：");
+    expect(firstChatRequest?.messages?.at(-1)?.content).toContain("Tavily Docs");
+    expect(useAppStore.getState().chatSessions[0].messages[1].webSearchContextAttachment).toMatchObject({
+      provider: "tavily",
+      query: "Tavily API 是什么",
+    });
+  });
+
+  it("Network 分析模式开启时不会触发网络搜索", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const sendMessage = vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+      if (message.type === "networkContext.getSnapshot") {
+        callback({ ok: false, message: "未连接 DevTools" });
+        return undefined;
+      }
+      callback({ ok: true, content: "AI 回复" });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", { runtime: { sendMessage } });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    useAppStore.getState().setStreamMode(false);
+    useAppStore.getState().setWebSearchEnabled(true);
+    useAppStore.getState().setNetworkContextEnabled(true);
+
+    await useAppStore.getState().sendChatMessage("分析接口");
+
+    expect(sendMessage.mock.calls.map(([message]) => (message as { type: string }).type)).not.toContain("webSearch.search");
+  });
+
+  it("网络搜索失败时不发送正式 AI 请求", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const sendMessage = vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+      if (message.type === "webSearch.search") {
+        callback({ ok: false, message: "网络搜索失败，请检查 Tavily 配置后重试" });
+        return undefined;
+      }
+      callback({ ok: true, content: "AI 回复" });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", { runtime: { sendMessage } });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    useAppStore.getState().setStreamMode(false);
+    useAppStore.getState().setWebSearchEnabled(true);
+
+    await useAppStore.getState().sendChatMessage("Tavily API 是什么");
+
+    expect(sendMessage.mock.calls.map(([message]) => (message as { type: string }).type)).toEqual(["webSearch.search"]);
+    expect(useAppStore.getState().failure?.message).toBe("网络搜索失败，请检查 Tavily 配置后重试");
+  });
+
+  it("Prompt-only 消息开启网络搜索时使用提示词快照作为搜索 query", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const promptInvocation = {
+      promptId: "prompt-1",
+      title: "排查接口错误",
+      contentSnapshot: "请排查接口 500 的原因",
+    };
+    const sendMessage = vi.fn((message: { type: string; query?: string }, callback: (response: unknown) => void) => {
+      if (message.type === "webSearch.search") {
+        callback({
+          ok: true,
+          attachment: {
+            provider: "tavily",
+            query: message.query,
+            results: [{ title: "接口错误排查", url: "https://example.com/debug", content: "排查步骤" }],
+            createdAt: 1,
+            truncated: false,
+          },
+        });
+        return undefined;
+      }
+
+      if (message.type === "chat.send") {
+        callback({ ok: true, content: "AI 回复" });
+        return undefined;
+      }
+
+      callback({ ok: true });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", { runtime: { sendMessage } });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    useAppStore.getState().setStreamMode(false);
+    useAppStore.getState().setWebSearchEnabled(true);
+
+    await useAppStore.getState().sendChatMessage("", [], [promptInvocation]);
+
+    const webSearchCall = sendMessage.mock.calls
+      .map(([message]) => message as { type: string; query?: string })
+      .find((message) => message.type === "webSearch.search");
+    expect(webSearchCall?.query).toContain("请排查接口 500 的原因");
+    expect(sendMessage.mock.calls.map(([message]) => (message as { type: string }).type)).toContain("chat.send");
+  });
+});
+
 function createProvider(): ModelProvider {
   return {
     id: "provider-1",

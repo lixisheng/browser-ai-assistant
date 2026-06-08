@@ -543,6 +543,46 @@ function createPrintWindowMock() {
   };
 }
 
+describe("网络搜索附件导出", () => {
+  it("导出助手消息时包含网络搜索结果附件", () => {
+    const session = createSession({
+      title: "搜索会话",
+      messages: [
+        createMessage({
+          id: "message-assistant-search",
+          role: "assistant",
+          content: "Tavily 可以用于网络搜索。",
+          webSearchContextAttachment: {
+            provider: "tavily",
+            query: "Tavily API",
+            answer: "Tavily 是搜索 API。",
+            results: [
+              {
+                title: "Tavily Docs",
+                url: "https://docs.tavily.com/search",
+                content: "官方文档内容",
+                score: 0.9,
+                publishedDate: "2026-01-01",
+              },
+            ],
+            createdAt: 1700000100000,
+            truncated: false,
+          },
+          createdAt: 1700000000000,
+        }),
+      ],
+    });
+
+    const markdown = createChatSessionMarkdown(session, 1700000200000);
+
+    expect(markdown).toContain("# 网络搜索结果附件");
+    expect(markdown).toContain("搜索问题：Tavily API");
+    expect(markdown).toContain("Tavily Docs");
+    expect(markdown).toContain("https://docs.tavily.com/search");
+    expect(createChatSessionPrintHtml(session, 1700000200000)).toContain("网络搜索结果附件");
+  });
+});
+
 async function getDocxEntryText(blob: Blob, entryPath: string): Promise<string> {
   const zipModule = await import("jszip");
   const zip = await zipModule.default.loadAsync(await blob.arrayBuffer());
