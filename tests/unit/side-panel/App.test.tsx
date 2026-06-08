@@ -1529,6 +1529,8 @@ describe("App", () => {
     expect(streamSwitch).toHaveAttribute("aria-checked", "true");
     const appendContextSwitch = screen.getByRole("switch", { name: "拼接上下文" });
     expect(appendContextSwitch).toHaveAttribute("aria-checked", "true");
+    expect(appendContextSwitch.closest(".context-strip")).toBeNull();
+    expect(appendContextSwitch.closest(".composer-switches")).not.toBeNull();
     await user.click(appendContextSwitch);
     expect(screen.getByRole("switch", { name: "拼接上下文" })).toHaveAttribute("aria-checked", "false");
     await user.click(streamSwitch);
@@ -3107,26 +3109,42 @@ describe("App", () => {
     expect(screen.queryByRole("dialog", { name: "选择注入标签页" })).not.toBeInTheDocument();
   });
 
-  it("聊天输入区的流式响应和提取模式使用 switch 控件切换", async () => {
+  it("聊天输入区的上下文、流式响应和提取模式使用紧凑图标 switch 控件切换", async () => {
     const user = userEvent.setup();
     render(<App />);
 
+    const appendContextSwitch = screen.getByRole("switch", { name: "拼接上下文" });
     const streamSwitch = screen.getByRole("switch", { name: "流式响应" });
+    const networkSwitch = screen.getByRole("switch", { name: "Network 上下文" });
+    const webSearchSwitch = screen.getByRole("switch", { name: "网络搜索" });
     const contextSwitch = screen.getByRole("switch", { name: "提取模式" });
+    const contextStrip = document.querySelector(".context-strip");
 
+    expect(appendContextSwitch).toHaveAttribute("aria-checked", "true");
+    expect(appendContextSwitch.closest(".composer-switches")).not.toBeNull();
+    expect(contextStrip?.contains(appendContextSwitch)).toBe(false);
+    expect(appendContextSwitch.nextElementSibling).toBe(contextSwitch);
     expect(streamSwitch).toHaveAttribute("aria-checked", "true");
+    expect(networkSwitch).toHaveAttribute("aria-checked", "false");
+    expect(webSearchSwitch).toHaveAttribute("aria-checked", "false");
     expect(contextSwitch).toHaveAttribute("aria-checked", "false");
-    expect(screen.getByText("提取文本")).toBeInTheDocument();
+    expect(contextSwitch).toHaveAttribute("title", "提取文本");
+    expect(streamSwitch).toHaveClass("composer-switch");
     expect(screen.queryByRole("checkbox", { name: "流式响应" })).not.toBeInTheDocument();
     expect(screen.queryByRole("checkbox", { name: "提取文本" })).not.toBeInTheDocument();
 
+    await user.click(appendContextSwitch);
     await user.click(streamSwitch);
+    await user.click(networkSwitch);
+    await user.click(webSearchSwitch);
     await user.click(contextSwitch);
 
+    expect(screen.getByRole("switch", { name: "拼接上下文" })).toHaveAttribute("aria-checked", "false");
     expect(screen.getByRole("switch", { name: "流式响应" })).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByRole("switch", { name: "Network 上下文" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("switch", { name: "网络搜索" })).toHaveAttribute("aria-checked", "true");
     expect(screen.getByRole("switch", { name: "提取模式" })).toHaveAttribute("aria-checked", "true");
-    expect(screen.queryByText("提取文本")).not.toBeInTheDocument();
-    expect(screen.getByText("提取所有")).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "提取模式" })).toHaveAttribute("title", "提取所有");
   });
 
   it("开启 Network 上下文后在发送前展示 DevTools 未连接提示", async () => {
@@ -3212,10 +3230,10 @@ describe("App", () => {
 
     expect(await screen.findByText("已匹配规则：正文规则")).toBeInTheDocument();
     expect(screen.getByRole("switch", { name: "提取模式" })).toHaveAttribute("aria-checked", "false");
-    expect(screen.getByText("提取文本")).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "提取模式" })).toHaveAttribute("title", "提取文本");
     await user.click(screen.getByRole("switch", { name: "提取模式" }));
     expect(screen.getByRole("switch", { name: "提取模式" })).toHaveAttribute("aria-checked", "true");
-    expect(screen.getByText("提取所有")).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "提取模式" })).toHaveAttribute("title", "提取所有");
 
     await user.click(screen.getByRole("switch", { name: "流式响应" }));
     await user.type(screen.getByLabelText("对话输入"), "总结页面");

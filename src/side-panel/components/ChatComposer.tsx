@@ -8,6 +8,16 @@ import { PromptInlineEditor } from "./PromptInlineEditor";
 const MAX_IMAGE_ATTACHMENTS = 5;
 const MAX_IMAGE_ATTACHMENT_BYTES = 5 * 1024 * 1024;
 const ACCEPTED_IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"];
+const SWITCH_ICON_PATHS = {
+  appendContext: "M7 7h10M12 7v10M6 3h12a3 3 0 0 1 3 3v12a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V6a3 3 0 0 1 3-3Z",
+  stream: "M13 2 5 14h6l-1 8 8-12h-6l1-8Z",
+  network: "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Zm0 0c2.4 2.5 3.6 5.5 3.6 9S14.4 18.5 12 21m0-18C9.6 5.5 8.4 8.5 8.4 12s1.2 6.5 3.6 9M3.6 9h16.8M3.6 15h16.8",
+  webSearch: "M10.5 18a7.5 7.5 0 1 1 5.3-2.2L21 21M8.5 10.5h4M10.5 8.5v4",
+  extractText: "M6 4h12M6 8h12M6 12h8M6 16h12M6 20h8",
+  extractAll: "M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3M8 9h8M8 13h8M8 17h5",
+} as const;
+
+type SwitchIconName = keyof typeof SWITCH_ICON_PATHS;
 
 interface ChatComposerProps {
   canSend: boolean;
@@ -17,17 +27,17 @@ interface ChatComposerProps {
 interface ComposerSwitchProps {
   ariaLabel: string;
   checked: boolean;
+  icon: SwitchIconName;
   label: string;
   onToggle: () => void;
 }
 
-function ComposerSwitch({ ariaLabel, checked, label, onToggle }: ComposerSwitchProps) {
+function ComposerSwitch({ ariaLabel, checked, icon, label, onToggle }: ComposerSwitchProps) {
   return (
-    <button className="composer-switch" type="button" role="switch" aria-label={ariaLabel} aria-checked={checked} onClick={onToggle}>
-      <span className="composer-switch-track" aria-hidden="true">
-        <span className="composer-switch-thumb" />
-      </span>
-      <span aria-hidden={ariaLabel !== label}>{label}</span>
+    <button className="composer-switch" type="button" role="switch" aria-label={ariaLabel} aria-checked={checked} title={label} onClick={onToggle}>
+      <svg className="composer-switch-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <path d={SWITCH_ICON_PATHS[icon]} />
+      </svg>
     </button>
   );
 }
@@ -342,12 +352,6 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
             截图
           </button>
         ) : null}
-        <ComposerSwitch
-          ariaLabel="拼接上下文"
-          checked={appendPageContextToSystemPrompt}
-          label="拼接上下文"
-          onToggle={() => setAppendPageContextToSystemPrompt(!appendPageContextToSystemPrompt)}
-        />
       </div>
       {pageContext.truncated ? <p className="text-sm text-[var(--color-warning)]">内容已截断，请细化 CSS/XPath</p> : null}
       {networkContextStatus ? <p className="text-sm text-[var(--color-muted)]">{networkContextStatus}</p> : null}
@@ -413,22 +417,32 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
       </div>
       <div className="composer-actions">
         <div className="composer-switches">
-          <ComposerSwitch ariaLabel="流式响应" checked={streamMode} label="流式响应" onToggle={() => setStreamMode(!streamMode)} />
+          <ComposerSwitch ariaLabel="流式响应" checked={streamMode} icon="stream" label="流式响应" onToggle={() => setStreamMode(!streamMode)} />
           <ComposerSwitch
             ariaLabel="Network 上下文"
             checked={networkContextEnabled}
+            icon="network"
             label="Network"
             onToggle={() => setNetworkContextEnabled(!networkContextEnabled)}
           />
           <ComposerSwitch
             ariaLabel="网络搜索"
             checked={webSearchEnabled}
+            icon="webSearch"
             label="搜索"
             onToggle={() => setWebSearchEnabled(!webSearchEnabled)}
           />
           <ComposerSwitch
+            ariaLabel="拼接上下文"
+            checked={appendPageContextToSystemPrompt}
+            icon="appendContext"
+            label="拼接上下文"
+            onToggle={() => setAppendPageContextToSystemPrompt(!appendPageContextToSystemPrompt)}
+          />
+          <ComposerSwitch
             ariaLabel="提取模式"
             checked={contextMode === "all"}
+            icon={contextMode === "all" ? "extractAll" : "extractText"}
             label={contextModeLabel}
             onToggle={() => setContextMode(contextMode === "all" ? "text" : "all")}
           />

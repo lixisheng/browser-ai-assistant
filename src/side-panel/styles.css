@@ -1132,16 +1132,18 @@ body {
   }
 
   .composer-switches {
-    @apply flex flex-wrap items-center gap-3;
+    @apply flex flex-wrap items-center gap-1.5;
   }
 
   .composer-switch {
-    @apply inline-flex min-h-10 items-center gap-2 rounded-md px-2 text-sm font-medium transition;
-    color: var(--color-body);
+    @apply inline-grid h-9 w-9 shrink-0 place-items-center rounded-md transition;
+    background: transparent;
+    border: 0;
+    color: var(--color-muted);
   }
 
   .composer-switch:hover {
-    background: var(--color-surface-cream-strong);
+    color: var(--color-body-strong);
   }
 
   .composer-switch:focus-visible {
@@ -1149,30 +1151,17 @@ body {
     outline-offset: 2px;
   }
 
-  .composer-switch-track {
-    @apply relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition;
-    background: var(--color-primary-disabled);
-    border: 1px solid var(--color-hairline);
-  }
-
-  .composer-switch-thumb {
-    @apply absolute left-0.5 h-4 w-4 rounded-full transition;
-    background: var(--color-canvas);
-    border: 1px solid var(--color-hairline);
+  .composer-switch-icon {
+    @apply h-5 w-5;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 2;
   }
 
   .composer-switch[aria-checked="true"] {
-    color: var(--color-ink);
-  }
-
-  .composer-switch[aria-checked="true"] .composer-switch-track {
-    background: var(--color-primary);
-    border-color: var(--color-primary);
-  }
-
-  .composer-switch[aria-checked="true"] .composer-switch-thumb {
-    transform: translateX(16px);
-    border-color: var(--color-on-primary);
+    color: var(--color-primary);
   }
 
   .dialog-overlay {
