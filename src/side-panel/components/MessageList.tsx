@@ -3,6 +3,8 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { formatNetworkAttachmentSummary, redactNetworkRequestDetail } from "../../shared/networkContext";
 import { formatTavilySearchAttachmentSummary } from "../../shared/webSearch/tavily";
+import { createChatMessageMarkdown } from "../utils/chatMarkdownExport";
+import { copyOrDownloadMessageImage, copyTextToClipboard } from "../utils/messageClipboard";
 import type { ChatImageAttachment, ChatMessage, ChatPromptInvocation } from "../../shared/types";
 import { PromptInlineEditor, PromptTokenContent } from "./PromptInlineEditor";
 
@@ -19,6 +21,7 @@ export function MessageList({ messages, onRegenerateMessage, onEditAndRegenerate
   const [editingMessageId, setEditingMessageId] = useState<string | undefined>();
   const [editingContent, setEditingContent] = useState("");
   const [editingPromptInvocations, setEditingPromptInvocations] = useState<ChatPromptInvocation[]>([]);
+  const [messageActionFeedback, setMessageActionFeedback] = useState<{ messageId: string; text: string; tone: "success" | "error" } | undefined>();
   const regeneratePopoverRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -36,6 +39,33 @@ export function MessageList({ messages, onRegenerateMessage, onEditAndRegenerate
     document.addEventListener("pointerdown", handlePointerDown);
     return () => document.removeEventListener("pointerdown", handlePointerDown);
   }, [pendingRegenerateMessageId]);
+
+  useEffect(() => {
+    if (!messageActionFeedback) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => setMessageActionFeedback(undefined), 1800);
+    return () => window.clearTimeout(timeoutId);
+  }, [messageActionFeedback]);
+
+  const handleCopyMessage = async (message: ChatMessage) => {
+    try {
+      await copyTextToClipboard(createChatMessageMarkdown(message));
+      setMessageActionFeedback({ messageId: message.id, text: "已复制", tone: "success" });
+    } catch (error) {
+      setMessageActionFeedback({ messageId: message.id, text: error instanceof Error ? error.message : "复制失败，请重试", tone: "error" });
+    }
+  };
+
+  const handleExportMessageImage = async (message: ChatMessage) => {
+    try {
+      const result = await copyOrDownloadMessageImage(createChatMessageMarkdown(message));
+      setMessageActionFeedback({ messageId: message.id, text: result === "copied" ? "图片已复制" : "图片已下载", tone: "success" });
+    } catch {
+      setMessageActionFeedback({ messageId: message.id, text: "导出图片失败，请重试", tone: "error" });
+    }
+  };
 
   if (messages.length === 0) {
     return (
@@ -160,6 +190,26 @@ export function MessageList({ messages, onRegenerateMessage, onEditAndRegenerate
               >
                 <RegenerateIcon />
               </button>
+              <button
+                className="message-icon-button message-copy-button"
+                type="button"
+                aria-label={message.role === "user" ? "复制用户消息" : "复制 AI 消息"}
+                title={message.role === "user" ? "复制用户消息" : "复制 AI 消息"}
+                onClick={() => void handleCopyMessage(message)}
+              >
+                <CopyMessageIcon />
+              </button>
+              {message.role === "assistant" ? (
+                <button
+                  className="message-icon-button message-export-image-button"
+                  type="button"
+                  aria-label="导出 AI 消息图片"
+                  title="导出 AI 消息图片"
+                  onClick={() => void handleExportMessageImage(message)}
+                >
+                  <ExportImageIcon />
+                </button>
+              ) : null}
               {pendingRegenerateMessageId === message.id ? (
                 <div className="message-regenerate-popover" role="dialog" aria-label="确认重新生成" ref={regeneratePopoverRef}>
                   <p>重新生成会丢弃这条消息后面的聊天记录。</p>
@@ -179,6 +229,11 @@ export function MessageList({ messages, onRegenerateMessage, onEditAndRegenerate
                     </button>
                   </div>
                 </div>
+              ) : null}
+              {messageActionFeedback?.messageId === message.id ? (
+                <span className={`message-action-feedback message-action-feedback-${messageActionFeedback.tone}`} role="status">
+                  {messageActionFeedback.text}
+                </span>
               ) : null}
             </div>
           </div>
@@ -312,6 +367,25 @@ function CancelEditIcon() {
     <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24">
       <path d="M7 7 17 17" />
       <path d="M17 7 7 17" />
+    </svg>
+  );
+}
+
+function CopyMessageIcon() {
+  return (
+    <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24">
+      <path d="M8 8h10v10H8Z" />
+      <path d="M6 16H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1" />
+    </svg>
+  );
+}
+
+function ExportImageIcon() {
+  return (
+    <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24">
+      <path d="M5 5h14v14H5Z" />
+      <path d="m8 15 2.8-3 2.2 2.3 1.4-1.5L18 17" />
+      <circle cx="9" cy="9.5" r="0.8" />
     </svg>
   );
 }

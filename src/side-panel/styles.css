@@ -610,6 +610,19 @@ body {
     stroke-linejoin: round;
   }
 
+  .message-action-feedback {
+    @apply ml-1 text-xs;
+    color: var(--color-muted);
+  }
+
+  .message-action-feedback-success {
+    color: var(--color-primary);
+  }
+
+  .message-action-feedback-error {
+    color: var(--color-error);
+  }
+
   .message-edit-panel {
     @apply grid gap-2 rounded-lg p-2;
     background: var(--color-surface-soft);

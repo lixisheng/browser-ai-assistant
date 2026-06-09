@@ -1,4 +1,5 @@
 import {
+  createChatMessageMarkdown,
   createChatSessionMarkdown,
   createChatSessionMarkdownFilename,
   createChatSessionPrintHtml,
@@ -155,6 +156,128 @@ Prompt2 的内容
 \`\`\`\`
 `);
     expect(createChatSessionPrintHtml(session, 1700000200000)).toContain("# 调用的Prompt");
+  });
+
+  it("复制用户消息时只返回用户输入正文", () => {
+    const message = createMessage({
+      id: "message-copy-user",
+      role: "user",
+      content: "用户真正输入的内容",
+      promptInvocations: [
+        {
+          promptId: "prompt-1",
+          title: "不应复制的 Prompt",
+          contentSnapshot: "Prompt 快照不属于用户直接输入",
+        },
+      ],
+      attachments: [
+        {
+          id: "image-1",
+          name: "截图.png",
+          mediaType: "image/png",
+          dataUrl: "data:image/png;base64,AAAA",
+        },
+      ],
+    });
+
+    expect(createChatMessageMarkdown(message)).toBe("用户真正输入的内容");
+  });
+
+  it("复制助手消息时包含思考过程、正文、Network 附件和网络搜索附件", () => {
+    const message = createMessage({
+      id: "message-copy-assistant",
+      role: "assistant",
+      content: "登录接口返回 500，建议检查服务端错误日志。",
+      thinking: "先检查请求状态。\n再查看响应体。",
+      networkContextAttachment: {
+        id: "network-1",
+        title: "Network 请求详情",
+        summary: "历史摘要不应直接复用",
+        createdAt: 1700000100000,
+        redacted: true,
+        truncated: false,
+        requests: [
+          {
+            id: "req-1",
+            url: "https://api.example.com/login",
+            method: "POST",
+            status: 500,
+            statusText: "Internal Server Error",
+            requestHeaders: [{ name: "Authorization", value: "[已脱敏]" }],
+            responseBody: "{\"error\":\"failed\"}",
+            redacted: true,
+            truncated: false,
+          },
+        ],
+      },
+      webSearchContextAttachment: {
+        provider: "tavily",
+        query: "Tavily API",
+        answer: "Tavily 提供搜索能力。",
+        results: [
+          {
+            title: "Tavily Docs",
+            url: "https://docs.tavily.com/search",
+            content: "官方文档内容",
+          },
+        ],
+        createdAt: 1700000200000,
+        truncated: false,
+      },
+    });
+
+    const markdown = createChatMessageMarkdown(message);
+
+    expect(markdown).toContain("> 思考过程：先检查请求状态。\n> 再查看响应体。");
+    expect(markdown).toContain("登录接口返回 500，建议检查服务端错误日志。");
+    expect(markdown).toContain("# Network 请求详情附件");
+    expect(markdown).toContain("已注入 1 个 Network 请求：POST 500 https://api.example.com/login");
+    expect(markdown).toContain("Authorization: [已脱敏]");
+    expect(markdown).toContain("# 网络搜索结果附件");
+    expect(markdown).toContain("搜索问题：Tavily API");
+    expect(markdown).toContain("Tavily Docs");
+  });
+
+  it("复制助手消息前会重新脱敏历史 Network 脏附件", () => {
+    const message = createMessage({
+      id: "message-copy-unsafe-network",
+      role: "assistant",
+      content: "旧版本保存的 Network 附件。",
+      networkContextAttachment: {
+        id: "network-unsafe",
+        title: "Network 请求详情 token=secret-token",
+        summary: "旧摘要 token=secret-token",
+        createdAt: 1700000100000,
+        redacted: false,
+        truncated: false,
+        requests: [
+          {
+            id: "req-unsafe",
+            url: "https://api.example.com/login?token=secret-token&safe=1",
+            method: "POST",
+            status: 500,
+            requestHeaders: [
+              { name: "Authorization", value: "Bearer secret-token" },
+              { name: "Cookie", value: "sid=secret-cookie" },
+            ],
+            requestBody: "{\"password\":\"123456\",\"name\":\"zhangsan\"}",
+            responseBody: "{\"access_token\":\"secret-token\"}",
+            redacted: false,
+            truncated: false,
+          },
+        ],
+      },
+    });
+
+    const markdown = createChatMessageMarkdown(message);
+
+    expect(markdown).toContain("token=[已脱敏]");
+    expect(markdown).toContain("Authorization: [已脱敏]");
+    expect(markdown).toContain("Cookie: [已脱敏]");
+    expect(markdown).toContain("\"password\":\"[已脱敏]\"");
+    expect(markdown).not.toContain("secret-token");
+    expect(markdown).not.toContain("secret-cookie");
+    expect(markdown).not.toContain("123456");
   });
 
   it("导出助手消息时包含 Network 请求详情附件", () => {

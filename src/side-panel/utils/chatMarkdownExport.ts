@@ -1,6 +1,7 @@
 import { formatNetworkAttachmentForExport, formatNetworkAttachmentSummary, redactNetworkRequestDetail } from "../../shared/networkContext";
 import { createTavilySearchContextPrompt, formatTavilySearchAttachmentSummary } from "../../shared/webSearch/tavily";
 import type { ChatMessage, ChatSession } from "../../shared/types";
+import { downloadBlob } from "./downloadBlob";
 
 const roleLabels: Record<ChatMessage["role"], string> = {
   system: "系统",
@@ -29,14 +30,31 @@ export function createChatSessionMarkdown(session: ChatSession, exportedAt: numb
     lines.push(`## ${roleLabels[message.role]} · ${formatDateTime(message.createdAt)}`, "");
 
     if (message.thinking?.trim()) {
-      // 思考过程不是正式回复内容，用引用块保留上下文，同时避免干扰正文 Markdown 结构。
-      lines.push(`> 思考过程：${message.thinking.trim().replace(/\r?\n/g, "\n> ")}`, "");
+      lines.push(formatThinkingMarkdown(message.thinking), "");
     }
 
     lines.push(formatContentCodeBlock(formatMessageExportContent(message)), "");
   }
 
   return lines.join("\n");
+}
+
+export function createChatMessageMarkdown(message: ChatMessage): string {
+  if (message.role === "user") {
+    return message.content.trim();
+  }
+
+  const sections: string[] = [];
+  if (message.thinking?.trim()) {
+    sections.push(formatThinkingMarkdown(message.thinking));
+  }
+
+  const content = formatMessageExportContent(message).trim();
+  if (content) {
+    sections.push(content);
+  }
+
+  return sections.join("\n\n").trim();
 }
 
 export function createChatSessionMarkdownFilename(session: ChatSession, exportedAt: number = Date.now()): string {
@@ -164,6 +182,11 @@ function formatMessageExportContent(message: ChatMessage): string {
   return ["# 调用的Prompt", "", promptSections.join("\n\n"), "", "# 用户输入", "", ...contentSections].join("\n");
 }
 
+function formatThinkingMarkdown(thinking: string): string {
+  // 思考过程不是正式回复内容，用引用块保留上下文，同时避免干扰正文 Markdown 结构。
+  return `> 思考过程：${thinking.trim().replace(/\r?\n/g, "\n> ")}`;
+}
+
 function blockToHtml(block: ExportBlock): string {
   if (block.type === "heading") {
     return `<h${block.level}>${escapeHtml(block.text)}</h${block.level}>`;
@@ -244,23 +267,6 @@ async function createWordDocument(session: ChatSession, exportedAt: number) {
       },
     ],
   });
-}
-
-function downloadBlob(blob: Blob, filename: string): void {
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-
-  link.href = url;
-  link.download = filename;
-  link.style.display = "none";
-  document.body.appendChild(link);
-  try {
-    link.click();
-  } finally {
-    document.body.removeChild(link);
-    // Blob URL 属于页面资源，即使下载触发失败也要释放，避免 Side Panel 长时间打开时累积内存。
-    URL.revokeObjectURL(url);
-  }
 }
 
 function sanitizeFilenamePart(value: string): string {

@@ -273,6 +273,7 @@ function stubFileReaderError() {
 
 describe("App", () => {
   beforeEach(() => {
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
     useAppStore.getState().reset();
   });
@@ -1208,6 +1209,172 @@ describe("App", () => {
     await user.click(screen.getByRole("button", { name: "确认重新生成" }));
 
     expect(regenerateMessage).toHaveBeenCalledWith("message-regenerate-ai");
+  });
+
+  it("用户和 AI 消息下方提供复制按钮，AI 消息额外提供导出图片按钮", async () => {
+    const user = userEvent.setup();
+    const writeText = vi.fn(async (_value: string) => undefined);
+    vi.stubGlobal("navigator", {
+      ...navigator,
+      clipboard: {
+        writeText,
+      },
+    });
+    await saveChatSession(
+      createChatSession({
+        id: "session-message-copy-ui",
+        title: "消息复制",
+        messages: [
+          createChatMessage({
+            id: "message-copy-user",
+            role: "user",
+            content: "用户输入正文",
+            createdAt: 1,
+            promptInvocations: [
+              {
+                promptId: "prompt-1",
+                title: "提示词",
+                contentSnapshot: "不应复制的 Prompt 快照",
+              },
+            ],
+          }),
+          createChatMessage({
+            id: "message-copy-ai",
+            role: "assistant",
+            content: "AI 正文",
+            thinking: "AI 思考",
+            createdAt: 2,
+            networkContextAttachment: {
+              id: "network-1",
+              title: "Network 请求详情",
+              summary: "旧摘要",
+              createdAt: 2,
+              redacted: true,
+              truncated: false,
+              requests: [
+                {
+                  id: "req-1",
+                  url: "https://api.example.com/login",
+                  method: "POST",
+                  status: 500,
+                  requestHeaders: [{ name: "Authorization", value: "[已脱敏]" }],
+                  redacted: true,
+                  truncated: false,
+                },
+              ],
+            },
+            webSearchContextAttachment: {
+              provider: "tavily",
+              query: "Tavily API",
+              answer: "Tavily 搜索结果",
+              results: [
+                {
+                  title: "Tavily Docs",
+                  url: "https://docs.tavily.com/search",
+                  content: "官方文档内容",
+                },
+              ],
+              createdAt: 2,
+              truncated: false,
+            },
+          }),
+        ],
+      }),
+    );
+
+    render(<App />);
+
+    await screen.findByText("用户输入正文");
+    expect(screen.getByRole("button", { name: "复制用户消息" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "复制 AI 消息" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "导出 AI 消息图片" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "复制用户消息" }));
+    expect(writeText).toHaveBeenLastCalledWith("用户输入正文");
+
+    await user.click(screen.getByRole("button", { name: "复制 AI 消息" }));
+    const assistantMarkdown = writeText.mock.calls.at(-1)?.[0] as string;
+    expect(assistantMarkdown).toContain("> 思考过程：AI 思考");
+    expect(assistantMarkdown).toContain("AI 正文");
+    expect(assistantMarkdown).toContain("# Network 请求详情附件");
+    expect(assistantMarkdown).toContain("# 网络搜索结果附件");
+  });
+
+  it("AI 消息导出图片在剪贴板图片写入失败时下载 PNG 并释放 Blob URL", async () => {
+    const user = userEvent.setup();
+    const write = vi.fn(async () => {
+      throw new Error("剪贴板不可用");
+    });
+    vi.stubGlobal("ClipboardItem", class ClipboardItemMock {
+      constructor(readonly items: Record<string, Blob>) {}
+    });
+    vi.stubGlobal("navigator", {
+      ...navigator,
+      clipboard: {
+        write,
+        writeText: vi.fn(async () => undefined),
+      },
+    });
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+      fillStyle: "",
+      font: "",
+      textBaseline: "",
+      measureText: vi.fn((text: string) => ({ width: text.length * 8 })),
+      fillRect: vi.fn(),
+      fillText: vi.fn(),
+      beginPath: vi.fn(),
+      roundRect: vi.fn(),
+      fill: vi.fn(),
+    } as unknown as CanvasRenderingContext2D);
+    vi.spyOn(HTMLCanvasElement.prototype, "toBlob").mockImplementation(function toBlob(callback: BlobCallback) {
+      callback(new Blob(["png"], { type: "image/png" }));
+    });
+    const click = vi.fn();
+    const anchor = document.createElement("a");
+    Object.defineProperty(anchor, "click", { configurable: true, value: click });
+    vi.spyOn(document, "createElement").mockImplementation((tagName: string, options?: ElementCreationOptions) => {
+      if (tagName.toLowerCase() === "a") {
+        return anchor;
+      }
+
+      return Document.prototype.createElement.call(document, tagName, options);
+    });
+    const createObjectURL = vi.fn((blob: Blob) => {
+      void blob;
+      return "blob:message-image";
+    });
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal("URL", {
+      ...URL,
+      createObjectURL,
+      revokeObjectURL,
+    });
+    await saveChatSession(
+      createChatSession({
+        id: "session-message-image-export",
+        title: "消息图片",
+        messages: [
+          createChatMessage({
+            id: "message-image-ai",
+            role: "assistant",
+            content: "# AI 正文\n\n- 要点一",
+            thinking: "AI 思考",
+            createdAt: 2,
+          }),
+        ],
+      }),
+    );
+
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "导出 AI 消息图片" }));
+
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(createObjectURL).toHaveBeenCalledTimes(1);
+    expect(anchor.download).toMatch(/^AI消息-\d{4}-\d{2}-\d{2}\.png$/);
+    expect(anchor.href).toBe("blob:message-image");
+    expect(click).toHaveBeenCalledTimes(1);
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:message-image");
   });
 
   it("重新生成确认浮层可以取消或点击外部关闭", async () => {
