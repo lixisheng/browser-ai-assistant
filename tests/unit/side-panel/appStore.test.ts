@@ -124,7 +124,6 @@ describe("appStore 网络搜索", () => {
     await useAppStore.getState().sendChatMessage("Tavily API 是什么");
     await useAppStore.getState().sendChatMessage("继续");
 
-    expect(sendMessage.mock.calls.map(([message]) => (message as { type: string }).type)).not.toContain("webSearch.search");
     const chatRequests = sendMessage.mock.calls
       .map(([message]) => message as { type: string; messages?: ChatMessage[]; enabledToolIds?: string[]; toolChoice?: string; tavily?: unknown })
       .filter((message) => message.type === "chat.send");
@@ -146,29 +145,7 @@ describe("appStore 网络搜索", () => {
     expect(chatRequests[1].messages?.some((message) => message.content.includes("Tavily Docs"))).toBe(true);
   });
 
-  it("旧网络搜索开关开启时不再触发发送前 Tavily 搜索", async () => {
-    const provider = createProvider();
-    const model = createModel();
-    const sendMessage = vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
-      callback({ ok: true, content: "AI 回复" });
-      return undefined;
-    });
-    vi.stubGlobal("chrome", { runtime: { sendMessage } });
-
-    await saveModelProvider(provider);
-    await saveProviderModel(model);
-    await useAppStore.getState().loadChannelConfig();
-    await useAppStore.getState().loadChatData();
-    useAppStore.getState().setStreamMode(false);
-    useAppStore.getState().setWebSearchEnabled(true);
-
-    await useAppStore.getState().sendChatMessage("分析接口");
-
-    expect(sendMessage.mock.calls.map(([message]) => (message as { type: string }).type)).not.toContain("webSearch.search");
-    expect(sendMessage.mock.calls.map(([message]) => (message as { type: string }).type)).toContain("chat.send");
-  });
-
-  it("当前聊天 Tavily 参数覆盖会随 chat.send 传给 background 工具执行", async () => {
+  it("全局 Tavily 参数会随 chat.send 传给 background 工具执行", async () => {
     const provider = createProvider();
     const model = createModel();
     const sendMessage = vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
@@ -198,12 +175,6 @@ describe("appStore 网络搜索", () => {
         },
       },
     }));
-    await useAppStore.getState().updateActiveSessionChatPreferences({
-      webSearchIncludeAnswer: "advanced",
-      webSearchIncludeRawContent: "markdown",
-      webSearchMaxResults: 12,
-    });
-
     await useAppStore.getState().sendChatMessage("Tavily 参数覆盖");
 
     const chatRequest = sendMessage.mock.calls
@@ -211,9 +182,9 @@ describe("appStore 网络搜索", () => {
       .find((message) => message.type === "chat.send");
     expect(chatRequest).toMatchObject({
       tavily: {
-        includeAnswer: "advanced",
-        includeRawContent: "markdown",
-        maxResults: 12,
+        includeAnswer: "basic",
+        includeRawContent: false,
+        maxResults: 5,
       },
     });
   });

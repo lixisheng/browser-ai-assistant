@@ -4,12 +4,14 @@ import type {
   AppSetting,
   ChatFolder,
   ChatMessage,
+  ChatSessionPreferenceOverrides,
   ChatSession,
   ChatWebSearchContextAttachment,
   ChatWebSearchResult,
   ExtractionRule,
   ModelConfig,
   ModelProvider,
+  NetworkRequestTypeFilter,
   PromptTemplate,
   ProviderModel,
 } from "../types";
@@ -285,8 +287,50 @@ function normalizeChatSession(session: ChatSession): ChatSession {
   return {
     ...session,
     archived: session.archived ?? false,
+    chatPreferenceOverrides: normalizeChatPreferenceOverrides(session.chatPreferenceOverrides),
     messages: session.messages.map(normalizeChatMessage),
   };
+}
+
+function normalizeChatPreferenceOverrides(value: unknown): ChatSessionPreferenceOverrides | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+
+  const source = value as Record<string, unknown>;
+  const overrides: ChatSessionPreferenceOverrides = {};
+  if (typeof source.systemPrompt === "string" && source.systemPrompt.trim()) {
+    overrides.systemPrompt = source.systemPrompt;
+  }
+  if (typeof source.networkRelevanceBatchSize === "number" && Number.isFinite(source.networkRelevanceBatchSize)) {
+    overrides.networkRelevanceBatchSize = source.networkRelevanceBatchSize;
+  }
+  if (Array.isArray(source.networkRequestTypeFilters)) {
+    const validFilters = new Set<NetworkRequestTypeFilter>(["all", "fetch_xhr", "doc", "css", "js", "font", "img", "media", "manifest", "ws", "wasm", "other"]);
+    const filters = source.networkRequestTypeFilters.filter(
+      (item): item is NetworkRequestTypeFilter => typeof item === "string" && validFilters.has(item as NetworkRequestTypeFilter),
+    );
+    if (filters.length > 0) {
+      overrides.networkRequestTypeFilters = Array.from(new Set(filters));
+    }
+  }
+  if (typeof source.toolCallingEnabled === "boolean") {
+    overrides.toolCallingEnabled = source.toolCallingEnabled;
+  }
+  if (Array.isArray(source.enabledToolIds)) {
+    overrides.enabledToolIds = source.enabledToolIds.filter((item): item is string => typeof item === "string");
+  }
+  if (typeof source.temperature === "number" && Number.isFinite(source.temperature)) {
+    overrides.temperature = source.temperature;
+  }
+  if (typeof source.maxTokens === "number" && Number.isFinite(source.maxTokens)) {
+    overrides.maxTokens = source.maxTokens;
+  }
+  if (typeof source.topK === "number" && Number.isFinite(source.topK)) {
+    overrides.topK = source.topK;
+  }
+
+  return Object.keys(overrides).length > 0 ? overrides : undefined;
 }
 
 function normalizeChatMessage(message: ChatMessage): ChatMessage {

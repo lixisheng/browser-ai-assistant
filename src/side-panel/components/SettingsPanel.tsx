@@ -451,8 +451,8 @@ function ChannelManagement() {
         </div>
       </section>
 
-      <section className="grid gap-3 border-t border-[var(--color-hairline)] pt-4" aria-label="网络搜索配置">
-        <h4 className="text-sm font-semibold">网络搜索</h4>
+      <section className="grid gap-3 border-t border-[var(--color-hairline)] pt-4" aria-label="Tavily 搜索工具配置">
+        <h4 className="text-sm font-semibold">Tavily 搜索工具</h4>
         <label className="grid gap-1 text-sm">
           Tavily API Key
           <span className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">

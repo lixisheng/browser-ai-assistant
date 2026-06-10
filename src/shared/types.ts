@@ -5,7 +5,6 @@ export type SendShortcut = "enter" | "shift_enter" | "ctrl_enter" | "ctrl_shift_
 export type NetworkRequestTypeFilter = "all" | "fetch_xhr" | "doc" | "css" | "js" | "font" | "img" | "media" | "manifest" | "ws" | "wasm" | "other";
 export type WebSearchProviderType = "tavily";
 export type WebSearchApiKeyStrategy = "round_robin" | "random";
-export type WebSearchPolicy = "first_message" | "every_message";
 export type TavilyIncludeAnswer = boolean | "basic" | "advanced";
 export type TavilyIncludeRawContent = boolean | "markdown" | "text";
 
@@ -49,7 +48,6 @@ export interface ChatPreferenceValues {
   networkRelevancePrompt: string;
   networkRelevanceBatchSize: number;
   networkRequestTypeFilters: NetworkRequestTypeFilter[];
-  webSearchPolicy: WebSearchPolicy;
   toolCallingEnabled: boolean;
   enabledToolIds: string[];
   temperature: number;
@@ -65,10 +63,6 @@ export interface ChatSessionPreferenceOverrides {
   systemPrompt?: string;
   networkRelevanceBatchSize?: number;
   networkRequestTypeFilters?: NetworkRequestTypeFilter[];
-  webSearchPolicy?: WebSearchPolicy;
-  webSearchIncludeAnswer?: TavilyIncludeAnswer;
-  webSearchIncludeRawContent?: TavilyIncludeRawContent;
-  webSearchMaxResults?: number;
   toolCallingEnabled?: boolean;
   enabledToolIds?: string[];
   temperature?: number;

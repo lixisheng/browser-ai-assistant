@@ -272,16 +272,17 @@
 * Tavily API Key 属于本地密钥配置，不得进入同步快照、导出内容、模型请求 payload 或用户可见错误。
 * 网络搜索结果必须以 assistant 消息附件保存、折叠展示并参与聊天记录导出；后续对话请求需要继续携带历史搜索附件上下文。
 * 单条 assistant 消息当前只支持一个 Tavily 网络搜索附件；同一轮工具调用出现多次 Tavily 搜索时，必须合并 query、answer 和 results，并按 URL 去重，不能简单以后一次覆盖前一次。
-* 旧版网络搜索时机偏好只保留旧数据归一化兼容，不再展示为 UI 控件，也不得参与 Tavily 工具调用时机判断。
-* 渠道管理中的“网络搜索”配置必须与“渠道模型”配置保持同级 section，不能嵌套在模型渠道详情中。
-* Tavily 的 `include_answer`、`include_raw_content`、`max_results` 属于可配置搜索参数；全局值保存在网络搜索配置中，当前聊天可覆盖且优先级更高，`max_results` 必须归一化到 Tavily 支持范围。
-* Tavily 可配置参数的用户可见标签、选项和当前聊天继承提示必须使用中文；仅请求体字段和内部类型保留 Tavily 官方参数名。
+* 旧版网络搜索开关、搜索时机偏好和对外 `webSearch.search` runtime 入口必须移除；Tavily 只能由 `tavily_search` 工具调用触发，background 仅保留内部 Tavily 执行封装供工具执行器复用。
+* 渠道管理中的“Tavily 搜索工具”配置必须与“渠道模型”配置保持同级 section，不能嵌套在模型渠道详情中。
+* Tavily 的 `include_answer`、`include_raw_content`、`max_results` 属于全局可配置搜索参数，只保存在 Tavily 搜索工具配置中；当前聊天设置不得再提供 Tavily 参数覆盖入口，`max_results` 必须归一化到 Tavily 支持范围。
+* Tavily 可配置参数的用户可见标签和选项必须使用中文；仅请求体字段和内部类型保留 Tavily 官方参数名。
 * Tavily API Key 输入框默认必须为密文，可提供眼睛按钮临时显示明文；显示状态不得影响存储脱敏和同步过滤规则。
-* Tavily 表单参数解析和中文标签格式化必须复用 `src/shared/webSearch/settings.ts`，避免渠道管理和当前聊天配置出现不一致。
+* Tavily 表单参数解析和中文标签格式化必须复用 `src/shared/webSearch/settings.ts`，避免全局设置与工具执行参数口径不一致。
 * 网络搜索附件必须使用 `message-web-search-*` 独立样式类名；不得复用 DevTools Network 附件的 `message-network-*` 语义类名。
 * Tavily `raw_content` 返回值在用户开启原始内容时必须进入附件、模型上下文和导出内容，并按长度截断；上下文标题等用户可见文案必须使用中文。
 * 同步快照不得同步 Tavily API Key，但应保留网络搜索非密钥配置；导出快照时只清空 `webSearchSettings.tavily.apiKeysText`，恢复快照时必须保留当前本地 Tavily API Key。
 * 读取历史会话时必须归一化 `webSearchContextAttachment`，脏数据或旧版本异常结构不得直接进入展示、导出或模型请求。
+* 读取历史会话时必须丢弃旧版 Tavily 当前聊天覆盖字段，例如 `webSearchIncludeAnswer`、`webSearchIncludeRawContent`、`webSearchMaxResults`，避免旧数据重新影响工具调用配置或同步快照。
 * Tavily 工具参数只允许 `query` 字符串；不得让模型覆盖 `include_answer`、`include_raw_content`、`max_results` 等配置项，运行时必须拒绝空 query 和额外字段。
 * 新增搜索渠道时必须通过 `WebSearchProviderType` 扩展配置和附件类型，不能把渠道特有字段硬编码到聊天主流程。
 * 渠道管理中模型渠道 item 的展开/折叠只控制当前渠道详情；默认对话模型、AI 标题生成模型和模型列表属于渠道管理配置主体，不得放进单个渠道 item 的折叠内容中。

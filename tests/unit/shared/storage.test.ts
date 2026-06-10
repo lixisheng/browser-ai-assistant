@@ -327,6 +327,36 @@ describe("存储仓库", () => {
     expect((await getChatSession("session-web-search-dirty"))?.messages[0].reasoningContent).toBeUndefined();
   });
 
+  it("读取聊天会话时会丢弃旧版 Tavily 当前聊天覆盖字段", async () => {
+    const session = {
+      id: "session-web-search-overrides",
+      title: "旧覆盖会话",
+      archived: false,
+      sortOrder: 1,
+      createdAt: 1,
+      updatedAt: 2,
+      chatPreferenceOverrides: {
+        webSearchIncludeAnswer: "advanced",
+        webSearchIncludeRawContent: "markdown",
+        webSearchMaxResults: 12,
+        toolCallingEnabled: true,
+        enabledToolIds: ["web_search.tavily"],
+        networkRelevanceBatchSize: 25,
+        networkRequestTypeFilters: ["fetch_xhr", "invalid"],
+      },
+      messages: [],
+    } as unknown as ChatSession;
+
+    await saveChatSession(session);
+
+    expect((await getChatSession("session-web-search-overrides"))?.chatPreferenceOverrides).toEqual({
+      toolCallingEnabled: true,
+      enabledToolIds: ["web_search.tavily"],
+      networkRelevanceBatchSize: 25,
+      networkRequestTypeFilters: ["fetch_xhr"],
+    });
+  });
+
   it("保存并读取聊天文件夹", async () => {
     const folder: ChatFolder = {
       id: "folder-1",

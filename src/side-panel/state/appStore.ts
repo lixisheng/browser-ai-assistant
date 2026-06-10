@@ -57,9 +57,6 @@ import {
 import {
   DEFAULT_WEB_SEARCH_SETTINGS,
   getWebSearchSettings,
-  normalizeTavilyIncludeAnswer,
-  normalizeTavilyIncludeRawContent,
-  normalizeTavilyMaxResults,
   normalizeWebSearchSettings,
   saveWebSearchSettings,
 } from "../../shared/webSearch/settings";
@@ -86,7 +83,6 @@ import type {
   PromptTemplate,
   ProviderModel,
   SendShortcut,
-  WebSearchPolicy,
   WebSearchSettings,
 } from "../../shared/types";
 
@@ -179,8 +175,6 @@ interface AppState {
   streamMode: boolean;
   networkContextEnabled: boolean;
   networkContextStatus?: string;
-  webSearchEnabled: boolean;
-  webSearchStatus?: string;
   sending: boolean;
   contextMode: PageContextExtractMode;
   syncSettings: SyncSettings;
@@ -234,7 +228,6 @@ interface AppState {
   setAppendPageContextToSystemPrompt: (enabled: boolean) => void;
   setStreamMode: (streamMode: boolean) => void;
   setNetworkContextEnabled: (enabled: boolean) => void;
-  setWebSearchEnabled: (enabled: boolean) => void;
   checkNetworkContextConnection: () => Promise<void>;
   setContextMode: (contextMode: PageContextExtractMode) => void;
   loadSyncSettings: () => Promise<void>;
@@ -281,7 +274,6 @@ const DEFAULT_CHAT_PREFERENCES: ChatPreferenceValues = {
   networkRelevancePrompt: DEFAULT_NETWORK_RELEVANCE_PROMPT,
   networkRelevanceBatchSize: 50,
   networkRequestTypeFilters: DEFAULT_NETWORK_REQUEST_TYPE_FILTERS,
-  webSearchPolicy: "first_message",
   toolCallingEnabled: false,
   enabledToolIds: [],
   temperature: 0.7,
@@ -326,8 +318,6 @@ export const useAppStore = create<AppState>()((set, get) => ({
   streamMode: true,
   networkContextEnabled: false,
   networkContextStatus: undefined,
-  webSearchEnabled: false,
-  webSearchStatus: undefined,
   sending: false,
   contextMode: "text",
   syncSettings: DEFAULT_SYNC_SETTINGS,
@@ -1273,7 +1263,6 @@ export const useAppStore = create<AppState>()((set, get) => ({
       void get().checkNetworkContextConnection();
     }
   },
-  setWebSearchEnabled: (enabled) => set({ webSearchEnabled: enabled, webSearchStatus: enabled ? get().webSearchStatus : undefined }),
   checkNetworkContextConnection: async () => {
     const current = get();
     if (!current.networkContextEnabled) {
@@ -1448,8 +1437,6 @@ export const useAppStore = create<AppState>()((set, get) => ({
       streamMode: true,
       networkContextEnabled: false,
       networkContextStatus: undefined,
-      webSearchEnabled: false,
-      webSearchStatus: undefined,
       sending: false,
       contextMode: "text",
       syncSettings: DEFAULT_SYNC_SETTINGS,
@@ -1587,7 +1574,6 @@ function normalizeChatPreferences(value?: Partial<ChatPreferenceValues>): ChatPr
         : DEFAULT_CHAT_PREFERENCES.networkRelevancePrompt,
     networkRelevanceBatchSize: Math.round(normalizeNumber(value?.networkRelevanceBatchSize, DEFAULT_CHAT_PREFERENCES.networkRelevanceBatchSize, 1, 10_000)),
     networkRequestTypeFilters: normalizeNetworkRequestTypeFilters(value?.networkRequestTypeFilters),
-    webSearchPolicy: normalizeWebSearchPolicy(value?.webSearchPolicy),
     toolCallingEnabled: normalizeBoolean(value?.toolCallingEnabled, DEFAULT_CHAT_PREFERENCES.toolCallingEnabled),
     enabledToolIds: normalizeEnabledToolIds(value?.enabledToolIds),
     temperature: normalizeNumber(value?.temperature, DEFAULT_CHAT_PREFERENCES.temperature, 0, 2),
@@ -1622,10 +1608,6 @@ function normalizeNetworkRequestTypeFilters(value: unknown): NetworkRequestTypeF
   return Array.from(new Set(filters));
 }
 
-function normalizeWebSearchPolicy(value: unknown): WebSearchPolicy {
-  return value === "every_message" || value === "first_message" ? value : DEFAULT_CHAT_PREFERENCES.webSearchPolicy;
-}
-
 function isSendShortcutValue(value: unknown): value is SendShortcut {
   return typeof value === "string" && ["enter", "shift_enter", "ctrl_enter", "ctrl_shift_enter", "alt_enter"].includes(value);
 }
@@ -1643,18 +1625,6 @@ function normalizeChatPreferenceOverrides(value?: ChatSessionPreferenceOverrides
   }
   if (value?.networkRequestTypeFilters !== undefined) {
     overrides.networkRequestTypeFilters = normalizeNetworkRequestTypeFilters(value.networkRequestTypeFilters);
-  }
-  if (value?.webSearchPolicy !== undefined) {
-    overrides.webSearchPolicy = normalizeWebSearchPolicy(value.webSearchPolicy);
-  }
-  if (value?.webSearchIncludeAnswer !== undefined) {
-    overrides.webSearchIncludeAnswer = normalizeTavilyIncludeAnswer(value.webSearchIncludeAnswer);
-  }
-  if (value?.webSearchIncludeRawContent !== undefined) {
-    overrides.webSearchIncludeRawContent = normalizeTavilyIncludeRawContent(value.webSearchIncludeRawContent);
-  }
-  if (value?.webSearchMaxResults !== undefined) {
-    overrides.webSearchMaxResults = normalizeTavilyMaxResults(value.webSearchMaxResults);
   }
   if (value?.toolCallingEnabled !== undefined) {
     overrides.toolCallingEnabled = normalizeBoolean(value.toolCallingEnabled, DEFAULT_CHAT_PREFERENCES.toolCallingEnabled);
@@ -1683,7 +1653,6 @@ function resolveEffectiveChatPreferences(
     systemPrompt: overrides?.systemPrompt ?? preferences.systemPrompt,
     networkRelevanceBatchSize: overrides?.networkRelevanceBatchSize ?? preferences.networkRelevanceBatchSize,
     networkRequestTypeFilters: overrides?.networkRequestTypeFilters ?? preferences.networkRequestTypeFilters,
-    webSearchPolicy: overrides?.webSearchPolicy ?? preferences.webSearchPolicy,
     toolCallingEnabled: overrides?.toolCallingEnabled ?? preferences.toolCallingEnabled,
     enabledToolIds: overrides?.enabledToolIds ?? preferences.enabledToolIds,
     temperature: overrides?.temperature ?? preferences.temperature,
@@ -1695,7 +1664,6 @@ function resolveEffectiveChatPreferences(
     systemPrompt: normalizedOverrides.systemPrompt ?? preferences.systemPrompt,
     networkRelevanceBatchSize: normalizedOverrides.networkRelevanceBatchSize ?? preferences.networkRelevanceBatchSize,
     networkRequestTypeFilters: normalizedOverrides.networkRequestTypeFilters ?? preferences.networkRequestTypeFilters,
-    webSearchPolicy: normalizedOverrides.webSearchPolicy ?? preferences.webSearchPolicy,
     toolCallingEnabled: normalizedOverrides.toolCallingEnabled ?? preferences.toolCallingEnabled,
     enabledToolIds: normalizedOverrides.enabledToolIds ?? preferences.enabledToolIds,
     temperature: normalizedOverrides.temperature ?? preferences.temperature,
@@ -1848,7 +1816,6 @@ type EffectiveChatPreferences = Required<
     | "systemPrompt"
     | "networkRelevanceBatchSize"
     | "networkRequestTypeFilters"
-    | "webSearchPolicy"
     | "toolCallingEnabled"
     | "enabledToolIds"
     | "temperature"
@@ -2118,10 +2085,10 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
           })
         : ({ ok: true, userMessage: input.userMessage } satisfies PreparedNetworkContext);
     if (!preparedNetworkContext.ok) {
-      input.set({ failure: { message: preparedNetworkContext.message }, networkContextStatus: undefined, webSearchStatus: undefined });
+      input.set({ failure: { message: preparedNetworkContext.message }, networkContextStatus: undefined });
       return;
     }
-    input.set({ networkContextStatus: undefined, webSearchStatus: undefined });
+    input.set({ networkContextStatus: undefined });
 
     const titleGenerationPromise = !input.privateMode && input.shouldGenerateTitle
       ? generateTitleForSession({
@@ -2154,9 +2121,9 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
       }),
       stream: requestStreamMode,
       tavily: {
-        includeAnswer: input.session.chatPreferenceOverrides?.webSearchIncludeAnswer ?? input.state.webSearchSettings.tavily.includeAnswer,
-        includeRawContent: input.session.chatPreferenceOverrides?.webSearchIncludeRawContent ?? input.state.webSearchSettings.tavily.includeRawContent,
-        maxResults: input.session.chatPreferenceOverrides?.webSearchMaxResults ?? input.state.webSearchSettings.tavily.maxResults,
+        includeAnswer: input.state.webSearchSettings.tavily.includeAnswer,
+        includeRawContent: input.state.webSearchSettings.tavily.includeRawContent,
+        maxResults: input.state.webSearchSettings.tavily.maxResults,
       },
       ...(enabledTools.length > 0
         ? {
@@ -2269,7 +2236,7 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
       },
     });
   } finally {
-    input.set({ sending: false, networkContextStatus: undefined, webSearchStatus: undefined });
+    input.set({ sending: false, networkContextStatus: undefined });
   }
 }
 

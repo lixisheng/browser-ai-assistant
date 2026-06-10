@@ -7,7 +7,7 @@ import type { ChatWebSearchContextAttachment, ModelConfig } from "../shared/type
 import type { TavilySearchOptions } from "../shared/webSearch/tavily";
 import { createTavilySearchContextPrompt } from "../shared/webSearch/tavily";
 import { runModelToolLoop } from "./toolCalling/toolLoop";
-import { handleWebSearchMessage } from "./webSearchMessageHandler";
+import { executeTavilySearchFromSettings } from "./webSearchMessageHandler";
 
 export interface ChatSendMessage {
   type: "chat.send";
@@ -171,14 +171,7 @@ async function executeTavilySearchTool(
     };
   }
 
-  const response = await handleWebSearchMessage(
-    {
-      type: "webSearch.search",
-      query: queryResult.query,
-      tavily,
-    },
-    fetcher,
-  );
+  const response = await executeTavilySearchFromSettings(queryResult.query, tavily, fetcher);
   if (!response.ok) {
     return {
       toolCallId: toolCall.id,

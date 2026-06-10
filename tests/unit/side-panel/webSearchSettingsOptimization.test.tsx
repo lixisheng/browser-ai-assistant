@@ -124,7 +124,7 @@ describe("网络搜索设置优化", () => {
     await user.click(screen.getByRole("button", { name: /测试渠道/ }));
 
     const channelManagement = screen.getByRole("region", { name: "渠道管理" });
-    const webSearchSection = screen.getByRole("region", { name: "网络搜索配置" });
+    const webSearchSection = screen.getByRole("region", { name: "Tavily 搜索工具配置" });
     const modelSection = screen.getByRole("region", { name: "渠道模型" });
 
     expect(webSearchSection.parentElement).toBe(channelManagement);
@@ -191,68 +191,16 @@ describe("网络搜索设置优化", () => {
     });
   });
 
-  it("当前聊天设置可以覆盖 Tavily 参数并恢复继承全局", async () => {
-    const user = userEvent.setup();
-    const updateActiveSessionChatPreferences = vi.fn(async (updates) => {
-      useAppStore.setState((state) => ({
-        chatSessions: state.chatSessions.map((session) =>
-          session.id === state.activeSessionId
-            ? {
-                ...session,
-                chatPreferenceOverrides: {
-                  ...session.chatPreferenceOverrides,
-                  ...updates,
-                },
-              }
-            : session,
-        ),
-      }));
-    });
-    useAppStore.setState((state) => ({
+  it("当前聊天设置不再展示 Tavily 参数覆盖入口", () => {
+    useAppStore.setState({
       activeSessionId: "session-1",
-      chatSessions: [
-        createSession({
-          chatPreferenceOverrides: {
-            webSearchIncludeAnswer: "advanced",
-            webSearchIncludeRawContent: "markdown",
-            webSearchMaxResults: 8,
-          },
-        }),
-      ],
-      webSearchSettings: {
-        ...state.webSearchSettings,
-        tavily: {
-          ...state.webSearchSettings.tavily,
-          includeAnswer: "basic",
-          includeRawContent: false,
-          maxResults: 5,
-        },
-      },
-      updateActiveSessionChatPreferences,
-    }));
+      chatSessions: [createSession()],
+    });
 
     render(<ChatPreferenceDrawer open onOpenChange={vi.fn()} />);
 
-    expect(screen.getByRole("combobox", { name: "当前聊天 Tavily 综合答案" })).toHaveDisplayValue("深入答案");
-    expect(screen.getByRole("combobox", { name: "当前聊天 Tavily 原始内容" })).toHaveDisplayValue("Markdown");
-    expect(screen.getByRole("spinbutton", { name: "当前聊天 Tavily 最大结果数" })).toHaveDisplayValue("8");
-
-    await user.selectOptions(screen.getByRole("combobox", { name: "当前聊天 Tavily 综合答案" }), "false");
-    expect(updateActiveSessionChatPreferences).toHaveBeenLastCalledWith({ webSearchIncludeAnswer: false });
-
-    await user.selectOptions(screen.getByRole("combobox", { name: "当前聊天 Tavily 原始内容" }), "text");
-    expect(updateActiveSessionChatPreferences).toHaveBeenLastCalledWith({ webSearchIncludeRawContent: "text" });
-
-    const maxResultsInput = screen.getByRole("spinbutton", { name: "当前聊天 Tavily 最大结果数" });
-    await user.clear(maxResultsInput);
-    await user.type(maxResultsInput, "10");
-    expect(updateActiveSessionChatPreferences).toHaveBeenLastCalledWith({ webSearchMaxResults: 10 });
-
-    await user.click(screen.getByRole("button", { name: "恢复当前聊天网络搜索设置为全局默认" }));
-    expect(updateActiveSessionChatPreferences).toHaveBeenLastCalledWith({
-      webSearchIncludeAnswer: undefined,
-      webSearchIncludeRawContent: undefined,
-      webSearchMaxResults: undefined,
-    });
+    expect(screen.queryByLabelText("当前聊天 Tavily 综合答案")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("当前聊天 Tavily 原始内容")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("当前聊天 Tavily 最大结果数")).not.toBeInTheDocument();
   });
 });

@@ -1,12 +1,6 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import { NETWORK_REQUEST_TYPE_FILTER_OPTIONS } from "../../shared/networkContext";
 import type { ChatSessionPreferenceOverrides } from "../../shared/types";
-import {
-  formatTavilyIncludeAnswerLabel,
-  formatTavilyIncludeRawContentLabel,
-  parseOptionalTavilyIncludeAnswerInput,
-  parseOptionalTavilyIncludeRawContentInput,
-} from "../../shared/webSearch/settings";
 import { useAppStore } from "../state/appStore";
 import { resolveNetworkTypeFilterSelection } from "../utils/networkTypeFilterSelection";
 import { useComposedTextInput } from "./useComposedTextInput";
@@ -18,7 +12,6 @@ interface ChatPreferenceDrawerProps {
 
 export function ChatPreferenceDrawer({ open, onOpenChange }: ChatPreferenceDrawerProps) {
   const chatPreferences = useAppStore((state) => state.chatPreferences);
-  const webSearchSettings = useAppStore((state) => state.webSearchSettings);
   const activeSession = useAppStore((state) => state.chatSessions.find((session) => session.id === state.activeSessionId));
   const updateActiveSessionChatPreferences = useAppStore((state) => state.updateActiveSessionChatPreferences);
   const overrides = activeSession?.chatPreferenceOverrides ?? {};
@@ -34,6 +27,7 @@ export function ChatPreferenceDrawer({ open, onOpenChange }: ChatPreferenceDrawe
 
     void updateActiveSessionChatPreferences({ networkRequestTypeFilters: nextFilters });
   };
+
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
@@ -92,68 +86,6 @@ export function ChatPreferenceDrawer({ open, onOpenChange }: ChatPreferenceDrawe
                 onChange={(value) => void updateActiveSessionChatPreferences({ networkRelevanceBatchSize: value })}
               />
             </div>
-            <div className="chat-preference-grid">
-              <label className="chat-preference-field">
-                Tavily 综合答案
-                <select
-                  className="ui-input chat-preference-shortcut-select"
-                  aria-label="当前聊天 Tavily 综合答案"
-                  value={overrides.webSearchIncludeAnswer === undefined ? "" : String(overrides.webSearchIncludeAnswer)}
-                  onChange={(event) =>
-                    void updateActiveSessionChatPreferences({
-                      webSearchIncludeAnswer: parseOptionalTavilyIncludeAnswerInput(event.target.value),
-                    })
-                  }
-                >
-                  <option value="">继承全局：{formatTavilyIncludeAnswerLabel(webSearchSettings.tavily.includeAnswer)}</option>
-                  <option value="basic">基础答案</option>
-                  <option value="advanced">深入答案</option>
-                  <option value="true">开启</option>
-                  <option value="false">关闭</option>
-                </select>
-              </label>
-              <label className="chat-preference-field">
-                Tavily 原始内容
-                <select
-                  className="ui-input chat-preference-shortcut-select"
-                  aria-label="当前聊天 Tavily 原始内容"
-                  value={overrides.webSearchIncludeRawContent === undefined ? "" : String(overrides.webSearchIncludeRawContent)}
-                  onChange={(event) =>
-                    void updateActiveSessionChatPreferences({
-                      webSearchIncludeRawContent: parseOptionalTavilyIncludeRawContentInput(event.target.value),
-                    })
-                  }
-                >
-                  <option value="">继承全局：{formatTavilyIncludeRawContentLabel(webSearchSettings.tavily.includeRawContent)}</option>
-                  <option value="false">关闭</option>
-                  <option value="true">开启</option>
-                  <option value="markdown">Markdown</option>
-                  <option value="text">纯文本</option>
-                </select>
-              </label>
-              <PreferenceNumberInput
-                label="Tavily 最大结果数"
-                value={overrides.webSearchMaxResults}
-                placeholder={webSearchSettings.tavily.maxResults}
-                min={1}
-                max={20}
-                step={1}
-                onChange={(value) => void updateActiveSessionChatPreferences({ webSearchMaxResults: value })}
-              />
-            </div>
-            <button
-              className="ui-button-secondary"
-              type="button"
-              onClick={() =>
-                void updateActiveSessionChatPreferences({
-                  webSearchIncludeAnswer: undefined,
-                  webSearchIncludeRawContent: undefined,
-                  webSearchMaxResults: undefined,
-                })
-              }
-            >
-              恢复当前聊天网络搜索设置为全局默认
-            </button>
             <fieldset className="chat-preference-network-types">
               <legend className="text-sm">当前聊天默认采集 Network 请求类型</legend>
               <div className="chat-preference-network-type-list">

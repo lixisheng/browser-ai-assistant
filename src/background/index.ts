@@ -1,6 +1,5 @@
 import { handleModelCatalogMessage, type ModelCatalogMessage } from "./modelCatalogMessageHandler";
 import { handleChatSendMessage, type ChatSendMessage } from "./modelRequestHandler";
-import { handleWebSearchMessage, type WebSearchMessage } from "./webSearchMessageHandler";
 import {
   handleNetworkContextMessage,
   handleNetworkDevtoolsPort,
@@ -23,7 +22,6 @@ import {
   type CurrentTabUrlMessage,
   type UrlPatternGenerationMessage,
 } from "./urlPatternGenerationMessageHandler";
-import { WEB_SEARCH_FAILURE_MESSAGE } from "../shared/webSearch/tavily";
 
 const DEBUG_PREFIX = "[提取规则 AI 生成诊断]";
 
@@ -86,7 +84,6 @@ type RuntimeMessage =
   | UrlPatternGenerationMessage
   | CurrentTabUrlMessage
   | ChatSendMessage
-  | WebSearchMessage
   | TabCaptureVisibleMessage
   | SyncBackupMessage
   | NetworkContextMessage;
@@ -162,18 +159,6 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResp
 
   if (message.type === "chat.send") {
     void handleChatSendMessage(message).then(sendResponse);
-    return true;
-  }
-
-  if (message.type === "webSearch.search") {
-    void handleWebSearchMessage(message)
-      .then(sendResponse)
-      .catch(() => {
-        sendResponse({
-          ok: false,
-          message: WEB_SEARCH_FAILURE_MESSAGE,
-        });
-      });
     return true;
   }
 

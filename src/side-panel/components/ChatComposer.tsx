@@ -84,7 +84,6 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
   const streamMode = useAppStore((state) => state.streamMode);
   const networkContextEnabled = useAppStore((state) => state.networkContextEnabled);
   const networkContextStatus = useAppStore((state) => state.networkContextStatus);
-  const webSearchStatus = useAppStore((state) => state.webSearchStatus);
   const contextMode = useAppStore((state) => state.contextMode);
   const appendPageContextToSystemPrompt = useAppStore((state) => state.appendPageContextToSystemPrompt);
   const sending = useAppStore((state) => state.sending);
@@ -436,7 +435,6 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
       </div>
       {pageContext.truncated ? <p className="text-sm text-[var(--color-warning)]">内容已截断，请细化 CSS/XPath</p> : null}
       {networkContextStatus ? <p className="text-sm text-[var(--color-muted)]">{networkContextStatus}</p> : null}
-      {webSearchStatus ? <p className="text-sm text-[var(--color-muted)]">{webSearchStatus}</p> : null}
       {pageContext.error ? <p className="text-sm text-[var(--color-error)]">{pageContext.error}</p> : null}
       {attachmentError ? <p className="text-sm text-[var(--color-error)]">{attachmentError}</p> : null}
       <div className="chat-input-shell">

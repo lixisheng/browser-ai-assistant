@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { handleWebSearchMessage } from "../../../src/background/webSearchMessageHandler";
+import { executeTavilySearchFromSettings } from "../../../src/background/webSearchMessageHandler";
 import { clearDatabase, getAppSetting, saveAppSetting } from "../../../src/shared/storage/repositories";
 import type { WebSearchSettings } from "../../../src/shared/types";
 
@@ -32,7 +32,7 @@ describe("网络搜索 background 消息处理", () => {
       }),
     });
 
-    const response = await handleWebSearchMessage({ type: "webSearch.search", query: "Tavily API" }, fetcher);
+    const response = await executeTavilySearchFromSettings("Tavily API", undefined, fetcher);
 
     expect(response).toMatchObject({
       ok: true,
@@ -52,7 +52,7 @@ describe("网络搜索 background 消息处理", () => {
   });
 
   it("缺少 API Key 时返回中文错误", async () => {
-    const response = await handleWebSearchMessage({ type: "webSearch.search", query: "Tavily API" }, vi.fn());
+    const response = await executeTavilySearchFromSettings("Tavily API", undefined, vi.fn());
 
     expect(response).toEqual({
       ok: false,

@@ -855,7 +855,6 @@ describe("App", () => {
         networkRelevancePrompt: DEFAULT_NETWORK_RELEVANCE_PROMPT,
         networkRelevanceBatchSize: 50,
         networkRequestTypeFilters: ["all"],
-        webSearchPolicy: "first_message",
         toolCallingEnabled: false,
         enabledToolIds: [],
         temperature: 0.7,
@@ -874,7 +873,6 @@ describe("App", () => {
     await user.click(screen.getByRole("tab", { name: "聊天偏好" }));
     await user.selectOptions(screen.getByRole("combobox", { name: "发送快捷键" }), "ctrl_enter");
 
-    expect(screen.queryByRole("combobox", { name: "网络搜索时机" })).not.toBeInTheDocument();
     expect(updateChatPreferences).toHaveBeenCalledWith({ sendShortcut: "ctrl_enter" });
   });
 
@@ -887,7 +885,6 @@ describe("App", () => {
         networkRelevancePrompt: DEFAULT_NETWORK_RELEVANCE_PROMPT,
         networkRelevanceBatchSize: 50,
         networkRequestTypeFilters: ["all"],
-        webSearchPolicy: "first_message",
         toolCallingEnabled: false,
         enabledToolIds: [],
         temperature: 0.7,
@@ -920,7 +917,6 @@ describe("App", () => {
         networkRelevancePrompt: DEFAULT_NETWORK_RELEVANCE_PROMPT,
         networkRelevanceBatchSize: 50,
         networkRequestTypeFilters: ["all"],
-        webSearchPolicy: "first_message",
         toolCallingEnabled: false,
         enabledToolIds: [],
         temperature: 0.7,
@@ -951,7 +947,6 @@ describe("App", () => {
         networkRelevancePrompt: DEFAULT_NETWORK_RELEVANCE_PROMPT,
         networkRelevanceBatchSize: 50,
         networkRequestTypeFilters: ["all"],
-        webSearchPolicy: "first_message",
         toolCallingEnabled: false,
         enabledToolIds: [],
         temperature: 0.7,
@@ -3347,7 +3342,6 @@ describe("App", () => {
     expect(appendContextSwitch.nextElementSibling).toBe(contextSwitch);
     expect(streamSwitch).toHaveAttribute("aria-checked", "true");
     expect(networkSwitch).toHaveAttribute("aria-checked", "false");
-    expect(screen.queryByRole("switch", { name: "网络搜索" })).not.toBeInTheDocument();
     expect(toolCallingButton).toHaveAttribute("aria-pressed", "false");
     expect(toolCallingButton).not.toBeDisabled();
     expect(contextSwitch).toHaveAttribute("aria-checked", "false");
@@ -3364,7 +3358,6 @@ describe("App", () => {
     expect(screen.getByRole("switch", { name: "拼接上下文" })).toHaveAttribute("aria-checked", "false");
     expect(screen.getByRole("switch", { name: "流式响应" })).toHaveAttribute("aria-checked", "false");
     expect(screen.getByRole("switch", { name: "Network 上下文" })).toHaveAttribute("aria-checked", "true");
-    expect(screen.queryByRole("switch", { name: "网络搜索" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "工具调用：已关闭" })).toHaveAttribute("aria-pressed", "false");
     expect(screen.getByRole("switch", { name: "提取模式" })).toHaveAttribute("aria-checked", "true");
     expect(screen.getByRole("switch", { name: "提取模式" })).toHaveAttribute("title", "提取所有");
@@ -3462,7 +3455,6 @@ describe("App", () => {
     await user.click(screen.getByRole("button", { name: "打开当前聊天设置" }));
 
     expect(screen.queryByRole("combobox", { name: "当前聊天工具调用" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("combobox", { name: "当前聊天网络搜索时机" })).not.toBeInTheDocument();
     expect(screen.queryByText("当前聊天启用工具")).not.toBeInTheDocument();
     expect(screen.queryByText(/当前聊天工具调用请通过输入区工具图标菜单/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "恢复当前聊天工具设置为全局默认" })).not.toBeInTheDocument();
