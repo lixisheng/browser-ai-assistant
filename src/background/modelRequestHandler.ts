@@ -1,9 +1,13 @@
 import { parseAssistantResponse } from "../shared/chat/parseAssistantResponse";
 import { createModelRequestPayload } from "../shared/models/modelRequestPayload";
-import { getRegisteredModelTools, resolveEnabledModelTools } from "../shared/models/toolRegistry";
+import { shouldPassDeepSeekReasoningContent } from "../shared/models/openaiChatAdapter";
+import { TAVILY_SEARCH_TOOL_NAME, getRegisteredModelTools, resolveEnabledModelTools } from "../shared/models/toolRegistry";
 import type { ModelRequestMessage, ModelToolCall, ModelToolChoice, ModelToolDefinition, ModelToolExecutor, ModelToolRegistryEntry, OpenAIStructuredOutputFormat } from "../shared/models/types";
-import type { ModelConfig } from "../shared/types";
+import type { ChatWebSearchContextAttachment, ModelConfig } from "../shared/types";
+import type { TavilySearchOptions } from "../shared/webSearch/tavily";
+import { createTavilySearchContextPrompt } from "../shared/webSearch/tavily";
 import { runModelToolLoop } from "./toolCalling/toolLoop";
+import { handleWebSearchMessage } from "./webSearchMessageHandler";
 
 export interface ChatSendMessage {
   type: "chat.send";
@@ -13,6 +17,7 @@ export interface ChatSendMessage {
   structuredOutput?: OpenAIStructuredOutputFormat;
   enabledToolIds?: string[];
   toolChoice?: ModelToolChoice;
+  tavily?: TavilySearchOptions;
 }
 
 type PreparedChatSendMessage = ChatSendMessage & {
@@ -24,7 +29,9 @@ export type ChatSendResponse =
       ok: true;
       content: string;
       thinking?: string;
+      reasoningContent?: string;
       toolCalls?: ModelToolCall[];
+      webSearchContextAttachment?: ChatWebSearchContextAttachment;
     }
   | {
       ok: false;
@@ -44,9 +51,10 @@ export async function handleChatSendMessage(
   message: ChatSendMessage,
   fetcher: Fetcher = fetch,
   callbacks: ChatStreamCallbacks = {},
-  executeTool: ModelToolExecutor = createUnavailableToolExecutor(),
+  executeTool?: ModelToolExecutor,
 ): Promise<ChatSendResponse> {
   const enabledTools = resolveEnabledModelTools(getRegisteredModelTools(), message.enabledToolIds ?? []);
+  const toolExecutor = executeTool ?? createBackgroundToolExecutor(message, fetcher);
   const toolOptions = enabledTools.length > 0 && !message.structuredOutput
     ? {
         tools: enabledTools.map(createModelToolDefinition),
@@ -54,13 +62,20 @@ export async function handleChatSendMessage(
       }
     : {};
 
-  if (!message.stream && enabledTools.length > 0) {
+  if (enabledTools.length > 0) {
     return runModelToolLoop({
       initialMessages: message.messages,
       tools: enabledTools,
       enabledToolIds: message.enabledToolIds ?? [],
-      requestModel: (messages) => requestModelOnce({ ...message, messages, tools: toolOptions.tools, toolChoice: toolOptions.toolChoice }, fetcher),
-      executeTool,
+      requestModel: (messages) =>
+        requestModelOnce({ ...message, messages, stream: false, tools: toolOptions.tools, toolChoice: toolOptions.toolChoice }, fetcher),
+      ...(message.stream
+        ? {
+            requestFinalModel: (messages: ModelRequestMessage[]) =>
+              requestModelOnce({ ...message, messages, stream: true, tools: undefined, toolChoice: undefined }, fetcher, callbacks),
+          }
+        : {}),
+      executeTool: toolExecutor,
     });
   }
 
@@ -93,7 +108,7 @@ async function requestModelOnce(
     }
 
     if (message.stream) {
-      return readStreamResponse(response, message.model.endpointType, callbacks);
+      return readStreamResponse(response, message.model, callbacks);
     }
 
     const data = await response.json();
@@ -109,7 +124,10 @@ async function requestModelOnce(
     return {
       ok: true,
       content: parsed.content,
-      thinking: parsed.thinking,
+      thinking: responseData.reasoningContent || parsed.thinking,
+      ...(shouldPassDeepSeekReasoningContent(message.model) && responseData.reasoningContent
+        ? { reasoningContent: responseData.reasoningContent }
+        : {}),
       ...(responseData.toolCalls?.length ? { toolCalls: responseData.toolCalls } : {}),
     };
   } catch {
@@ -128,18 +146,82 @@ function createModelToolDefinition(tool: ModelToolRegistryEntry): ModelToolDefin
   };
 }
 
-function createUnavailableToolExecutor(): ModelToolExecutor {
-  return async (toolCall) => ({
+function createBackgroundToolExecutor(message: ChatSendMessage, fetcher: Fetcher): ModelToolExecutor {
+  return async (toolCall, tool) => {
+    if (tool.name === TAVILY_SEARCH_TOOL_NAME) {
+      return executeTavilySearchTool(toolCall, message.tavily, fetcher);
+    }
+
+    return createUnavailableToolResult(toolCall);
+  };
+}
+
+async function executeTavilySearchTool(
+  toolCall: ModelToolCall,
+  tavily: TavilySearchOptions | undefined,
+  fetcher: Fetcher,
+): Promise<Awaited<ReturnType<ModelToolExecutor>>> {
+  const queryResult = normalizeTavilyToolQuery(toolCall.arguments);
+  if (!queryResult.ok) {
+    return {
+      toolCallId: toolCall.id,
+      name: toolCall.name,
+      content: queryResult.message,
+      isError: true,
+    };
+  }
+
+  const response = await handleWebSearchMessage(
+    {
+      type: "webSearch.search",
+      query: queryResult.query,
+      tavily,
+    },
+    fetcher,
+  );
+  if (!response.ok) {
+    return {
+      toolCallId: toolCall.id,
+      name: toolCall.name,
+      content: response.message,
+      isError: true,
+    };
+  }
+
+  return {
+    toolCallId: toolCall.id,
+    name: toolCall.name,
+    content: createTavilySearchContextPrompt(response.attachment),
+    webSearchContextAttachment: response.attachment,
+  };
+}
+
+function normalizeTavilyToolQuery(args: Record<string, unknown>): { ok: true; query: string } | { ok: false; message: string } {
+  const extraKeys = Object.keys(args).filter((key) => key !== "query");
+  if (extraKeys.length > 0) {
+    return { ok: false, message: "Tavily 搜索工具只接受 query 参数" };
+  }
+
+  const query = typeof args.query === "string" ? args.query.trim() : "";
+  if (!query) {
+    return { ok: false, message: "Tavily 搜索问题不能为空" };
+  }
+
+  return { ok: true, query };
+}
+
+function createUnavailableToolResult(toolCall: ModelToolCall): Awaited<ReturnType<ModelToolExecutor>> {
+  return {
     toolCallId: toolCall.id,
     name: toolCall.name,
     content: `工具 ${toolCall.name} 暂未实现，已拒绝执行。`,
     isError: true,
-  });
+  };
 }
 
 async function readStreamResponse(
   response: Response,
-  endpointType: ModelConfig["endpointType"],
+  model: ModelConfig,
   callbacks: ChatStreamCallbacks,
 ): Promise<ChatSendResponse> {
   if (!response.body) {
@@ -159,7 +241,7 @@ async function readStreamResponse(
     }
 
     buffer += decoder.decode(value, { stream: true });
-    const parsed = consumeSseBuffer(buffer, endpointType);
+    const parsed = consumeSseBuffer(buffer, model.endpointType);
     buffer = parsed.remaining;
     for (const chunk of parsed.contentChunks) {
       rawContent += chunk;
@@ -176,7 +258,7 @@ async function readStreamResponse(
   }
 
   buffer += decoder.decode();
-  const tail = consumeSseBuffer(`${buffer}\n\n`, endpointType);
+  const tail = consumeSseBuffer(`${buffer}\n\n`, model.endpointType);
   for (const chunk of tail.contentChunks) {
     rawContent += chunk;
     callbacks.onContentChunk?.(chunk);
@@ -195,6 +277,7 @@ async function readStreamResponse(
     ok: true,
     content: parsedContent.content,
     thinking: rawThinking || parsedContent.thinking,
+    ...(shouldPassDeepSeekReasoningContent(model) && rawThinking ? { reasoningContent: rawThinking } : {}),
   };
 }
 
@@ -313,7 +396,7 @@ function isAnthropicStreamStop(data: unknown): boolean {
 function extractAssistantResponseData(
   data: unknown,
   options: { structuredOutput?: OpenAIStructuredOutputFormat; collectToolCalls?: boolean } = {},
-): { content: string; toolCalls?: ModelToolCall[] } {
+): { content: string; reasoningContent?: string; toolCalls?: ModelToolCall[] } {
   const openAIResponse = extractOpenAIAssistantResponse(data, options);
   if (openAIResponse.content || openAIResponse.toolCalls?.length) {
     return openAIResponse;
@@ -325,7 +408,7 @@ function extractAssistantResponseData(
 function extractOpenAIAssistantResponse(
   data: unknown,
   options: { structuredOutput?: OpenAIStructuredOutputFormat; collectToolCalls?: boolean },
-): { content: string; toolCalls?: ModelToolCall[] } {
+): { content: string; reasoningContent?: string; toolCalls?: ModelToolCall[] } {
   if (!data || typeof data !== "object" || !("choices" in data) || !Array.isArray(data.choices)) {
     return { content: "" };
   }
@@ -342,8 +425,10 @@ function extractOpenAIAssistantResponse(
 
   if ("content" in message && typeof message.content === "string") {
     const toolCalls = options.collectToolCalls ? extractOpenAIToolCalls(message) : [];
+    const reasoningContent = extractOpenAIReasoningContent(message);
     return {
       content: message.content,
+      ...(reasoningContent ? { reasoningContent } : {}),
       ...(toolCalls.length ? { toolCalls } : {}),
     };
   }
@@ -357,10 +442,18 @@ function extractOpenAIAssistantResponse(
   }
 
   const toolCalls = options.collectToolCalls ? extractOpenAIToolCalls(message) : [];
+  const reasoningContent = extractOpenAIReasoningContent(message);
   return {
     content: "",
+    ...(reasoningContent ? { reasoningContent } : {}),
     ...(toolCalls.length ? { toolCalls } : {}),
   };
+}
+
+function extractOpenAIReasoningContent(message: object): string | undefined {
+  return "reasoning_content" in message && typeof message.reasoning_content === "string" && message.reasoning_content.trim()
+    ? message.reasoning_content
+    : undefined;
 }
 
 function extractFirstOpenAIToolArguments(toolCalls: unknown[]): string {

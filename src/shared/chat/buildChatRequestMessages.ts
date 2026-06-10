@@ -134,7 +134,7 @@ function fitPageContextToModelBudget(input: FitPageContextInput): string {
   const fixedContentLength =
     input.systemPrompt.trim().length +
     PAGE_CONTEXT_HEADER.length +
-    input.existingMessages.reduce((total, message) => total + message.content.length + (message.thinking?.length ?? 0), 0) +
+    input.existingMessages.reduce((total, message) => total + getMessageBudgetLength(message), 0) +
     input.userMessage.content.length;
   const availablePageContextLength = requestBudget - fixedContentLength;
 
@@ -144,4 +144,10 @@ function fitPageContextToModelBudget(input: FitPageContextInput): string {
   }
 
   return truncateText(pageContext, availablePageContextLength).text;
+}
+
+function getMessageBudgetLength(message: ChatMessage): number {
+  const thinkingLength = message.thinking?.length ?? 0;
+  const reasoningLength = message.reasoningContent && message.reasoningContent !== message.thinking ? message.reasoningContent.length : 0;
+  return message.content.length + thinkingLength + reasoningLength;
 }

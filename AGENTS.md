@@ -144,6 +144,7 @@
 
 * 模型协议分支必须以 `EndpointType` 为入口，新增协议时同步更新 `EndpointType`、请求 payload 构造、模型列表请求、连通性测试、聊天响应解析和单元测试。
 * OpenAI Chat Completions 兼容协议与 Anthropic Messages 协议的 system、messages、图片格式、鉴权 header 和端点补全规则不同，不能复用未区分协议的请求体。
+* DeepSeek reasoning/thinking 模型在工具调用链路中要求回传 assistant 历史消息的 `reasoning_content`；实现时必须把供应商原始 reasoning 单独保存为 `reasoningContent`，不要只保存 UI 展示用 `thinking`，且只能对明确需要该字段的 DeepSeek reasoning 模型解析、保存并写入 OpenAI-compatible payload，避免普通兼容渠道因额外字段报错；不得把通用 `thinking` 兜底当作 `reasoning_content` 回传；模型匹配不得使用 `v4`、`r1` 这类短关键词直接命中，必须匹配 `deepseek-v4`、`deepseek-r1` 或 `reasoner/reasoning/thinking` 等明确特征。
 * `maxTokens` 在本项目中同时参与请求输出参数和页面上下文预算估算；调整预算逻辑时必须覆盖中文上下文、历史消息、思考过程和用户输入共同占用预算的测试。
 * 流式聊天必须通过 `chrome.runtime.connect({ name: "chat.stream" })` 处理增量内容；普通 `runtime.sendMessage` 不应用于长期承载流式模型响应。
 * SSE 解析必须容忍心跳、畸形 JSON 片段和分块边界；OpenAI 的 `delta.content` 与 `reasoning_content`、Anthropic 的 `text_delta` 和 `message_stop` 都要分别处理。
@@ -266,10 +267,12 @@
 
 ### 10.14 网络搜索上下文
 
-* 网络搜索开关默认关闭，只在普通聊天对话中生效；DevTools Network 分析模式开启时不得同时触发 Tavily 网络搜索。
+* Tavily 网络搜索通过 `tavily_search` 原生工具调用启用；输入区不得再提供独立网络搜索按钮，模型仅在工具调用总开关和 Tavily 工具均启用时自行决定是否搜索。
+* Tavily 工具只在普通聊天对话中暴露；DevTools Network 分析模式开启时必须从本轮可用工具中排除 Tavily，避免同时触发两类外部上下文。
 * Tavily API Key 属于本地密钥配置，不得进入同步快照、导出内容、模型请求 payload 或用户可见错误。
 * 网络搜索结果必须以 assistant 消息附件保存、折叠展示并参与聊天记录导出；后续对话请求需要继续携带历史搜索附件上下文。
-* 网络搜索时机属于聊天偏好，默认仅首轮搜索；当前聊天设置中的覆盖优先级高于全局聊天偏好。
+* 单条 assistant 消息当前只支持一个 Tavily 网络搜索附件；同一轮工具调用出现多次 Tavily 搜索时，必须合并 query、answer 和 results，并按 URL 去重，不能简单以后一次覆盖前一次。
+* 旧版网络搜索时机偏好只保留旧数据归一化兼容，不再展示为 UI 控件，也不得参与 Tavily 工具调用时机判断。
 * 渠道管理中的“网络搜索”配置必须与“渠道模型”配置保持同级 section，不能嵌套在模型渠道详情中。
 * Tavily 的 `include_answer`、`include_raw_content`、`max_results` 属于可配置搜索参数；全局值保存在网络搜索配置中，当前聊天可覆盖且优先级更高，`max_results` 必须归一化到 Tavily 支持范围。
 * Tavily 可配置参数的用户可见标签、选项和当前聊天继承提示必须使用中文；仅请求体字段和内部类型保留 Tavily 官方参数名。
@@ -279,7 +282,7 @@
 * Tavily `raw_content` 返回值在用户开启原始内容时必须进入附件、模型上下文和导出内容，并按长度截断；上下文标题等用户可见文案必须使用中文。
 * 同步快照不得同步 Tavily API Key，但应保留网络搜索非密钥配置；导出快照时只清空 `webSearchSettings.tavily.apiKeysText`，恢复快照时必须保留当前本地 Tavily API Key。
 * 读取历史会话时必须归一化 `webSearchContextAttachment`，脏数据或旧版本异常结构不得直接进入展示、导出或模型请求。
-* 网络搜索 query 必须兼容 Prompt-only 消息，正文为空但包含 Prompt 调用时应使用 Prompt 快照展开内容作为搜索需求。
+* Tavily 工具参数只允许 `query` 字符串；不得让模型覆盖 `include_answer`、`include_raw_content`、`max_results` 等配置项，运行时必须拒绝空 query 和额外字段。
 * 新增搜索渠道时必须通过 `WebSearchProviderType` 扩展配置和附件类型，不能把渠道特有字段硬编码到聊天主流程。
 * 渠道管理中模型渠道 item 的展开/折叠只控制当前渠道详情；默认对话模型、AI 标题生成模型和模型列表属于渠道管理配置主体，不得放进单个渠道 item 的折叠内容中。
 
@@ -290,9 +293,10 @@
 * 工具注册表是唯一 allow-list；runtime 消息只传 `enabledToolIds`，background 必须基于注册表和 `enabledToolIds` 自行生成可暴露工具定义，不能信任 UI 或 runtime message 传入的任意 `tools` 定义；`tools` 只允许作为 background 内部净化后的模型请求选项；模型返回的工具名只有匹配已注册且已启用的工具时才允许执行，不能按模型输出动态执行未知工具。
 * 模型返回的工具参数属于外部输入，必须解析并校验为普通对象；非法 JSON、数组、空值或非对象参数必须作为中文工具错误回灌，不能静默执行。
 * 模型响应解析层发现工具参数非法时，必须写入 `ModelToolCall.parseError`；工具循环层必须基于该字段拒绝执行并把中文错误结果回灌给模型。
-* 工具调用请求使用非流式工具循环；普通聊天在未暴露工具时继续遵循用户的流式偏好。
+* 工具执行结果如果需要保存本地附件，应通过 `ModelToolResult` 附加本地元数据并由工具循环透传给最终响应；发给模型的 `tool` 消息仍只包含文本 `content`。
+* 工具调用的决策阶段必须使用非流式请求，避免流式增量难以稳定解析工具调用；用户开启流式偏好且本轮暴露工具时，Side Panel 仍必须通过 `chrome.runtime.connect({ name: "chat.stream" })` 创建 AI 占位气泡，background 必须先用非流式工具决策循环跑到无工具调用或达到上限，再发起最终回答的真实流式请求；最终回答请求不得继续携带 `tools` 或 `tool_choice`，且 `complete` 事件必须透传工具附件元数据，避免 Tavily 等工具启用后丢失占位、打字机体验或搜索附件。
 * 当前聊天工具调用入口必须放在 `.composer-actions` 的紧凑图标弹窗按钮中，按钮通过非激活/激活状态提示当前会话是否启用；弹窗内提供“启用”“启用全部”“关闭”和单工具启用列表，单工具激活态必须用边框与底色区分；弹窗默认按 `.composer-tool-menu-wrap` 中心线对齐并在靠近视口边缘时夹住不溢出；当前聊天设置抽屉不承载工具调用配置，避免形成重复入口。
-* 工具调用设置 UI 必须提示“启用工具且存在已启用工具时会自动使用非流式请求”；当前聊天的单工具启停统一通过输入区工具图标弹窗完成，避免多个入口状态不一致。
+* 工具调用设置 UI 不得提示“启用工具后会强制关闭流式响应”；当前聊天的单工具启停统一通过输入区工具图标弹窗完成，避免多个入口状态不一致。
 * Network 相关性筛选使用的 `structuredOutput` 属于内部结构化输出能力，不受用户工具调用总开关影响，避免破坏现有 Network 分析降级链路。
 * 新增具体工具时必须补充工具注册、启用/禁用、参数校验、工具结果回灌和禁用状态拒绝执行的单元测试。
 

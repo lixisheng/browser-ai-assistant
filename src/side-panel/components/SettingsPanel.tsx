@@ -10,7 +10,6 @@ import type {
   PromptTemplate,
   ProviderModel,
   SendShortcut,
-  WebSearchPolicy,
 } from "../../shared/types";
 import { parseTavilyIncludeAnswerInput, parseTavilyIncludeRawContentInput } from "../../shared/webSearch/settings";
 import { useAppStore } from "../state/appStore";
@@ -1087,18 +1086,6 @@ function ChatPreferenceSettings() {
           onChange={(value) => void updateChatPreferences({ topK: value })}
         />
       </div>
-      <label className="chat-preference-field">
-        网络搜索时机
-        <select
-          className="ui-input chat-preference-shortcut-select"
-          aria-label="网络搜索时机"
-          value={chatPreferences.webSearchPolicy}
-          onChange={(event) => void updateChatPreferences({ webSearchPolicy: event.target.value as WebSearchPolicy })}
-        >
-          <option value="first_message">仅首轮搜索</option>
-          <option value="every_message">每轮搜索</option>
-        </select>
-      </label>
       <fieldset className="chat-preference-network-types">
         <legend className="text-sm">默认采集 Network 请求类型</legend>
         <div className="chat-preference-network-type-list">
@@ -1129,7 +1116,7 @@ function ChatPreferenceSettings() {
           </span>
           <span className="chat-preference-switch-label">启用工具调用</span>
         </label>
-        <p className="ui-muted text-xs">启用工具调用且存在已启用工具时，将自动使用非流式请求。</p>
+        <p className="ui-muted text-xs">启用工具后，工具决策阶段使用非流式请求；最终回复仍跟随流式响应开关。</p>
         {registeredTools.length > 0 ? (
           <div className="chat-preference-network-type-list">
             {registeredTools.map((tool) => (

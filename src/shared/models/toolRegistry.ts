@@ -1,6 +1,26 @@
 import type { ModelToolRegistryEntry } from "./types";
 
-export const AVAILABLE_MODEL_TOOLS: ModelToolRegistryEntry[] = [];
+export const TAVILY_SEARCH_TOOL_ID = "web_search.tavily";
+export const TAVILY_SEARCH_TOOL_NAME = "tavily_search";
+
+export const AVAILABLE_MODEL_TOOLS: ModelToolRegistryEntry[] = [
+  {
+    id: TAVILY_SEARCH_TOOL_ID,
+    name: TAVILY_SEARCH_TOOL_NAME,
+    description: "使用 Tavily 搜索公开网页信息，适合需要最新资料或外部来源时调用。",
+    parameters: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "要搜索的简洁问题或关键词。",
+        },
+      },
+      required: ["query"],
+      additionalProperties: false,
+    },
+  },
+];
 
 const TOOL_ID_PATTERN = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/;
 

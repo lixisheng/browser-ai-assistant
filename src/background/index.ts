@@ -222,7 +222,13 @@ chrome.runtime.onConnect.addListener((port) => {
     })
       .then((response) => {
         if (response.ok) {
-          port.postMessage({ type: "complete", content: response.content, thinking: response.thinking });
+          port.postMessage({
+            type: "complete",
+            content: response.content,
+            thinking: response.thinking,
+            reasoningContent: response.reasoningContent,
+            webSearchContextAttachment: response.webSearchContextAttachment,
+          });
           return;
         }
 

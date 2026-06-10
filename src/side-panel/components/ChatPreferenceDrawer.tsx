@@ -1,6 +1,6 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import { NETWORK_REQUEST_TYPE_FILTER_OPTIONS } from "../../shared/networkContext";
-import type { ChatSessionPreferenceOverrides, WebSearchPolicy } from "../../shared/types";
+import type { ChatSessionPreferenceOverrides } from "../../shared/types";
 import {
   formatTavilyIncludeAnswerLabel,
   formatTavilyIncludeRawContentLabel,
@@ -92,23 +92,6 @@ export function ChatPreferenceDrawer({ open, onOpenChange }: ChatPreferenceDrawe
                 onChange={(value) => void updateActiveSessionChatPreferences({ networkRelevanceBatchSize: value })}
               />
             </div>
-            <label className="chat-preference-field">
-              当前聊天网络搜索时机
-              <select
-                className="ui-input chat-preference-shortcut-select"
-                aria-label="当前聊天网络搜索时机"
-                value={overrides.webSearchPolicy ?? ""}
-                onChange={(event) =>
-                  void updateActiveSessionChatPreferences({
-                    webSearchPolicy: event.target.value ? (event.target.value as WebSearchPolicy) : undefined,
-                  })
-                }
-              >
-                <option value="">继承全局：{chatPreferences.webSearchPolicy === "every_message" ? "每轮搜索" : "仅首轮搜索"}</option>
-                <option value="first_message">仅首轮搜索</option>
-                <option value="every_message">每轮搜索</option>
-              </select>
-            </label>
             <div className="chat-preference-grid">
               <label className="chat-preference-field">
                 Tavily 综合答案
@@ -163,7 +146,6 @@ export function ChatPreferenceDrawer({ open, onOpenChange }: ChatPreferenceDrawe
               type="button"
               onClick={() =>
                 void updateActiveSessionChatPreferences({
-                  webSearchPolicy: undefined,
                   webSearchIncludeAnswer: undefined,
                   webSearchIncludeRawContent: undefined,
                   webSearchMaxResults: undefined,

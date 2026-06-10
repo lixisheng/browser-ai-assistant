@@ -293,6 +293,7 @@ function normalizeChatMessage(message: ChatMessage): ChatMessage {
   return {
     ...message,
     contextMode: message.contextMode ?? "text",
+    reasoningContent: typeof message.reasoningContent === "string" ? message.reasoningContent : undefined,
     webSearchContextAttachment: normalizeChatWebSearchContextAttachment(message.webSearchContextAttachment),
   };
 }

@@ -250,7 +250,6 @@ describe("网络搜索设置优化", () => {
 
     await user.click(screen.getByRole("button", { name: "恢复当前聊天网络搜索设置为全局默认" }));
     expect(updateActiveSessionChatPreferences).toHaveBeenLastCalledWith({
-      webSearchPolicy: undefined,
       webSearchIncludeAnswer: undefined,
       webSearchIncludeRawContent: undefined,
       webSearchMaxResults: undefined,

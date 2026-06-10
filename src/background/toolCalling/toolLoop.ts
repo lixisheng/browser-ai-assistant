@@ -7,6 +7,7 @@ export interface RunModelToolLoopInput {
   tools: ModelToolRegistryEntry[];
   enabledToolIds: string[];
   requestModel: (messages: ModelRequestMessage[]) => Promise<ModelToolLoopResponse>;
+  requestFinalModel?: (messages: ModelRequestMessage[]) => Promise<ModelToolLoopResponse>;
   executeTool: ModelToolExecutor;
   maxIterations?: number;
 }
@@ -22,6 +23,8 @@ export async function runModelToolLoop(input: RunModelToolLoopInput): Promise<Mo
   const maxIterations = Math.max(1, Math.floor(input.maxIterations ?? DEFAULT_MAX_TOOL_ITERATIONS));
   const enabledToolIds = new Set(input.enabledToolIds);
   let messages = [...input.initialMessages];
+  let webSearchContextAttachment: ModelResponseData["webSearchContextAttachment"];
+  let lastResponse: ModelToolLoopResponse | undefined;
 
   for (let iteration = 0; iteration < maxIterations; iteration += 1) {
     const response = await input.requestModel(messages);
@@ -30,16 +33,24 @@ export async function runModelToolLoop(input: RunModelToolLoopInput): Promise<Mo
     }
 
     if (!response.toolCalls?.length) {
-      return {
+      lastResponse = {
         ok: true,
         content: response.content,
         thinking: response.thinking,
+        ...(response.reasoningContent ? { reasoningContent: response.reasoningContent } : {}),
+        ...(webSearchContextAttachment ? { webSearchContextAttachment } : {}),
       };
+      break;
     }
 
     const toolResultMessages = await Promise.all(
       response.toolCalls.map((toolCall) => executeAllowedTool(toolCall, input.tools, enabledToolIds, input.executeTool)),
     );
+    for (const toolResultMessage of toolResultMessages) {
+      if (toolResultMessage.webSearchContextAttachment) {
+        webSearchContextAttachment = mergeWebSearchContextAttachment(webSearchContextAttachment, toolResultMessage.webSearchContextAttachment);
+      }
+    }
 
     messages = [
       ...messages,
@@ -47,12 +58,28 @@ export async function runModelToolLoop(input: RunModelToolLoopInput): Promise<Mo
         role: "assistant",
         content: response.content,
         toolCalls: response.toolCalls,
+        ...(response.reasoningContent ? { reasoningContent: response.reasoningContent } : {}),
       },
       ...toolResultMessages,
     ];
   }
 
-  return { ok: false, message: "工具调用超过最大轮次，已停止本次请求。" };
+  if (input.requestFinalModel && lastResponse?.ok) {
+    const finalResponse = await input.requestFinalModel(messages);
+    if (!finalResponse.ok) {
+      return finalResponse;
+    }
+
+    return {
+      ok: true,
+      content: finalResponse.content,
+      thinking: finalResponse.thinking,
+      ...(finalResponse.reasoningContent ? { reasoningContent: finalResponse.reasoningContent } : {}),
+      ...(webSearchContextAttachment ? { webSearchContextAttachment } : {}),
+    };
+  }
+
+  return lastResponse ?? { ok: false, message: "工具调用超过最大轮次，已停止本次请求。" };
 }
 
 async function executeAllowedTool(
@@ -82,6 +109,7 @@ async function executeAllowedTool(
       name: result.name,
       content: result.content,
       ...(result.isError ? { isError: true } : {}),
+      ...(result.webSearchContextAttachment ? { webSearchContextAttachment: result.webSearchContextAttachment } : {}),
     };
   } catch {
     return createToolErrorResult(toolCall, `工具 ${toolCall.name} 执行失败，请稍后重试。`);
@@ -96,4 +124,34 @@ function createToolErrorResult(toolCall: ModelToolCall, content: string): ModelT
     content,
     isError: true,
   };
+}
+
+function mergeWebSearchContextAttachment(
+  current: ModelResponseData["webSearchContextAttachment"],
+  next: NonNullable<ModelResponseData["webSearchContextAttachment"]>,
+): NonNullable<ModelResponseData["webSearchContextAttachment"]> {
+  if (!current) {
+    return next;
+  }
+
+  const resultsByKey = new Map<string, (typeof next.results)[number]>();
+  for (const result of [...current.results, ...next.results]) {
+    resultsByKey.set(result.url || result.title, result);
+  }
+
+  // 现有消息结构只支持单个 Tavily 附件；多次搜索时合并内容，避免后一次覆盖前一次。
+  return {
+    provider: next.provider,
+    query: uniqueNonEmpty([current.query, next.query]).join("；"),
+    ...(uniqueNonEmpty([current.answer, next.answer]).length
+      ? { answer: uniqueNonEmpty([current.answer, next.answer]).join("\n\n") }
+      : {}),
+    results: Array.from(resultsByKey.values()),
+    createdAt: Math.max(current.createdAt, next.createdAt),
+    truncated: current.truncated || next.truncated,
+  };
+}
+
+function uniqueNonEmpty(values: Array<string | undefined>): string[] {
+  return Array.from(new Set(values.map((value) => value?.trim()).filter((value): value is string => Boolean(value))));
 }

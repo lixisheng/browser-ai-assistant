@@ -1107,6 +1107,132 @@ describe("background 入口", () => {
     });
   });
 
+  it("流式聊天完成事件会透传 Tavily 工具附件", async () => {
+    const mock = createChromeMock();
+    vi.stubGlobal("chrome", mock.chrome);
+    await saveAppSetting({
+      key: "webSearchSettings",
+      value: {
+        provider: "tavily",
+        tavily: {
+          apiKeysText: "tvly-1",
+          apiKeyStrategy: "round_robin",
+          includeAnswer: "basic",
+          includeRawContent: false,
+          maxResults: 5,
+        },
+        updatedAt: 1,
+      },
+      updatedAt: 1,
+    });
+    const encoder = new TextEncoder();
+    const streamChunks: Uint8Array[] = [
+      encoder.encode('data: {"choices":[{"delta":{"reasoning_content":"最终思考"}}]}\n\n'),
+      encoder.encode('data: {"choices":[{"delta":{"content":"最终"}}]}\n\n'),
+      encoder.encode('data: {"choices":[{"delta":{"content":"回答"}}]}\n\n'),
+      encoder.encode("data: [DONE]\n\n"),
+    ];
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce({
+          ok: true,
+          json: vi.fn().mockResolvedValue({
+            choices: [
+              {
+                message: {
+                  content: "",
+                  reasoning_content: "需要调用 Tavily 搜索",
+                  tool_calls: [
+                    {
+                      id: "call-1",
+                      type: "function",
+                      function: {
+                        name: "tavily_search",
+                        arguments: '{"query":"Tavily API"}',
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: vi.fn().mockResolvedValue({
+            results: [{ title: "Tavily Docs", url: "https://docs.tavily.com/search", content: "官方文档内容" }],
+          }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: vi.fn().mockResolvedValue({
+            choices: [{ message: { content: "工具决策完成" } }],
+          }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          body: new ReadableStream({
+            pull(controller) {
+              const chunk = streamChunks.shift();
+              if (chunk) {
+                controller.enqueue(chunk);
+                return;
+              }
+
+              controller.close();
+            },
+          }),
+        }),
+    );
+    await import("../../../src/background/index");
+    const port = createPortMock("chat.stream");
+
+    mock.connectListeners[0](port);
+    port.emitMessage({
+      type: "chat.stream.start",
+      payload: {
+        type: "chat.send",
+        model: {
+          id: "model-1",
+          providerId: "provider-1",
+          name: "默认模型",
+          displayName: "默认模型",
+          channelName: "默认渠道",
+          endpointType: "openai_chat",
+          endpointUrl: "https://api.example.com/v1/chat/completions",
+          apiKey: "sk-test",
+          modelId: "gpt-test",
+          temperature: 0.7,
+          maxTokens: 1024,
+          systemPrompt: "你是网页助手",
+          isTitleModel: false,
+          enabled: true,
+          createdAt: 1,
+          updatedAt: 1,
+        },
+        messages: [],
+        stream: true,
+        enabledToolIds: ["web_search.tavily"],
+        toolChoice: "auto",
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(port.postMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "complete",
+          content: "最终回答",
+          webSearchContextAttachment: expect.objectContaining({
+            provider: "tavily",
+            query: "Tavily API",
+          }),
+        }),
+      );
+    });
+  });
+
 });
 
 describe("background 网络搜索入口异常兜底", () => {

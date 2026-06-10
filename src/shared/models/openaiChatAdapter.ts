@@ -18,7 +18,7 @@ export function createOpenAIChatPayload(
 ): ModelRequestPayload {
   const body: Record<string, unknown> = {
     model: model.modelId,
-    messages: messages.map(createOpenAIMessage),
+    messages: messages.map((message) => createOpenAIMessage(model, message)),
     temperature: model.temperature,
     max_tokens: model.maxTokens,
     stream,
@@ -67,7 +67,7 @@ export function createOpenAIChatPayload(
   };
 }
 
-function createOpenAIMessage(message: ModelRequestMessage): Record<string, unknown> {
+function createOpenAIMessage(model: ModelConfig, message: ModelRequestMessage): Record<string, unknown> {
   if (message.role === "tool") {
     return {
       role: "tool",
@@ -82,11 +82,36 @@ function createOpenAIMessage(message: ModelRequestMessage): Record<string, unkno
     content: createOpenAIMessageContent(message.content, "attachments" in message ? message.attachments : undefined),
   };
 
+  const reasoningContent = getOpenAIReasoningContent(model, message);
+  if (reasoningContent) {
+    base.reasoning_content = reasoningContent;
+  }
+
   if (message.role === "assistant" && "toolCalls" in message && message.toolCalls.length > 0) {
     base.tool_calls = message.toolCalls.map(createOpenAIToolCall);
   }
 
   return base;
+}
+
+function getOpenAIReasoningContent(model: ModelConfig, message: ModelRequestMessage): string | undefined {
+  if (message.role !== "assistant" || !shouldPassDeepSeekReasoningContent(model)) {
+    return undefined;
+  }
+
+  const reasoningContent = "reasoningContent" in message && typeof message.reasoningContent === "string" ? message.reasoningContent : "";
+  return reasoningContent.trim() ? reasoningContent : undefined;
+}
+
+export function shouldPassDeepSeekReasoningContent(model: ModelConfig): boolean {
+  const text = [model.modelId, model.name, model.displayName, model.channelName, model.endpointUrl].join(" ").toLowerCase();
+  if (!text.includes("deepseek")) {
+    return false;
+  }
+
+  return [/\breasoner\b/, /\breasoning\b/, /\bthinking\b/, /\bdeepseek[-_\s]?r1\b/, /\bdeepseek[-_\s]?v4\b/].some((pattern) =>
+    pattern.test(text),
+  );
 }
 
 function createOpenAIToolCall(toolCall: ModelToolCall): Record<string, unknown> {

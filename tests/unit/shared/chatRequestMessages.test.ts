@@ -218,6 +218,45 @@ describe("聊天请求消息构造", () => {
     expect(result[0].contextPrompt).toBe("");
   });
 
+  it("历史消息中的 reasoningContent 参与上下文预算计算", () => {
+    const model = createModelConfig(createProvider(), { ...createModel(), maxTokens: 18 });
+    const assistantMessage = {
+      ...createMessage("message-1", "assistant", "简短回复", 1),
+      reasoningContent: "原始思考".repeat(20),
+    };
+    const userMessage = createMessage("message-2", "user", "继续", 2);
+
+    const result = buildChatRequestMessages({
+      model,
+      pageContext: "需要被裁剪的页面上下文".repeat(10),
+      existingMessages: [assistantMessage],
+      userMessage,
+      systemPrompt: "你是网页助手",
+    });
+
+    expect(result[0].contextPrompt).toBe("");
+  });
+
+  it("thinking 与 reasoningContent 相同时预算不重复计算", () => {
+    const model = createModelConfig(createProvider(), { ...createModel(), maxTokens: 30 });
+    const assistantMessage = {
+      ...createMessage("message-1", "assistant", "简短回复", 1),
+      thinking: "同一段思考",
+      reasoningContent: "同一段思考",
+    };
+    const userMessage = createMessage("message-2", "user", "继续", 2);
+
+    const result = buildChatRequestMessages({
+      model,
+      pageContext: "中文内容".repeat(40),
+      existingMessages: [assistantMessage],
+      userMessage,
+      systemPrompt: "你是网页助手",
+    });
+
+    expect(result[0].contextPrompt.length).toBeGreaterThan(0);
+  });
+
   it("后续请求会携带历史 AI 消息中的 Network 附件详情且不修改原消息", () => {
     const model = createModelConfig(createProvider(), createModel());
     const assistantMessage = {

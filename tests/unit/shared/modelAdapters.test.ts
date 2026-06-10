@@ -191,6 +191,97 @@ describe("模型适配器", () => {
     });
   });
 
+  it("DeepSeek reasoning 模型会回传 assistant 历史中的 reasoning_content", () => {
+    const payload = createOpenAIChatPayload(
+      createModel({
+        modelId: "deepseek-v4-pro",
+        displayName: "DeepSeek V4 Pro",
+        endpointUrl: "https://api.deepseek.com/v1/chat/completions",
+      }),
+      [
+        {
+          ...messages[1],
+          role: "assistant",
+          content: "需要查询资料。",
+          reasoningContent: "这里是 DeepSeek 返回的思考原文",
+        },
+      ],
+      false,
+    );
+
+    expect(payload.body).toMatchObject({
+      messages: [
+        {
+          role: "assistant",
+          content: "需要查询资料。",
+          reasoning_content: "这里是 DeepSeek 返回的思考原文",
+        },
+      ],
+    });
+  });
+
+  it("普通 OpenAI-compatible 模型不会回传 reasoning_content，避免影响兼容渠道", () => {
+    const payload = createOpenAIChatPayload(
+      createModel(),
+      [
+        {
+          ...messages[1],
+          role: "assistant",
+          content: "普通回答",
+          reasoningContent: "内部思考原文",
+        },
+      ],
+      false,
+    );
+
+    const [assistantMessage] = (payload.body as { messages: Array<Record<string, unknown>> }).messages;
+    expect(assistantMessage.reasoning_content).toBeUndefined();
+  });
+
+  it("DeepSeek endpoint 上的非明确 reasoning 模型不会因 v4 短词误回传 reasoning_content", () => {
+    const payload = createOpenAIChatPayload(
+      createModel({
+        modelId: "gpt-v4-compatible",
+        displayName: "GPT V4 Compatible",
+        endpointUrl: "https://api.deepseek.com/v1/chat/completions",
+      }),
+      [
+        {
+          ...messages[1],
+          role: "assistant",
+          content: "普通回答",
+          reasoningContent: "内部思考原文",
+        },
+      ],
+      false,
+    );
+
+    const [assistantMessage] = (payload.body as { messages: Array<Record<string, unknown>> }).messages;
+    expect(assistantMessage.reasoning_content).toBeUndefined();
+  });
+
+  it("DeepSeek reasoning 模型不会把通用 thinking 当作 reasoning_content 回传", () => {
+    const payload = createOpenAIChatPayload(
+      createModel({
+        modelId: "deepseek-v4-pro",
+        displayName: "DeepSeek V4 Pro",
+        endpointUrl: "https://api.deepseek.com/v1/chat/completions",
+      }),
+      [
+        {
+          ...messages[1],
+          role: "assistant",
+          content: "普通回答",
+          thinking: "展示用思考",
+        },
+      ],
+      false,
+    );
+
+    const [assistantMessage] = (payload.body as { messages: Array<Record<string, unknown>> }).messages;
+    expect(assistantMessage.reasoning_content).toBeUndefined();
+  });
+
   it("OpenAI-compatible 请求支持 JSON Schema 结构化输出", () => {
     const payload = createOpenAIChatPayload(createModel(), messages, false, {
       type: "json_schema",

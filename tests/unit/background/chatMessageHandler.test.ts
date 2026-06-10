@@ -94,6 +94,75 @@ describe("聊天模型请求处理", () => {
     );
   });
 
+  it("普通 OpenAI-compatible 非流式响应只把 reasoning_content 作为思考展示，不保存协议原文", async () => {
+    const fetcher = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({
+        choices: [
+          {
+            message: {
+              reasoning_content: "先分析页面结构",
+              content: "这是回答",
+            },
+          },
+        ],
+      }),
+    });
+
+    const result = await handleChatSendMessage(
+      {
+        type: "chat.send",
+        model: createModel(),
+        messages: [createMessage("user", "总结页面")],
+        stream: false,
+      },
+      fetcher,
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      content: "这是回答",
+      thinking: "先分析页面结构",
+    });
+  });
+
+  it("DeepSeek reasoning 非流式响应会保留 reasoning_content 原文", async () => {
+    const fetcher = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({
+        choices: [
+          {
+            message: {
+              reasoning_content: "先分析页面结构",
+              content: "这是回答",
+            },
+          },
+        ],
+      }),
+    });
+
+    const result = await handleChatSendMessage(
+      {
+        type: "chat.send",
+        model: createModel({
+          modelId: "deepseek-v4-pro",
+          displayName: "DeepSeek V4 Pro",
+          endpointUrl: "https://api.deepseek.com/v1/chat/completions",
+        }),
+        messages: [createMessage("user", "总结页面")],
+        stream: false,
+      },
+      fetcher,
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      content: "这是回答",
+      thinking: "先分析页面结构",
+      reasoningContent: "先分析页面结构",
+    });
+  });
+
   it("模型接口失败时返回中文错误且不读取响应正文", async () => {
     const text = vi.fn().mockResolvedValue("bad key");
     const fetcher = vi.fn().mockResolvedValue({
@@ -239,6 +308,50 @@ describe("聊天模型请求处理", () => {
     expect(onThinkingChunk).toHaveBeenNthCalledWith(2, "页面");
     expect(onContentChunk).toHaveBeenNthCalledWith(1, "正式");
     expect(onContentChunk).toHaveBeenNthCalledWith(2, "回答");
+  });
+
+  it("DeepSeek reasoning 流式响应会保存 reasoning_content 协议原文", async () => {
+    const encoder = new TextEncoder();
+    const chunks: Uint8Array[] = [
+      encoder.encode('data: {"choices":[{"delta":{"reasoning_content":"先分析"}}]}\n\n'),
+      encoder.encode('data: {"choices":[{"delta":{"content":"回答"}}]}\n\n'),
+      encoder.encode("data: [DONE]\n\n"),
+    ];
+    const fetcher = vi.fn().mockResolvedValue({
+      ok: true,
+      body: new ReadableStream({
+        pull(controller) {
+          const chunk = chunks.shift();
+          if (chunk) {
+            controller.enqueue(chunk);
+            return;
+          }
+
+          controller.close();
+        },
+      }),
+    });
+
+    const result = await handleChatSendMessage(
+      {
+        type: "chat.send",
+        model: createModel({
+          modelId: "deepseek-v4-pro",
+          displayName: "DeepSeek V4 Pro",
+          endpointUrl: "https://api.deepseek.com/v1/chat/completions",
+        }),
+        messages: [createMessage("user", "你好")],
+        stream: true,
+      },
+      fetcher,
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      content: "回答",
+      thinking: "先分析",
+      reasoningContent: "先分析",
+    });
   });
 
   it("Anthropic 流式响应只拼接 text_delta 文本片段", async () => {

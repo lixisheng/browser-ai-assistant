@@ -1,4 +1,4 @@
-import type { ChatMessage } from "../types";
+import type { ChatMessage, ChatWebSearchContextAttachment } from "../types";
 
 export interface ModelRequestPayload {
   url: string;
@@ -28,6 +28,7 @@ export interface ModelToolResult {
   name: string;
   content: string;
   isError?: boolean;
+  webSearchContextAttachment?: ChatWebSearchContextAttachment;
 }
 
 export type ModelToolChoice = "auto" | "none" | { type: "tool"; name: string };
@@ -41,6 +42,7 @@ export interface ModelAssistantToolMessage {
   role: "assistant";
   content: string;
   toolCalls: ModelToolCall[];
+  reasoningContent?: string;
 }
 
 export interface ModelToolResultMessage extends ModelToolResult {
@@ -54,7 +56,9 @@ export type ModelToolExecutor = (call: ModelToolCall, tool: ModelToolRegistryEnt
 export interface ModelResponseData {
   content: string;
   thinking?: string;
+  reasoningContent?: string;
   toolCalls?: ModelToolCall[];
+  webSearchContextAttachment?: ChatWebSearchContextAttachment;
 }
 
 export interface OpenAIJsonSchemaResponseFormat {

@@ -309,6 +309,7 @@ describe("存储仓库", () => {
           role: "assistant",
           content: "旧数据",
           createdAt: 1,
+          reasoningContent: { text: "not-string" },
           webSearchContextAttachment: {
             provider: "tavily",
             query: "Tavily",
@@ -323,6 +324,7 @@ describe("存储仓库", () => {
     await saveChatSession(session);
 
     expect((await getChatSession("session-web-search-dirty"))?.messages[0].webSearchContextAttachment).toBeUndefined();
+    expect((await getChatSession("session-web-search-dirty"))?.messages[0].reasoningContent).toBeUndefined();
   });
 
   it("保存并读取聊天文件夹", async () => {

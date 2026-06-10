@@ -40,22 +40,8 @@ describe("appStore 网络搜索参数覆盖", () => {
     await clearDatabase();
   });
 
-  it("当前聊天 Tavily 参数覆盖优先于全局偏好并随搜索消息发送", async () => {
-    const sendMessage = vi.fn((message: { type: string; query?: string }, callback: (response: unknown) => void) => {
-      if (message.type === "webSearch.search") {
-        callback({
-          ok: true,
-          attachment: {
-            provider: "tavily",
-            query: message.query,
-            results: [{ title: "Tavily Docs", url: "https://docs.tavily.com/search", content: "官方文档内容" }],
-            createdAt: 1,
-            truncated: false,
-          },
-        });
-        return undefined;
-      }
-
+  it("当前聊天 Tavily 参数覆盖优先于全局偏好并随 chat.send 发送", async () => {
+    const sendMessage = vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
       if (message.type === "chat.send") {
         callback({ ok: true, content: "AI 搜索回复" });
         return undefined;
@@ -72,7 +58,11 @@ describe("appStore 网络搜索参数覆盖", () => {
     await useAppStore.getState().loadChatData();
     const chatPreferences: ChatPreferenceValues = useAppStore.getState().chatPreferences;
     useAppStore.setState((state) => ({
-      chatPreferences,
+      chatPreferences: {
+        ...chatPreferences,
+        toolCallingEnabled: true,
+        enabledToolIds: ["web_search.tavily"],
+      },
       webSearchSettings: {
         ...state.webSearchSettings,
         tavily: {
@@ -84,7 +74,6 @@ describe("appStore 网络搜索参数覆盖", () => {
       },
     }));
     useAppStore.getState().setStreamMode(false);
-    useAppStore.getState().setWebSearchEnabled(true);
     await useAppStore.getState().updateActiveSessionChatPreferences({
       webSearchIncludeAnswer: "advanced",
       webSearchIncludeRawContent: "markdown",
@@ -93,12 +82,13 @@ describe("appStore 网络搜索参数覆盖", () => {
 
     await useAppStore.getState().sendChatMessage("Tavily 参数覆盖");
 
-    const webSearchCall = sendMessage.mock.calls
+    const chatSendCall = sendMessage.mock.calls
       .map(([message]) => message as Record<string, unknown>)
-      .find((message) => message.type === "webSearch.search");
-    expect(webSearchCall).toMatchObject({
-      type: "webSearch.search",
-      query: "Tavily 参数覆盖",
+      .find((message) => message.type === "chat.send");
+    expect(chatSendCall).toMatchObject({
+      type: "chat.send",
+      enabledToolIds: ["web_search.tavily"],
+      toolChoice: "auto",
       tavily: {
         includeAnswer: "advanced",
         includeRawContent: "markdown",

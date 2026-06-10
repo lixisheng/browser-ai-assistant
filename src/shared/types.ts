@@ -196,6 +196,7 @@ export interface ChatMessage {
   webSearchContextAttachment?: ChatWebSearchContextAttachment;
   promptInvocations?: ChatPromptInvocation[];
   thinking?: string;
+  reasoningContent?: string;
   streaming?: boolean;
 }
 

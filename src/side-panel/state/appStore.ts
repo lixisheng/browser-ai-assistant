@@ -1,9 +1,9 @@
 import { create, type StoreApi } from "zustand";
-import { buildChatRequestMessages, buildPromptExpandedUserContent } from "../../shared/chat/buildChatRequestMessages";
+import { buildChatRequestMessages } from "../../shared/chat/buildChatRequestMessages";
 import { createModelConfig } from "../../shared/chat/modelConfig";
 import { createPageContextPrompt } from "../../shared/chat/pageContextPrompt";
 import type { RemoteModelInfo } from "../../shared/models/modelCatalog";
-import { getRegisteredModelTools, normalizeEnabledToolIds, resolveEnabledModelTools } from "../../shared/models/toolRegistry";
+import { TAVILY_SEARCH_TOOL_ID, getRegisteredModelTools, normalizeEnabledToolIds, resolveEnabledModelTools } from "../../shared/models/toolRegistry";
 import type { ModelToolChoice, OpenAIStructuredOutputFormat } from "../../shared/models/types";
 import {
   createNetworkContextPrompt,
@@ -65,7 +65,7 @@ import {
 } from "../../shared/webSearch/settings";
 import type { SyncSecrets, SyncSettings } from "../../shared/sync/types";
 import type { SyncRemoteBackupMeta } from "../../shared/sync/types";
-import { createTavilySearchContextPrompt, WEB_SEARCH_FAILURE_MESSAGE } from "../../shared/webSearch/tavily";
+import type { TavilySearchOptions } from "../../shared/webSearch/tavily";
 import type {
   ChatFolder,
   ChatImageAttachment,
@@ -86,8 +86,6 @@ import type {
   PromptTemplate,
   ProviderModel,
   SendShortcut,
-  TavilyIncludeAnswer,
-  TavilyIncludeRawContent,
   WebSearchPolicy,
   WebSearchSettings,
 } from "../../shared/types";
@@ -1778,6 +1776,7 @@ type AppChatSendMessage = {
   structuredOutput?: OpenAIStructuredOutputFormat;
   enabledToolIds?: string[];
   toolChoice?: ModelToolChoice;
+  tavily?: TavilySearchOptions;
 };
 
 type NetworkContextSnapshotResponse =
@@ -1792,26 +1791,11 @@ type NetworkRelevanceResponse =
   | { ok: true; content: string }
   | { ok: false; message?: string; status?: number; errorBody?: string };
 
-type WebSearchResponse =
-  | { ok: true; attachment: ChatWebSearchContextAttachment }
-  | { ok: false; message?: string };
-
 type PreparedNetworkContext =
   | {
       ok: true;
       userMessage: ChatMessage;
       attachment?: ChatNetworkContextAttachment;
-    }
-  | {
-      ok: false;
-      message: string;
-    };
-
-type PreparedWebSearchContext =
-  | {
-      ok: true;
-      userMessage: ChatMessage;
-      attachment?: ChatWebSearchContextAttachment;
     }
   | {
       ok: false;
@@ -2137,29 +2121,7 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
       input.set({ failure: { message: preparedNetworkContext.message }, networkContextStatus: undefined, webSearchStatus: undefined });
       return;
     }
-    input.set({ networkContextStatus: undefined });
-
-    const preparedWebSearchContext =
-      !input.state.networkContextEnabled && shouldRunWebSearch({
-        enabled: input.state.webSearchEnabled,
-        policy: effectiveChatPreferences.webSearchPolicy,
-        existingMessages: input.existingMessages,
-      })
-        ? await prepareWebSearchContextForRequest({
-            userMessage: preparedNetworkContext.userMessage,
-            tavily: {
-              includeAnswer: input.session.chatPreferenceOverrides?.webSearchIncludeAnswer ?? input.state.webSearchSettings.tavily.includeAnswer,
-              includeRawContent: input.session.chatPreferenceOverrides?.webSearchIncludeRawContent ?? input.state.webSearchSettings.tavily.includeRawContent,
-              maxResults: input.session.chatPreferenceOverrides?.webSearchMaxResults ?? input.state.webSearchSettings.tavily.maxResults,
-            },
-            set: input.set,
-          })
-        : ({ ok: true, userMessage: preparedNetworkContext.userMessage } satisfies PreparedWebSearchContext);
-    if (!preparedWebSearchContext.ok) {
-      input.set({ failure: { message: preparedWebSearchContext.message }, webSearchStatus: undefined });
-      return;
-    }
-    input.set({ webSearchStatus: undefined });
+    input.set({ networkContextStatus: undefined, webSearchStatus: undefined });
 
     const titleGenerationPromise = !input.privateMode && input.shouldGenerateTitle
       ? generateTitleForSession({
@@ -2175,9 +2137,10 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
 
     const enabledTools = effectiveChatPreferences.toolCallingEnabled
       ? resolveEnabledModelTools(getRegisteredModelTools(), effectiveChatPreferences.enabledToolIds)
+          .filter((tool) => !input.state.networkContextEnabled || tool.id !== TAVILY_SEARCH_TOOL_ID)
       : [];
     const enabledToolIds = enabledTools.map((tool) => tool.id);
-    const requestStreamMode = enabledTools.length > 0 ? false : input.state.streamMode;
+    const requestStreamMode = input.state.streamMode;
     const request: AppChatSendMessage = {
       type: "chat.send",
       model: modelConfig,
@@ -2185,11 +2148,16 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
         model: modelConfig,
         pageContext: input.pageContextPrompt,
         existingMessages: input.existingMessages,
-        userMessage: preparedWebSearchContext.userMessage,
+        userMessage: preparedNetworkContext.userMessage,
         systemPrompt: effectiveChatPreferences.systemPrompt,
         appendPageContextToSystemPrompt: input.state.appendPageContextToSystemPrompt,
       }),
       stream: requestStreamMode,
+      tavily: {
+        includeAnswer: input.session.chatPreferenceOverrides?.webSearchIncludeAnswer ?? input.state.webSearchSettings.tavily.includeAnswer,
+        includeRawContent: input.session.chatPreferenceOverrides?.webSearchIncludeRawContent ?? input.state.webSearchSettings.tavily.includeRawContent,
+        maxResults: input.session.chatPreferenceOverrides?.webSearchMaxResults ?? input.state.webSearchSettings.tavily.maxResults,
+      },
       ...(enabledTools.length > 0
         ? {
             enabledToolIds,
@@ -2210,7 +2178,6 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
         matchedRuleId: input.state.pageContext.matchedRuleId,
         privateMode: input.privateMode,
         networkContextAttachment: preparedNetworkContext.attachment,
-        webSearchContextAttachment: preparedWebSearchContext.attachment,
         request,
       });
       if (streamResult.completed) {
@@ -2221,7 +2188,9 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
     }
 
     const response = await sendRuntimeMessage<
-      { ok: true; content: string; thinking?: string } | { ok: false; message: string } | undefined
+      | { ok: true; content: string; thinking?: string; reasoningContent?: string; webSearchContextAttachment?: ChatWebSearchContextAttachment }
+      | { ok: false; message: string }
+      | undefined
     >(request);
 
     if (!response) {
@@ -2240,6 +2209,7 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
       role: "assistant",
       content: response.content,
       thinking: response.thinking,
+      reasoningContent: response.reasoningContent,
       createdAt: assistantCreatedAt,
       modelId: input.model.id,
       endpointType: input.provider.endpointType,
@@ -2249,7 +2219,7 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
       contextMode: input.state.contextMode,
       matchedRuleId: input.state.pageContext.matchedRuleId,
       networkContextAttachment: preparedNetworkContext.attachment,
-      webSearchContextAttachment: preparedWebSearchContext.attachment,
+      webSearchContextAttachment: response.webSearchContextAttachment,
     };
     if (input.privateMode) {
       input.set((current) => {
@@ -2465,54 +2435,6 @@ function collectHistoricalNetworkRequestUrls(messages: ChatMessage[]): Set<strin
   }
 
   return urls;
-}
-
-function shouldRunWebSearch(input: { enabled: boolean; policy: WebSearchPolicy; existingMessages: ChatMessage[] }): boolean {
-  if (!input.enabled) {
-    return false;
-  }
-
-  if (input.policy === "every_message") {
-    return true;
-  }
-
-  return input.existingMessages.length === 0;
-}
-
-async function prepareWebSearchContextForRequest(input: {
-  userMessage: ChatMessage;
-  tavily: {
-    includeAnswer: TavilyIncludeAnswer;
-    includeRawContent: TavilyIncludeRawContent;
-    maxResults: number;
-  };
-  set: StoreSetter;
-}): Promise<PreparedWebSearchContext> {
-  input.set({ webSearchStatus: "正在进行网络搜索" });
-  const searchQuery = input.userMessage.promptInvocations?.length ? buildPromptExpandedUserContent(input.userMessage) : input.userMessage.content;
-  const response = await sendRuntimeMessage<WebSearchResponse | undefined>({
-    type: "webSearch.search",
-    query: searchQuery,
-    tavily: input.tavily,
-  });
-
-  if (!response?.ok) {
-    return { ok: false, message: response?.message ?? WEB_SEARCH_FAILURE_MESSAGE };
-  }
-
-  return {
-    ok: true,
-    attachment: response.attachment,
-    userMessage: {
-      ...input.userMessage,
-      content: [
-        input.userMessage.content,
-        "",
-        "请结合以下网络搜索结果回答用户需求：",
-        createTavilySearchContextPrompt(response.attachment),
-      ].join("\n").trim(),
-    },
-  };
 }
 
 async function selectRelevantNetworkRequestBatches(input: {
@@ -2845,7 +2767,7 @@ function updateGeneratedTitleInState(
 type ChatStreamPortMessage =
   | { type: "chunk"; content: string }
   | { type: "thinking"; content: string }
-  | { type: "complete"; content: string; thinking?: string }
+  | { type: "complete"; content: string; thinking?: string; reasoningContent?: string; webSearchContextAttachment?: ChatWebSearchContextAttachment }
   | { type: "error"; message?: string };
 
 interface StreamingChatResult {
@@ -2868,11 +2790,9 @@ interface StreamingChatInput {
   request: AppChatSendMessage;
 }
 
-async function sendStreamingChatMessage(input: StreamingChatInput): Promise<StreamingChatResult> {
-  if (!globalThis.chrome?.runtime?.connect) {
-    return { completed: false };
-  }
+type AssistantPlaceholderInput = Omit<StreamingChatInput, "request">;
 
+async function createAssistantPlaceholder(input: AssistantPlaceholderInput): Promise<ChatMessage | undefined> {
   const assistantCreatedAt = Date.now();
   const assistantMessage: ChatMessage = {
     id: `message-${assistantCreatedAt}-assistant`,
@@ -2906,30 +2826,44 @@ async function sendStreamingChatMessage(input: StreamingChatInput): Promise<Stre
         },
       };
     });
-  } else {
-    const initializedSession = await updateChatSession(input.sessionId, (latestSession) => ({
-      ...latestSession,
-      updatedAt: assistantMessage.createdAt,
-      messages: [...latestSession.messages, assistantMessage],
-    }));
-    if (!initializedSession) {
-      return { completed: true };
+    return assistantMessage;
+  }
+
+  const initializedSession = await updateChatSession(input.sessionId, (latestSession) => ({
+    ...latestSession,
+    updatedAt: assistantMessage.createdAt,
+    messages: [...latestSession.messages, assistantMessage],
+  }));
+  if (!initializedSession) {
+    return undefined;
+  }
+
+  input.set((current) => {
+    const currentSession = current.chatSessions.find((session) => session.id === initializedSession.id);
+    if (!currentSession) {
+      return {};
     }
 
-    input.set((current) => {
-      const currentSession = current.chatSessions.find((session) => session.id === initializedSession.id);
-      if (!currentSession) {
-        return {};
-      }
+    return {
+      chatSessions: upsertSession(current.chatSessions, {
+        ...currentSession,
+        updatedAt: assistantMessage.createdAt,
+        messages: [...currentSession.messages, assistantMessage],
+      }),
+    };
+  });
 
-      return {
-        chatSessions: upsertSession(current.chatSessions, {
-          ...currentSession,
-          updatedAt: assistantMessage.createdAt,
-          messages: [...currentSession.messages, assistantMessage],
-        }),
-      };
-    });
+  return assistantMessage;
+}
+
+async function sendStreamingChatMessage(input: StreamingChatInput): Promise<StreamingChatResult> {
+  if (!globalThis.chrome?.runtime?.connect) {
+    return { completed: false };
+  }
+
+  const assistantMessage = await createAssistantPlaceholder(input);
+  if (!assistantMessage) {
+    return { completed: true };
   }
 
   return new Promise<StreamingChatResult>((resolve) => {
@@ -2969,9 +2903,12 @@ async function sendStreamingChatMessage(input: StreamingChatInput): Promise<Stre
       }
 
       if (message.type === "complete") {
-        void enqueueWrite(() => finalizeAssistantMessage(input.sessionId, assistantMessage.id, message.content, message.thinking, input.set, input.privateMode)).then(
-          () => finish({ completed: true, assistantContent: message.content }),
-        );
+        void enqueueWrite(() =>
+          finalizeAssistantMessage(input.sessionId, assistantMessage.id, message.content, message.thinking, input.set, input.privateMode, {
+            reasoningContent: message.reasoningContent,
+            webSearchContextAttachment: message.webSearchContextAttachment,
+          }),
+        ).then(() => finish({ completed: true, assistantContent: message.content }));
         return;
       }
 
@@ -3082,7 +3019,12 @@ async function appendAssistantThinkingChunk(sessionId: string, messageId: string
   await updateChatSession(sessionId, (latestSession) => ({
     ...latestSession,
     messages: latestSession.messages.map((message) =>
-      message.id === messageId ? { ...message, thinking: `${message.thinking ?? ""}${content}` } : message,
+      message.id === messageId
+        ? {
+            ...message,
+            thinking: `${message.thinking ?? ""}${content}`,
+          }
+        : message,
     ),
   }));
 
@@ -3120,6 +3062,11 @@ async function appendAssistantChunk(sessionId: string, messageId: string, conten
   );
 }
 
+interface FinalizeAssistantOptions {
+  reasoningContent?: string;
+  webSearchContextAttachment?: ChatWebSearchContextAttachment;
+}
+
 async function finalizeAssistantMessage(
   sessionId: string,
   messageId: string,
@@ -3127,6 +3074,7 @@ async function finalizeAssistantMessage(
   thinking: string | undefined,
   set: StoreSetter,
   privateMode = false,
+  options: FinalizeAssistantOptions = {},
 ): Promise<void> {
   if (privateMode) {
     set((current) =>
@@ -3134,6 +3082,8 @@ async function finalizeAssistantMessage(
         ...message,
         content,
         thinking,
+        reasoningContent: options.reasoningContent ?? message.reasoningContent,
+        webSearchContextAttachment: options.webSearchContextAttachment ?? message.webSearchContextAttachment,
         streaming: false,
       })),
     );
@@ -3143,7 +3093,18 @@ async function finalizeAssistantMessage(
   await updateChatSession(sessionId, (latestSession) => ({
     ...latestSession,
     updatedAt: Date.now(),
-    messages: latestSession.messages.map((message) => (message.id === messageId ? { ...message, content, thinking, streaming: false } : message)),
+    messages: latestSession.messages.map((message) =>
+      message.id === messageId
+        ? {
+            ...message,
+            content,
+            thinking,
+            reasoningContent: options.reasoningContent ?? message.reasoningContent,
+            webSearchContextAttachment: options.webSearchContextAttachment ?? message.webSearchContextAttachment,
+            streaming: false,
+          }
+        : message,
+    ),
   }));
 
   set((current) =>
@@ -3151,6 +3112,8 @@ async function finalizeAssistantMessage(
       ...message,
       content,
       thinking,
+      reasoningContent: options.reasoningContent ?? message.reasoningContent,
+      webSearchContextAttachment: options.webSearchContextAttachment ?? message.webSearchContextAttachment,
       streaming: false,
     })),
   );
