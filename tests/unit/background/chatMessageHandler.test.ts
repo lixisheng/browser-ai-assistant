@@ -7,11 +7,24 @@ const registeredModelToolsMock = vi.hoisted(() => ({
   tools: [] as ModelToolRegistryEntry[],
 }));
 
+const browserControlManagerMock = vi.hoisted(() => ({
+  canExposeTakeSnapshotTool: vi.fn(),
+  takeSnapshot: vi.fn(),
+}));
+
 vi.mock("../../../src/shared/models/toolRegistry", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../src/shared/models/toolRegistry")>();
   return {
     ...actual,
     getRegisteredModelTools: () => registeredModelToolsMock.tools,
+  };
+});
+
+vi.mock("../../../src/background/browserControlMessageHandler", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../src/background/browserControlMessageHandler")>();
+  return {
+    ...actual,
+    browserControlManager: browserControlManagerMock,
   };
 });
 
@@ -55,6 +68,9 @@ function createMessage(role: ChatMessage["role"], content: string): ChatMessage 
 describe("聊天模型请求处理", () => {
   beforeEach(() => {
     registeredModelToolsMock.tools = [];
+    browserControlManagerMock.canExposeTakeSnapshotTool.mockReset();
+    browserControlManagerMock.canExposeTakeSnapshotTool.mockReturnValue(true);
+    browserControlManagerMock.takeSnapshot.mockReset();
   });
 
   it("OpenAI-compatible 成功时返回解析后的正文和思考过程", async () => {
@@ -648,7 +664,7 @@ describe("聊天模型请求处理", () => {
       }),
     );
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       ok: true,
       content: "已读取页面结构",
       thinking: undefined,
@@ -661,6 +677,186 @@ describe("聊天模型请求处理", () => {
         expect.objectContaining({ role: "tool", content: "页面结构快照" }),
       ]),
     );
+  });
+
+  it("默认 background 执行器会把浏览器快照工具转发给浏览器控制管理器", async () => {
+    registeredModelToolsMock.tools = [
+      {
+        id: "browser.take_snapshot",
+        name: "take_snapshot",
+        description: "读取当前页面结构快照",
+        parameters: { type: "object", properties: {}, required: [], additionalProperties: false },
+      },
+    ];
+    browserControlManagerMock.takeSnapshot.mockResolvedValue({
+      toolCallId: "call-1",
+      name: "take_snapshot",
+      content: "页面结构快照",
+    });
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          choices: [
+            {
+              message: {
+                content: "",
+                tool_calls: [
+                  {
+                    id: "call-1",
+                    type: "function",
+                    function: {
+                      name: "take_snapshot",
+                      arguments: "{}",
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          choices: [{ message: { content: "已读取页面结构" } }],
+        }),
+      });
+
+    const result = await handleChatSendMessage(
+      {
+        type: "chat.send",
+        model: createModel(),
+        messages: [createMessage("user", "读取页面结构")],
+        stream: false,
+        enabledToolIds: ["browser.take_snapshot"],
+        toolChoice: "auto",
+      },
+      fetcher,
+    );
+
+    expect(result).toMatchObject({ ok: true, content: "已读取页面结构" });
+    expect(browserControlManagerMock.takeSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "call-1", name: "take_snapshot", arguments: {} }),
+    );
+    const secondBody = JSON.parse(String(fetcher.mock.calls[1][1]?.body)) as { messages: Array<{ role: string; content?: string }> };
+    expect(secondBody.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ role: "tool", content: "页面结构快照" }),
+      ]),
+    );
+  });
+
+  it("暴露浏览器快照工具时追加浏览器控制系统提示", async () => {
+    registeredModelToolsMock.tools = [
+      {
+        id: "browser.take_snapshot",
+        name: "take_snapshot",
+        description: "读取当前页面结构快照",
+        parameters: { type: "object", properties: {}, required: [], additionalProperties: false },
+      },
+    ];
+    const fetcher = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({
+        choices: [{ message: { content: "普通回答" } }],
+      }),
+    });
+
+    await handleChatSendMessage(
+      {
+        type: "chat.send",
+        model: createModel(),
+        messages: [createMessage("system", "你是网页助手"), createMessage("user", "读取页面结构")],
+        stream: false,
+        enabledToolIds: ["browser.take_snapshot"],
+        toolChoice: "auto",
+      },
+      fetcher,
+    );
+
+    const body = JSON.parse(String(fetcher.mock.calls[0][1]?.body)) as { messages: Array<{ role: string; content?: string }> };
+    expect(body.messages.some((message) => message.role === "system" && message.content?.includes("不要猜测 UID"))).toBe(true);
+    expect(body.messages.some((message) => message.role === "system" && message.content?.includes("take_snapshot"))).toBe(true);
+  });
+
+  it("background 未连接浏览器控制时即使 runtime 传入快照工具也不向模型暴露", async () => {
+    registeredModelToolsMock.tools = [
+      {
+        id: "browser.take_snapshot",
+        name: "take_snapshot",
+        description: "读取当前页面结构快照",
+        parameters: { type: "object", properties: {}, required: [], additionalProperties: false },
+      },
+    ];
+    browserControlManagerMock.canExposeTakeSnapshotTool.mockReturnValue(false);
+    const fetcher = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({
+        choices: [{ message: { content: "普通回答" } }],
+      }),
+    });
+
+    await handleChatSendMessage(
+      {
+        type: "chat.send",
+        model: createModel(),
+        messages: [createMessage("system", "你是网页助手"), createMessage("user", "读取页面结构")],
+        stream: false,
+        enabledToolIds: ["browser.take_snapshot"],
+        toolChoice: "auto",
+      },
+      fetcher,
+    );
+
+    const body = JSON.parse(String(fetcher.mock.calls[0][1]?.body)) as { tools?: unknown[]; tool_choice?: unknown; messages: Array<{ role: string; content?: string }> };
+    expect(body.tools).toBeUndefined();
+    expect(body.tool_choice).toBeUndefined();
+    expect(body.messages.some((message) => message.content?.includes("不要猜测 UID"))).toBe(false);
+    expect(browserControlManagerMock.takeSnapshot).not.toHaveBeenCalled();
+  });
+
+  it("结构化输出请求不会因为启用浏览器快照工具而追加工具提示或进入工具循环", async () => {
+    registeredModelToolsMock.tools = [
+      {
+        id: "browser.take_snapshot",
+        name: "take_snapshot",
+        description: "读取当前页面结构快照",
+        parameters: { type: "object", properties: {}, required: [], additionalProperties: false },
+      },
+    ];
+    const fetcher = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({
+        choices: [{ message: { content: "{\"requestIds\":[]}" } }],
+      }),
+    });
+
+    await handleChatSendMessage(
+      {
+        type: "chat.send",
+        model: createModel(),
+        messages: [createMessage("system", "结构化筛选"), createMessage("user", "筛选请求")],
+        stream: false,
+        enabledToolIds: ["browser.take_snapshot"],
+        toolChoice: "auto",
+        structuredOutput: {
+          type: "json_schema",
+          json_schema: {
+            name: "network_relevance",
+            schema: { type: "object", properties: {} },
+          },
+        },
+      },
+      fetcher,
+    );
+
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(String(fetcher.mock.calls[0][1]?.body)) as { tools?: unknown[]; messages: Array<{ role: string; content?: string }> };
+    expect(body.tools).toBeUndefined();
+    expect(body.messages.some((message) => message.content?.includes("浏览器控制工具使用规则"))).toBe(false);
+    expect(browserControlManagerMock.takeSnapshot).not.toHaveBeenCalled();
   });
 
   it("伪造的工具定义不会绕过 background 注册表 allow-list", async () => {
@@ -756,12 +952,38 @@ describe("聊天模型请求处理", () => {
       }),
     );
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       ok: true,
       content: "页面结构已读取。",
       thinking: undefined,
     });
     expect(fetcher).toHaveBeenCalledTimes(2);
+    const firstBody = JSON.parse(String(fetcher.mock.calls[0][1]?.body)) as {
+      system?: string;
+      tools?: Array<{ name: string; input_schema: unknown }>;
+    };
+    const secondBody = JSON.parse(String(fetcher.mock.calls[1][1]?.body)) as {
+      messages: Array<{ role: string; content: unknown }>;
+    };
+    expect(firstBody.system).toContain("take_snapshot");
+    expect(firstBody.tools).toEqual([
+      expect.objectContaining({
+        name: "take_snapshot",
+        input_schema: expect.objectContaining({ additionalProperties: false }),
+      }),
+    ]);
+    expect(secondBody.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "assistant",
+          content: expect.arrayContaining([expect.objectContaining({ type: "tool_use", id: "toolu-1", name: "take_snapshot" })]),
+        }),
+        expect.objectContaining({
+          role: "user",
+          content: expect.arrayContaining([expect.objectContaining({ type: "tool_result", tool_use_id: "toolu-1", content: "页面结构快照" })]),
+        }),
+      ]),
+    );
   });
 
   it("模型接口失败时返回内部降级诊断但用户提示仍为中文摘要", async () => {

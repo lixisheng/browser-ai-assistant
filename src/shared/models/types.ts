@@ -39,6 +39,11 @@ export interface ModelToolOptions {
   toolChoice?: ModelToolChoice;
 }
 
+export interface ModelSystemMessage {
+  role: "system";
+  content: string;
+}
+
 export interface ModelAssistantToolMessage {
   role: "assistant";
   content: string;
@@ -50,7 +55,7 @@ export interface ModelToolResultMessage extends ModelToolResult {
   role: "tool";
 }
 
-export type ModelRequestMessage = ChatMessage | ModelAssistantToolMessage | ModelToolResultMessage;
+export type ModelRequestMessage = ChatMessage | ModelSystemMessage | ModelAssistantToolMessage | ModelToolResultMessage;
 
 export type ModelToolExecutor = (call: ModelToolCall, tool: ModelToolRegistryEntry) => Promise<ModelToolResult>;
 

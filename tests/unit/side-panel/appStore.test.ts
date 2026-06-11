@@ -197,6 +197,40 @@ describe("appStore 网络搜索", () => {
       },
     });
   });
+
+  it("浏览器快照工具只在全局浏览器控制运行态开启时随聊天请求暴露", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    const sendMessage = vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+      callback({ ok: true, content: "AI 回复" });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", { runtime: { sendMessage } });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    useAppStore.getState().setStreamMode(false);
+    useAppStore.setState((state) => ({
+      chatPreferences: {
+        ...state.chatPreferences,
+        toolCallingEnabled: true,
+        enabledToolIds: ["web_search.tavily", "browser.take_snapshot"],
+      },
+      browserControlEnabled: false,
+    }));
+
+    await useAppStore.getState().sendChatMessage("未开启浏览器控制");
+    useAppStore.setState({ browserControlEnabled: true });
+    await useAppStore.getState().sendChatMessage("已开启浏览器控制");
+
+    const chatRequests = sendMessage.mock.calls
+      .map(([message]) => message as { type: string; enabledToolIds?: string[] })
+      .filter((message) => message.type === "chat.send");
+    expect(chatRequests[0].enabledToolIds).toEqual(["web_search.tavily"]);
+    expect(chatRequests[1].enabledToolIds).toEqual(["web_search.tavily", "browser.take_snapshot"]);
+  });
 });
 
 function createProvider(): ModelProvider {

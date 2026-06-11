@@ -4,6 +4,8 @@ export const TAVILY_SEARCH_TOOL_ID = "web_search.tavily";
 export const TAVILY_SEARCH_TOOL_NAME = "tavily_search";
 export const CURRENT_TIME_TOOL_ID = "system.current_time";
 export const CURRENT_TIME_TOOL_NAME = "get_current_time";
+export const BROWSER_TAKE_SNAPSHOT_TOOL_ID = "browser.take_snapshot";
+export const BROWSER_TAKE_SNAPSHOT_TOOL_NAME = "take_snapshot";
 
 export const AVAILABLE_MODEL_TOOLS: ModelToolRegistryEntry[] = [
   {
@@ -32,6 +34,18 @@ export const AVAILABLE_MODEL_TOOLS: ModelToolRegistryEntry[] = [
         },
       },
       required: ["query"],
+      additionalProperties: false,
+    },
+  },
+  {
+    id: BROWSER_TAKE_SNAPSHOT_TOOL_ID,
+    name: BROWSER_TAKE_SNAPSHOT_TOOL_NAME,
+    displayName: "浏览器页面快照",
+    description: "读取当前受控网页的可访问结构快照。仅在已显式开启浏览器控制且需要理解当前页面结构时调用。",
+    parameters: {
+      type: "object",
+      properties: {},
+      required: [],
       additionalProperties: false,
     },
   },

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { ModelToolCall } from "../../../src/shared/models/types";
 import {
   BrowserControlManager,
   BrowserDebuggerConnection,
@@ -7,7 +8,25 @@ import {
 } from "../../../src/background/browserControlMessageHandler";
 import { BROWSER_CONTROL_SET_ENABLED_MESSAGE_TYPE, isBrowserControlRestrictedUrl } from "../../../src/shared/browserControl";
 
-function createChromeMock(options: { url?: string; attachError?: string; detachError?: string; sendCommandError?: string; delayAttach?: boolean } = {}) {
+function createToolCall(argumentsValue: Record<string, unknown> = {}): ModelToolCall {
+  return {
+    id: "call-1",
+    name: "take_snapshot",
+    arguments: argumentsValue,
+  };
+}
+
+function createChromeMock(options: {
+  url?: string;
+  title?: string;
+  attachError?: string;
+  detachError?: string;
+  sendCommandError?: string;
+  sendCommandErrorMethod?: string;
+  tabGetError?: boolean;
+  delayAttach?: boolean;
+  axNodes?: unknown[];
+} = {}) {
   const detachListeners: Array<(source: chrome.debugger.Debuggee, reason: `${chrome.debugger.DetachReason}`) => void> = [];
   const tabRemovedListeners: Array<(tabId: number) => void> = [];
   const attachCallbacks: Array<() => void> = [];
@@ -36,9 +55,11 @@ function createChromeMock(options: { url?: string; attachError?: string; detachE
         callback();
         chromeMock.runtime.lastError = undefined;
       }),
-      sendCommand: vi.fn((_debuggee: chrome.debugger.Debuggee, _method: string, _params: unknown, callback: (result?: unknown) => void) => {
-        chromeMock.runtime.lastError = options.sendCommandError ? { message: options.sendCommandError } : undefined;
-        callback({});
+      sendCommand: vi.fn((_debuggee: chrome.debugger.Debuggee, method: string, _params: unknown, callback: (result?: unknown) => void) => {
+        chromeMock.runtime.lastError = options.sendCommandError && (!options.sendCommandErrorMethod || options.sendCommandErrorMethod === method)
+          ? { message: options.sendCommandError }
+          : undefined;
+        callback(method === "Accessibility.getFullAXTree" ? { nodes: options.axNodes ?? [] } : {});
         chromeMock.runtime.lastError = undefined;
       }),
       onDetach: {
@@ -46,8 +67,13 @@ function createChromeMock(options: { url?: string; attachError?: string; detachE
       },
     },
     tabs: {
-      get: vi.fn(async (tabId: number) => ({ id: tabId, url: options.url ?? "https://example.com/" })),
-      query: vi.fn(async () => [{ id: 7, url: options.url ?? "https://example.com/" }]),
+      get: vi.fn(async (tabId: number) => {
+        if (options.tabGetError) {
+          throw new Error("tab closed");
+        }
+        return { id: tabId, title: options.title ?? "示例页面", url: options.url ?? "https://example.com/" };
+      }),
+      query: vi.fn(async () => [{ id: 7, title: options.title ?? "示例页面", url: options.url ?? "https://example.com/" }]),
       onRemoved: {
         addListener: vi.fn((listener: (tabId: number) => void) => tabRemovedListeners.push(listener)),
       },
@@ -97,6 +123,8 @@ describe("浏览器控制地基", () => {
     expect(chromeMock.debugger.attach).toHaveBeenCalledWith({ tabId: 9 }, "1.3", expect.any(Function));
     expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith({ tabId: 9 }, "Runtime.enable", {}, expect.any(Function));
     expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith({ tabId: 9 }, "Page.enable", {}, expect.any(Function));
+    expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith({ tabId: 9 }, "DOM.enable", {}, expect.any(Function));
+    expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith({ tabId: 9 }, "Accessibility.enable", {}, expect.any(Function));
   });
 
   it("受限页面不会 attach debugger", async () => {
@@ -239,5 +267,204 @@ describe("浏览器控制地基", () => {
 
     expect(manager.setEnabled).toHaveBeenCalledWith(true, 8);
     expect(response).toEqual({ ok: true, attached: true, tabId: 8, message: "已开启" });
+  });
+
+  it("已连接时读取 Accessibility Tree 并格式化为带 UID 的页面快照", async () => {
+    const chromeMock = createChromeMock({
+      title: "登录页",
+      url: "https://example.com/login",
+      axNodes: [
+        {
+          nodeId: "1",
+          role: { value: "RootWebArea" },
+          name: { value: "登录页" },
+          childIds: ["2"],
+        },
+        {
+          nodeId: "2",
+          role: { value: "button" },
+          name: { value: "提交" },
+          backendDOMNodeId: 101,
+        },
+      ],
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const result = await manager.takeSnapshot(createToolCall());
+
+    expect(result).toMatchObject({
+      toolCallId: "call-1",
+      name: "take_snapshot",
+    });
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toContain("页面标题：登录页");
+    expect(result.content).toContain("页面 URL：https://example.com/login");
+    expect(result.content).toContain("uid=");
+    expect(result.content).toContain("button");
+    expect(result.content).toContain("提交");
+    expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith({ tabId: 9 }, "Accessibility.getFullAXTree", {}, expect.any(Function));
+    expect(chromeMock.debugger.sendCommand.mock.calls.filter((call) => call[1] === "DOM.enable")).toHaveLength(1);
+    expect(chromeMock.debugger.sendCommand.mock.calls.filter((call) => call[1] === "Accessibility.enable")).toHaveLength(1);
+  });
+
+  it("格式化快照时限制 AX Tree 深度，避免极端页面递归过深", async () => {
+    const axNodes = Array.from({ length: 60 }, (_, index) => ({
+      nodeId: String(index + 1),
+      role: { value: index === 0 ? "RootWebArea" : "group" },
+      name: { value: index === 59 ? "过深节点" : `节点 ${index + 1}` },
+      backendDOMNodeId: index + 100,
+      childIds: index < 59 ? [String(index + 2)] : [],
+    }));
+    const chromeMock = createChromeMock({ axNodes });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const result = await manager.takeSnapshot(createToolCall());
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toContain("节点 1");
+    expect(result.content).toContain("节点层级过深，已停止继续展开。");
+    expect(result.content).not.toContain("过深节点");
+  });
+
+  it("页面稳定时相同 backendDOMNodeId 尽量复用 UID", async () => {
+    const chromeMock = createChromeMock({
+      axNodes: [
+        { nodeId: "1", role: { value: "RootWebArea" }, name: { value: "示例页面" }, childIds: ["2"] },
+        { nodeId: "2", role: { value: "button" }, name: { value: "提交" }, backendDOMNodeId: 101 },
+      ],
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const first = await manager.takeSnapshot(createToolCall());
+    const second = await manager.takeSnapshot(createToolCall());
+    const firstUid = first.content.match(/uid=([^\s]+)/)?.[1];
+    const secondUid = second.content.match(/uid=([^\s]+)/)?.[1];
+
+    expect(firstUid).toBeTruthy();
+    expect(secondUid).toBe(firstUid);
+  });
+
+  it("页面 URL 变化后清理旧 UID 映射避免跨页面复用", async () => {
+    const chromeMock = createChromeMock({
+      url: "https://example.com/page-a",
+      axNodes: [
+        { nodeId: "1", role: { value: "RootWebArea" }, name: { value: "页面 A" }, childIds: ["2"] },
+        { nodeId: "2", role: { value: "button" }, name: { value: "提交 A" }, backendDOMNodeId: 101 },
+      ],
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const first = await manager.takeSnapshot(createToolCall());
+    chromeMock.tabs.get.mockResolvedValue({ id: 9, title: "页面 B", url: "https://example.com/page-b" });
+    chromeMock.debugger.sendCommand.mockImplementation((_debuggee: chrome.debugger.Debuggee, method: string, _params: unknown, callback: (result?: unknown) => void) => {
+      callback(method === "Accessibility.getFullAXTree"
+        ? {
+            nodes: [
+              { nodeId: "1", role: { value: "RootWebArea" }, name: { value: "页面 B" }, childIds: ["2"] },
+              { nodeId: "2", role: { value: "button" }, name: { value: "提交 B" }, backendDOMNodeId: 101 },
+            ],
+          }
+        : {});
+    });
+    const second = await manager.takeSnapshot(createToolCall());
+    const firstUid = first.content.match(/uid=([^\s]+)/)?.[1];
+    const secondUid = second.content.match(/uid=([^\s]+)/)?.[1];
+
+    expect(firstUid).toBeTruthy();
+    expect(secondUid).toBeTruthy();
+    expect(secondUid).not.toBe(firstUid);
+    expect(second.content).toContain("页面 URL：https://example.com/page-b");
+  });
+
+  it("重复 childIds 只展开一次，避免异常 AX DAG 放大快照", async () => {
+    const chromeMock = createChromeMock({
+      axNodes: [
+        { nodeId: "1", role: { value: "RootWebArea" }, name: { value: "示例页面" }, childIds: ["2", "2", "2"] },
+        { nodeId: "2", role: { value: "button" }, name: { value: "重复按钮" }, backendDOMNodeId: 101 },
+      ],
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const result = await manager.takeSnapshot(createToolCall());
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content.match(/重复按钮/g)).toHaveLength(1);
+  });
+
+  it("未开启浏览器控制时拒绝执行页面快照且不自动 attach", async () => {
+    const chromeMock = createChromeMock();
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    const result = await manager.takeSnapshot(createToolCall());
+
+    expect(result).toEqual({
+      toolCallId: "call-1",
+      name: "take_snapshot",
+      content: "浏览器控制未开启，无法读取页面快照。请先在顶部浏览器控制按钮中显式开启。",
+      isError: true,
+    });
+    expect(chromeMock.debugger.attach).not.toHaveBeenCalled();
+  });
+
+  it("空 Accessibility Tree 返回明确中文空状态", async () => {
+    const chromeMock = createChromeMock({ axNodes: [] });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const result = await manager.takeSnapshot(createToolCall());
+
+    expect(result.content).toContain("未读取到可访问节点");
+    expect(result.isError).toBeUndefined();
+  });
+
+  it("快照读取失败时返回固定中文错误", async () => {
+    const chromeMock = createChromeMock({ sendCommandError: "Protocol error: sensitive stack", sendCommandErrorMethod: "Accessibility.getFullAXTree" });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const result = await manager.takeSnapshot(createToolCall());
+
+    expect(result).toEqual({
+      toolCallId: "call-1",
+      name: "take_snapshot",
+      content: "读取页面快照失败，请确认当前页面仍可访问后重试。",
+      isError: true,
+    });
+    expect(result.content).not.toContain("sensitive stack");
+  });
+
+  it("读取目标标签页信息失败时返回固定中文错误", async () => {
+    const chromeMock = createChromeMock({
+      axNodes: [
+        { nodeId: "1", role: { value: "RootWebArea" }, name: { value: "示例页面" }, childIds: ["2"] },
+        { nodeId: "2", role: { value: "button" }, name: { value: "提交" }, backendDOMNodeId: 101 },
+      ],
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    chromeMock.tabs.get.mockRejectedValueOnce(new Error("tab closed"));
+    const result = await manager.takeSnapshot(createToolCall());
+
+    expect(result).toEqual({
+      toolCallId: "call-1",
+      name: "take_snapshot",
+      content: "读取页面快照失败，请确认当前页面仍可访问后重试。",
+      isError: true,
+    });
   });
 });

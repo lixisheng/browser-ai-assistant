@@ -1,14 +1,15 @@
 import { parseAssistantResponse } from "../shared/chat/parseAssistantResponse";
 import { createModelRequestPayload } from "../shared/models/modelRequestPayload";
 import { shouldPassDeepSeekReasoningContent } from "../shared/models/openaiChatAdapter";
-import { CURRENT_TIME_TOOL_NAME, TAVILY_SEARCH_TOOL_NAME, getRegisteredModelTools, resolveEnabledModelTools } from "../shared/models/toolRegistry";
-import type { ModelRequestMessage, ModelToolCall, ModelToolChoice, ModelToolDefinition, ModelToolExecutor, ModelToolRegistryEntry, OpenAIStructuredOutputFormat } from "../shared/models/types";
+import { BROWSER_TAKE_SNAPSHOT_TOOL_ID, BROWSER_TAKE_SNAPSHOT_TOOL_NAME, CURRENT_TIME_TOOL_NAME, TAVILY_SEARCH_TOOL_NAME, getRegisteredModelTools, resolveEnabledModelTools } from "../shared/models/toolRegistry";
+import type { ModelRequestMessage, ModelSystemMessage, ModelToolCall, ModelToolChoice, ModelToolDefinition, ModelToolExecutor, ModelToolRegistryEntry, OpenAIStructuredOutputFormat } from "../shared/models/types";
 import type { ChatToolAttachment, ChatToolCallRecord, ModelConfig } from "../shared/types";
 import type { TavilySearchOptions } from "../shared/webSearch/tavily";
 import { createTavilySearchContextPrompt } from "../shared/webSearch/tavily";
 import { createWebSearchToolAttachment } from "../shared/toolArtifacts";
 import { runModelToolLoop } from "./toolCalling/toolLoop";
 import { executeTavilySearchFromSettings } from "./webSearchMessageHandler";
+import { browserControlManager } from "./browserControlMessageHandler";
 
 export interface ChatSendMessage {
   type: "chat.send";
@@ -58,19 +59,22 @@ export async function handleChatSendMessage(
   executeTool?: ModelToolExecutor,
 ): Promise<ChatSendResponse> {
   const enabledTools = resolveEnabledModelTools(getRegisteredModelTools(), message.enabledToolIds ?? []);
+  const exposedTools = message.structuredOutput ? [] : enabledTools.filter(shouldExposeTool);
   const toolExecutor = executeTool ?? createBackgroundToolExecutor(message, fetcher);
-  const toolOptions = enabledTools.length > 0 && !message.structuredOutput
+  const initialMessages = appendBrowserControlPromptIfNeeded(message.messages, exposedTools);
+  const exposedToolIds = exposedTools.map((tool) => tool.id);
+  const toolOptions = exposedTools.length > 0
     ? {
-        tools: enabledTools.map(createModelToolDefinition),
+        tools: exposedTools.map(createModelToolDefinition),
         toolChoice: message.toolChoice,
       }
     : {};
 
-  if (enabledTools.length > 0) {
+  if (exposedTools.length > 0) {
     return runModelToolLoop({
-      initialMessages: message.messages,
-      tools: enabledTools,
-      enabledToolIds: message.enabledToolIds ?? [],
+      initialMessages,
+      tools: exposedTools,
+      enabledToolIds: exposedToolIds,
       requestModel: (messages) =>
         requestModelOnce({ ...message, messages, stream: false, tools: toolOptions.tools, toolChoice: toolOptions.toolChoice }, fetcher),
       ...(message.stream
@@ -85,7 +89,15 @@ export async function handleChatSendMessage(
     });
   }
 
-  return requestModelOnce({ ...message, tools: toolOptions.tools, toolChoice: toolOptions.toolChoice }, fetcher, callbacks);
+  return requestModelOnce({ ...message, messages: initialMessages, tools: toolOptions.tools, toolChoice: toolOptions.toolChoice }, fetcher, callbacks);
+}
+
+function shouldExposeTool(tool: ModelToolRegistryEntry): boolean {
+  if (tool.id === BROWSER_TAKE_SNAPSHOT_TOOL_ID) {
+    return browserControlManager.canExposeTakeSnapshotTool();
+  }
+
+  return true;
 }
 
 async function requestModelOnce(
@@ -154,6 +166,10 @@ function createModelToolDefinition(tool: ModelToolRegistryEntry): ModelToolDefin
 
 function createBackgroundToolExecutor(message: ChatSendMessage, fetcher: Fetcher): ModelToolExecutor {
   return async (toolCall, tool) => {
+    if (tool.id === BROWSER_TAKE_SNAPSHOT_TOOL_ID && tool.name === BROWSER_TAKE_SNAPSHOT_TOOL_NAME) {
+      return browserControlManager.takeSnapshot(toolCall);
+    }
+
     if (tool.name === TAVILY_SEARCH_TOOL_NAME) {
       return executeTavilySearchTool(toolCall, message.tavily, fetcher);
     }
@@ -164,6 +180,33 @@ function createBackgroundToolExecutor(message: ChatSendMessage, fetcher: Fetcher
 
     return createUnavailableToolResult(toolCall);
   };
+}
+
+function appendBrowserControlPromptIfNeeded(messages: ModelRequestMessage[], enabledTools: ModelToolRegistryEntry[]): ModelRequestMessage[] {
+  if (!enabledTools.some((tool) => tool.id === BROWSER_TAKE_SNAPSHOT_TOOL_ID)) {
+    return messages;
+  }
+
+  const browserPrompt = [
+    "浏览器控制工具使用规则：",
+    "- 需要当前页面结构时先调用 take_snapshot。",
+    "- 不要猜测 UID；只能使用 take_snapshot 返回的 UID。",
+    "- 工具失败时不要编造页面结构或操作结果，应向用户说明无法读取当前页面。",
+  ].join("\n");
+  const systemIndex = messages.findIndex((message) => message.role === "system");
+  if (systemIndex >= 0) {
+    return messages.map((message, index) =>
+      index === systemIndex
+        ? { ...message, content: `${message.content}\n\n${browserPrompt}` }
+        : message,
+    );
+  }
+
+  const systemMessage: ModelSystemMessage = {
+    role: "system",
+    content: browserPrompt,
+  };
+  return [systemMessage, ...messages];
 }
 
 function executeCurrentTimeTool(toolCall: ModelToolCall): Awaited<ReturnType<ModelToolExecutor>> {

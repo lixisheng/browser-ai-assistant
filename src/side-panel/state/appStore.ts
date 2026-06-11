@@ -3,7 +3,7 @@ import { buildChatRequestMessages } from "../../shared/chat/buildChatRequestMess
 import { createModelConfig } from "../../shared/chat/modelConfig";
 import { createPageContextPrompt } from "../../shared/chat/pageContextPrompt";
 import type { RemoteModelInfo } from "../../shared/models/modelCatalog";
-import { TAVILY_SEARCH_TOOL_ID, getRegisteredModelTools, normalizeEnabledToolIds, resolveEnabledModelTools } from "../../shared/models/toolRegistry";
+import { BROWSER_TAKE_SNAPSHOT_TOOL_ID, TAVILY_SEARCH_TOOL_ID, getRegisteredModelTools, normalizeEnabledToolIds, resolveEnabledModelTools } from "../../shared/models/toolRegistry";
 import type { ModelToolChoice, OpenAIStructuredOutputFormat } from "../../shared/models/types";
 import {
   createNetworkContextPrompt,
@@ -1468,6 +1468,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       syncSettings: DEFAULT_SYNC_SETTINGS,
       syncSecrets: DEFAULT_SYNC_SECRETS,
       webSearchSettings: DEFAULT_WEB_SEARCH_SETTINGS,
+      browserControlEnabled: false,
       syncOperation: {
         loading: false,
       },
@@ -2131,6 +2132,7 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
     const enabledTools = effectiveChatPreferences.toolCallingEnabled
       ? resolveEnabledModelTools(getRegisteredModelTools(), effectiveChatPreferences.enabledToolIds)
           .filter((tool) => !input.state.networkContextEnabled || tool.id !== TAVILY_SEARCH_TOOL_ID)
+          .filter((tool) => input.state.browserControlEnabled || tool.id !== BROWSER_TAKE_SNAPSHOT_TOOL_ID)
       : [];
     const enabledToolIds = enabledTools.map((tool) => tool.id);
     const requestStreamMode = input.state.streamMode;
