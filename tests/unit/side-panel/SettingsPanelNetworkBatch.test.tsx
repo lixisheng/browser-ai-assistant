@@ -131,4 +131,23 @@ describe("SettingsPanel Network 筛选分组设置", () => {
 
     expect(updateChatPreferences).not.toHaveBeenCalled();
   });
+
+  it("聊天偏好不再展示浏览器控制入口", async () => {
+    const updateChatPreferences = vi.fn(async (updates) => {
+      useAppStore.setState((state) => ({
+        chatPreferences: {
+          ...state.chatPreferences,
+          ...updates,
+        },
+      }));
+    });
+    useAppStore.setState({ updateChatPreferences });
+
+    render(<SettingsPanel />);
+
+    await userEvent.click(screen.getByRole("tab", { name: "聊天偏好" }));
+    expect(screen.queryByText("浏览器控制")).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: "启用浏览器自动化控制" })).not.toBeInTheDocument();
+    expect(updateChatPreferences).not.toHaveBeenCalled();
+  });
 });

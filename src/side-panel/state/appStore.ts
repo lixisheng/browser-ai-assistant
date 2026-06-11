@@ -86,6 +86,7 @@ import type {
   SendShortcut,
   WebSearchSettings,
 } from "../../shared/types";
+import { BROWSER_CONTROL_SET_ENABLED_MESSAGE_TYPE, type BrowserControlResponse } from "../../shared/browserControl";
 import { createNetworkToolAttachment } from "../../shared/toolArtifacts";
 
 const DEBUG_PREFIX = "[提取规则 AI 生成诊断]";
@@ -168,6 +169,7 @@ interface AppState {
   selectedModelId: string;
   defaultChatModelId: string;
   chatPreferences: ChatPreferenceValues;
+  browserControlEnabled: boolean;
   activeSessionId: string;
   privateModeActive: boolean;
   privateChatSession?: ChatSession;
@@ -195,6 +197,8 @@ interface AppState {
   setDefaultChatModel: (modelId: string) => Promise<void>;
   updateChatPreferences: (updates: Partial<ChatPreferenceValues>) => Promise<void>;
   updateActiveSessionChatPreferences: (updates: ChatSessionPreferenceOverrides) => Promise<void>;
+  setBrowserControlEnabled: (enabled: boolean) => Promise<void>;
+  markBrowserControlDetached: () => void;
   deleteProvider: (providerId: string) => void;
   deleteModel: (modelId: string) => void;
   loadChannelConfig: () => Promise<void>;
@@ -312,6 +316,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   selectedModelId: "",
   defaultChatModelId: "",
   chatPreferences: DEFAULT_CHAT_PREFERENCES,
+  browserControlEnabled: false,
   activeSessionId: "",
   privateModeActive: false,
   privateChatSession: undefined,
@@ -436,8 +441,9 @@ export const useAppStore = create<AppState>()((set, get) => ({
     set({ defaultChatModelId: normalizedModelId });
   },
   updateChatPreferences: async (updates) => {
+    const previousPreferences = get().chatPreferences;
     const preferences = normalizeChatPreferences({
-      ...get().chatPreferences,
+      ...previousPreferences,
       ...updates,
     });
 
@@ -505,6 +511,24 @@ export const useAppStore = create<AppState>()((set, get) => ({
       activeSessionId: nextSession.id,
       chatSessions: upsertSession(current.chatSessions, nextSession),
     }));
+  },
+  setBrowserControlEnabled: async (enabled) => {
+    const previousEnabled = get().browserControlEnabled;
+    if (previousEnabled === enabled) {
+      return;
+    }
+
+    set({ browserControlEnabled: enabled });
+    const response = await syncBrowserControlEnabled(enabled);
+    if (!response.ok) {
+      set({
+        browserControlEnabled: previousEnabled,
+        failure: { message: response.message },
+      });
+    }
+  },
+  markBrowserControlDetached: () => {
+    set({ browserControlEnabled: false });
   },
   deleteProvider: (providerId) => {
     let sessionToPersist: ChatSession | undefined;
@@ -3313,6 +3337,13 @@ function clearModelConnectivityResetTimer(modelId: string) {
 function clearAllModelConnectivityResetTimers() {
   modelConnectivityResetTimers.forEach((timer) => clearTimeout(timer));
   modelConnectivityResetTimers.clear();
+}
+
+async function syncBrowserControlEnabled(enabled: boolean): Promise<BrowserControlResponse> {
+  return sendRuntimeMessage<BrowserControlResponse>({
+    type: BROWSER_CONTROL_SET_ENABLED_MESSAGE_TYPE,
+    enabled,
+  });
 }
 
 async function sendRuntimeMessage<T>(message: unknown): Promise<T> {

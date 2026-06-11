@@ -1387,6 +1387,7 @@ describe("appStore", () => {
     expect(useAppStore.getState().chatPreferences.historyDrawerDefaultOpen).toBe(true);
     expect(useAppStore.getState().chatPreferences.injectPageContextByDefault).toBe(true);
     expect(useAppStore.getState().chatPreferences.extractHtmlByDefault).toBe(false);
+    expect(useAppStore.getState().browserControlEnabled).toBe(false);
     expect(useAppStore.getState().chatPreferences.networkRelevancePrompt).toBe(DEFAULT_NETWORK_RELEVANCE_PROMPT);
     expect(useAppStore.getState().appendPageContextToSystemPrompt).toBe(true);
     expect(useAppStore.getState().contextMode).toBe("text");

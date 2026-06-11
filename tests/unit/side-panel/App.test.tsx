@@ -3377,6 +3377,80 @@ describe("App", () => {
     expect(screen.getByRole("switch", { name: "提取模式" })).toHaveAttribute("title", "提取所有");
   });
 
+  it("全局浏览器控制按钮位于设置按钮左侧并更新运行态", async () => {
+    const user = userEvent.setup();
+    const setBrowserControlEnabled = vi.fn(async (enabled: boolean) => {
+      useAppStore.setState({ browserControlEnabled: enabled });
+    });
+    useAppStore.setState({
+      browserControlEnabled: false,
+      setBrowserControlEnabled,
+    });
+
+    render(<App />);
+
+    const browserControlButton = screen.getByRole("button", { name: "浏览器控制" });
+    const settingsButton = screen.getByRole("button", { name: "设置" });
+    expect(browserControlButton.nextElementSibling).toBe(settingsButton);
+    expect(browserControlButton).toHaveClass("ui-button-secondary", "app-header-icon-button");
+    expect(settingsButton).toHaveClass("ui-button-secondary", "app-header-icon-button");
+    expect(browserControlButton).toHaveTextContent("");
+    expect(settingsButton).toHaveTextContent("");
+    expect(browserControlButton).not.toHaveClass("browser-control-global-button-active");
+    expect(browserControlButton).toHaveAttribute("aria-pressed", "false");
+    expect(browserControlButton).toHaveAttribute("title", expect.stringContaining("Chrome 调试协议"));
+    expect(settingsButton).toHaveAttribute("title", "设置");
+    expect(browserControlButton.querySelector(".app-header-icon")).not.toBeNull();
+    expect([...browserControlButton.querySelectorAll(".app-header-icon path")].map((path) => path.getAttribute("d")).join(" ")).not.toContain("l-2 3");
+    expect(settingsButton.querySelector(".app-header-icon")).not.toBeNull();
+    expect(screen.queryByRole("checkbox", { name: "启用浏览器自动化控制" })).not.toBeInTheDocument();
+
+    await user.click(browserControlButton);
+
+    expect(setBrowserControlEnabled).toHaveBeenCalledWith(true);
+    await waitFor(() => expect(screen.getByRole("button", { name: "浏览器控制" })).toHaveAttribute("aria-pressed", "true"));
+    expect(screen.getByRole("button", { name: "浏览器控制" })).toHaveClass("browser-control-global-button-active");
+
+    const styles = readFileSync(resolve(process.cwd(), "src/side-panel/styles.css"), "utf8");
+    expect(styles).toContain(".app-header-icon-button");
+    expect(styles.indexOf(".ui-button-secondary.browser-control-global-button-active")).toBeGreaterThan(styles.indexOf(".ui-button-secondary"));
+  });
+
+  it("用户点击 Chrome 调试提示栏取消后回滚全局浏览器控制按钮状态", async () => {
+    let runtimeListener: ((message: unknown) => void) | undefined;
+    const addListener = vi.fn((listener: (message: unknown) => void) => {
+      runtimeListener = listener;
+    });
+    const removeListener = vi.fn();
+    vi.stubGlobal("chrome", {
+      runtime: {
+        onMessage: {
+          addListener,
+          removeListener,
+        },
+      },
+    });
+    useAppStore.setState({ browserControlEnabled: true });
+
+    const { unmount } = render(<App />);
+
+    const browserControlButton = screen.getByRole("button", { name: "浏览器控制" });
+    expect(browserControlButton).toHaveAttribute("aria-pressed", "true");
+    expect(browserControlButton).toHaveClass("browser-control-global-button-active");
+
+    act(() => {
+      runtimeListener?.({ type: "browserControl.detached", tabId: 9, reason: "canceled_by_user" });
+    });
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "浏览器控制" })).toHaveAttribute("aria-pressed", "false"));
+    expect(screen.getByRole("button", { name: "浏览器控制" })).not.toHaveClass("browser-control-global-button-active");
+    expect(useAppStore.getState().browserControlEnabled).toBe(false);
+
+    unmount();
+
+    expect(removeListener).toHaveBeenCalledWith(runtimeListener);
+  });
+
   it("聊天输入区的工具调用图标按钮打开菜单并控制当前会话工具设置", async () => {
     const user = userEvent.setup();
     const updateActiveSessionChatPreferences = vi.fn(async (updates) => {

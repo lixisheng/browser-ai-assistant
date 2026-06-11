@@ -62,6 +62,23 @@ body {
     font-family: Georgia, "Times New Roman", serif;
   }
 
+  .app-header-actions {
+    @apply flex items-center gap-2;
+  }
+
+  .app-header-icon-button {
+    @apply inline-grid h-9 w-9 place-items-center p-0;
+  }
+
+  .app-header-icon {
+    @apply h-5 w-5;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 2;
+  }
+
   .ui-panel {
     @apply rounded-lg p-3 sm:p-4;
     background: color-mix(in srgb, var(--color-canvas) 86%, var(--color-on-primary));
@@ -120,7 +137,7 @@ body {
   }
 
   .ui-button-secondary {
-    @apply rounded-md px-3 py-2 text-sm font-medium transition;
+    @apply rounded-md text-sm font-medium transition;
     background: var(--color-canvas);
     border: 1px solid var(--color-hairline);
     color: var(--color-ink);
@@ -128,6 +145,11 @@ body {
 
   .ui-button-secondary:hover {
     background: var(--color-surface-soft);
+  }
+
+  .ui-button-secondary.browser-control-global-button-active {
+    border-color: var(--color-primary);
+    color: var(--color-primary);
   }
 
   .ui-muted {

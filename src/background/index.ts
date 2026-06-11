@@ -1,4 +1,9 @@
 import { handleModelCatalogMessage, type ModelCatalogMessage } from "./modelCatalogMessageHandler";
+import {
+  handleBrowserControlMessage,
+  handleBrowserControlTabRemoved,
+  type BrowserControlMessage,
+} from "./browserControlMessageHandler";
 import { handleChatSendMessage, type ChatSendMessage } from "./modelRequestHandler";
 import {
   handleNetworkContextMessage,
@@ -78,6 +83,10 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   handleNetworkTabUpdated(tabId, changeInfo);
 });
 
+chrome.tabs.onRemoved.addListener((tabId) => {
+  handleBrowserControlTabRemoved(tabId);
+});
+
 type RuntimeMessage =
   | ModelCatalogMessage
   | PageContextExtractMessage
@@ -87,7 +96,8 @@ type RuntimeMessage =
   | ChatSendMessage
   | TabCaptureVisibleMessage
   | SyncBackupMessage
-  | NetworkContextMessage;
+  | NetworkContextMessage
+  | BrowserControlMessage;
 
 interface ChatStreamStartMessage {
   type: "chat.stream.start";
@@ -170,6 +180,11 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResp
 
   if (message.type === "networkContext.getSnapshot" || message.type === "networkContext.getDetails") {
     void handleNetworkContextMessage(message).then(sendResponse);
+    return true;
+  }
+
+  if (message.type === "browserControl.setEnabled") {
+    void handleBrowserControlMessage(message, _sender).then(sendResponse);
     return true;
   }
 

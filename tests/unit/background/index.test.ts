@@ -40,6 +40,7 @@ function createChromeMock() {
   const connectListeners: Array<Listener<(port: chrome.runtime.Port) => void>> = [];
   const alarmListeners: Array<Listener<(alarm: chrome.alarms.Alarm) => void>> = [];
   const tabUpdatedListeners: Array<Listener<(tabId: number, changeInfo: { status?: string }, tab: chrome.tabs.Tab) => void>> = [];
+  const tabRemovedListeners: Array<Listener<(tabId: number) => void>> = [];
 
   return {
     installedListeners,
@@ -51,8 +52,10 @@ function createChromeMock() {
     connectListeners,
     alarmListeners,
     tabUpdatedListeners,
+    tabRemovedListeners,
     chrome: {
       runtime: {
+        lastError: undefined as { message: string } | undefined,
         onInstalled: {
           addListener: vi.fn((listener: Listener<() => void>) => installedListeners.push(listener)),
         },
@@ -111,11 +114,15 @@ function createChromeMock() {
         },
       },
       tabs: {
+        get: vi.fn().mockResolvedValue({ id: 7, url: "https://example.com/article" }),
         query: vi.fn().mockResolvedValue([{ id: 7 }]),
         onUpdated: {
           addListener: vi.fn((listener: Listener<(tabId: number, changeInfo: { status?: string }, tab: chrome.tabs.Tab) => void>) =>
             tabUpdatedListeners.push(listener),
           ),
+        },
+        onRemoved: {
+          addListener: vi.fn((listener: Listener<(tabId: number) => void>) => tabRemovedListeners.push(listener)),
         },
         captureVisibleTab: vi.fn().mockResolvedValue("data:image/png;base64,QUJD"),
         sendMessage: vi.fn().mockResolvedValue({
@@ -129,6 +136,16 @@ function createChromeMock() {
       },
       scripting: {
         executeScript: vi.fn().mockResolvedValue(undefined),
+      },
+      debugger: {
+        attach: vi.fn((_debuggee: chrome.debugger.Debuggee, _version: string, callback: () => void) => callback()),
+        detach: vi.fn((_debuggee: chrome.debugger.Debuggee, callback: () => void) => callback()),
+        sendCommand: vi.fn((_debuggee: chrome.debugger.Debuggee, _method: string, _params: unknown, callback: (result?: unknown) => void) =>
+          callback({}),
+        ),
+        onDetach: {
+          addListener: vi.fn(),
+        },
       },
     },
   };
@@ -193,6 +210,25 @@ describe("background 入口", () => {
 
     expect(mock.chrome.runtime.onMessage.addListener).toHaveBeenCalledTimes(1);
     expect(mock.chrome.alarms.onAlarm.addListener).toHaveBeenCalledTimes(1);
+  });
+
+  it("处理浏览器控制开关消息并连接当前标签页", async () => {
+    const mock = createChromeMock();
+    vi.stubGlobal("chrome", mock.chrome);
+    await import("../../../src/background/index");
+
+    const sendResponse = vi.fn();
+    const keepChannel = mock.messageListeners[0](
+      { type: "browserControl.setEnabled", enabled: true },
+      { tab: { id: 7 } as chrome.tabs.Tab },
+      sendResponse,
+    );
+
+    expect(keepChannel).toBe(true);
+    await vi.waitFor(() => {
+      expect(sendResponse).toHaveBeenCalledWith(expect.objectContaining({ ok: true, attached: true, tabId: 7 }));
+    });
+    expect(mock.chrome.debugger.attach).toHaveBeenCalledWith({ tabId: 7 }, "1.3", expect.any(Function));
   });
 
   it("浏览器启动时根据已保存设置恢复自动同步定时任务", async () => {
