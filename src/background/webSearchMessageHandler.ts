@@ -1,13 +1,13 @@
 import { searchTavily } from "../shared/webSearch/tavily";
 import { getWebSearchSettings, TAVILY_API_KEY_ROUND_ROBIN_INDEX_KEY } from "../shared/webSearch/settings";
 import { getAppSetting, saveAppSetting } from "../shared/storage/repositories";
-import type { ChatWebSearchContextAttachment } from "../shared/types";
+import type { ChatWebSearchPayload } from "../shared/types";
 import type { TavilySearchOptions } from "../shared/webSearch/tavily";
 
 type Fetcher = typeof fetch;
 
 export type WebSearchResponse =
-  | { ok: true; attachment: ChatWebSearchContextAttachment }
+  | { ok: true; attachment: ChatWebSearchPayload }
   | { ok: false; message: string };
 
 export async function executeTavilySearchFromSettings(

@@ -14,6 +14,7 @@ import {
   type PageContextListTabsMessage,
 } from "./pageContextMessageHandler";
 import type { TabCaptureVisibleMessage } from "../shared/tabCapture";
+import type { ChatToolAttachment, ChatToolCallRecord } from "../shared/types";
 import { handleSyncAlarm, handleSyncBackupMessage, restoreSyncAlarmFromSettings, type SyncBackupMessage } from "./syncBackupHandler";
 import { handleTabCaptureVisibleMessage } from "./tabCaptureMessageHandler";
 import {
@@ -204,6 +205,8 @@ chrome.runtime.onConnect.addListener((port) => {
     void handleChatSendMessage(message.payload, fetch, {
       onContentChunk: (content) => port.postMessage({ type: "chunk", content }),
       onThinkingChunk: (content) => port.postMessage({ type: "thinking", content }),
+      onToolCallStart: (record: ChatToolCallRecord) => port.postMessage({ type: "tool:start", record }),
+      onToolCallComplete: (record: ChatToolCallRecord, attachments: ChatToolAttachment[]) => port.postMessage({ type: "tool:complete", record, attachments }),
     })
       .then((response) => {
         if (response.ok) {
@@ -212,7 +215,8 @@ chrome.runtime.onConnect.addListener((port) => {
             content: response.content,
             thinking: response.thinking,
             reasoningContent: response.reasoningContent,
-            webSearchContextAttachment: response.webSearchContextAttachment,
+            toolCallRecords: response.toolCallRecords,
+            toolAttachments: response.toolAttachments,
           });
           return;
         }

@@ -408,22 +408,29 @@ describe("网络搜索上下文消息构造", () => {
     const model = createModelConfig(createProvider(), createModel());
     const assistantMessage = {
       ...createMessage("message-search-assistant", "assistant", "根据搜索结果，Tavily 提供 Web 搜索能力。", 1),
-      webSearchContextAttachment: {
-        provider: "tavily",
-        query: "Tavily API",
-        answer: "Tavily 是搜索 API。",
-        results: [
-          {
-            title: "Tavily Docs",
-            url: "https://docs.tavily.com/search",
-            content: "官方文档内容",
-            score: 0.9,
-            publishedDate: "2026-01-01",
-          },
-        ],
-        createdAt: 2,
-        truncated: false,
-      },
+      toolAttachments: [
+        {
+          id: "tool-attachment-search",
+          kind: "web-search",
+          title: "网络搜索结果",
+          summary: "搜索问题：Tavily API",
+          provider: "tavily",
+          query: "Tavily API",
+          answer: "Tavily 是搜索 API。",
+          results: [
+            {
+              title: "Tavily Docs",
+              url: "https://docs.tavily.com/search",
+              content: "官方文档内容",
+              score: 0.9,
+              publishedDate: "2026-01-01",
+            },
+          ],
+          createdAt: 2,
+          redacted: false,
+          truncated: false,
+        },
+      ],
     } satisfies ChatMessage;
     const userMessage = createMessage("message-search-user", "user", "继续分析", 2);
 

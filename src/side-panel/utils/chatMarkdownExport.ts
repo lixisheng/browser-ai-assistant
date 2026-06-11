@@ -1,6 +1,5 @@
-import { formatNetworkAttachmentForExport, formatNetworkAttachmentSummary, redactNetworkRequestDetail } from "../../shared/networkContext";
-import { createTavilySearchContextPrompt, formatTavilySearchAttachmentSummary } from "../../shared/webSearch/tavily";
 import type { ChatMessage, ChatSession } from "../../shared/types";
+import { collectMessageToolAttachments, formatToolAttachmentForExport } from "../../shared/toolArtifacts";
 import { downloadBlob } from "./downloadBlob";
 
 const roleLabels: Record<ChatMessage["role"], string> = {
@@ -146,32 +145,7 @@ function createExportBlocks(session: ChatSession, exportedAt: number): ExportBlo
 
 function formatMessageExportContent(message: ChatMessage): string {
   const promptInvocations = message.role === "user" ? (message.promptInvocations ?? []) : [];
-  const contentSections = [message.content];
-
-  if (message.networkContextAttachment) {
-    const networkRequests = message.networkContextAttachment.requests.map(redactNetworkRequestDetail);
-    contentSections.push(
-      [
-        "# Network 请求详情附件",
-        "",
-        formatNetworkAttachmentSummary(networkRequests),
-        "",
-        formatNetworkAttachmentForExport(networkRequests),
-      ].join("\n"),
-    );
-  }
-
-  if (message.webSearchContextAttachment) {
-    contentSections.push(
-      [
-        "# 网络搜索结果附件",
-        "",
-        formatTavilySearchAttachmentSummary(message.webSearchContextAttachment),
-        "",
-        createTavilySearchContextPrompt(message.webSearchContextAttachment),
-      ].join("\n"),
-    );
-  }
+  const contentSections = [message.content, ...collectMessageToolAttachments(message).map(formatToolAttachmentForExport)];
 
   if (promptInvocations.length === 0) {
     return contentSections.join("\n\n").trim();
@@ -183,7 +157,7 @@ function formatMessageExportContent(message: ChatMessage): string {
 }
 
 function formatThinkingMarkdown(thinking: string): string {
-  // 思考过程不是正式回复内容，用引用块保留上下文，同时避免干扰正文 Markdown 结构。
+  // 思考过程不是正式回复正文，用引用块保留上下文，同时避免干扰正文 Markdown 结构。
   return `> 思考过程：${thinking.trim().replace(/\r?\n/g, "\n> ")}`;
 }
 
@@ -300,7 +274,7 @@ function formatContentCodeBlock(content: string): string {
 
 function createCodeFence(content: string): string {
   const longestFenceLength = Array.from(content.matchAll(/`{3,}/g)).reduce((maxLength, match) => Math.max(maxLength, match[0].length), 0);
-  // 正文里可能已经包含 Markdown 代码块，外层围栏必须更长，避免导出的聊天记录被提前截断。
+  // 正文可能已经包含 Markdown 代码块，外层围栏必须更长，避免导出的聊天记录被提前截断。
   return "`".repeat(Math.max(3, longestFenceLength + 1));
 }
 

@@ -295,7 +295,7 @@ describe("存储仓库", () => {
     expect(await getChatSession("session-1")).toEqual(session);
   });
 
-  it("读取聊天会话时会丢弃结构异常的网络搜索附件", async () => {
+  it("读取聊天会话时会忽略旧版网络搜索附件字段", async () => {
     const session = {
       id: "session-web-search-dirty",
       title: "脏附件会话",
@@ -323,8 +323,62 @@ describe("存储仓库", () => {
 
     await saveChatSession(session);
 
-    expect((await getChatSession("session-web-search-dirty"))?.messages[0].webSearchContextAttachment).toBeUndefined();
-    expect((await getChatSession("session-web-search-dirty"))?.messages[0].reasoningContent).toBeUndefined();
+    const message = (await getChatSession("session-web-search-dirty"))?.messages[0];
+    expect(message?.toolAttachments).toBeUndefined();
+    expect(message && "webSearchContextAttachment" in message).toBe(false);
+    expect(message?.reasoningContent).toBeUndefined();
+  });
+
+  it("读取聊天会话时会忽略旧版网络搜索字段但继续保留新工具附件", async () => {
+    const session = {
+      id: "session-mixed-tool-attachments",
+      title: "混合附件会话",
+      archived: false,
+      sortOrder: 1,
+      createdAt: 1,
+      updatedAt: 2,
+      messages: [
+        {
+          id: "message-mixed",
+          role: "assistant",
+          content: "已结合工具结果回答。",
+          createdAt: 1,
+          toolAttachments: [
+            {
+              id: "tool-attachment-network-1",
+              kind: "network",
+              title: "Network 请求详情",
+              summary: "1 条请求",
+              createdAt: 1,
+              redacted: true,
+              truncated: false,
+              requests: [
+                {
+                  id: "request-1",
+                  url: "https://example.com/api",
+                  method: "GET",
+                  redacted: true,
+                  truncated: false,
+                },
+              ],
+            },
+          ],
+          webSearchContextAttachment: {
+            provider: "tavily",
+            query: "Chrome Extension",
+            answer: "搜索答案",
+            results: [{ title: "Chrome Extensions", url: "https://developer.chrome.com/docs/extensions", content: "扩展文档" }],
+            createdAt: 2,
+            truncated: false,
+          },
+        },
+      ],
+    } as unknown as ChatSession;
+
+    await saveChatSession(session);
+
+    const message = (await getChatSession("session-mixed-tool-attachments"))?.messages[0];
+    expect(message?.toolAttachments?.map((attachment) => attachment.kind)).toEqual(["network"]);
   });
 
   it("读取聊天会话时会丢弃旧版 Tavily 当前聊天覆盖字段", async () => {
@@ -484,5 +538,34 @@ describe("存储仓库", () => {
     await clearDatabase();
 
     expect(await getChatFolders()).toEqual([]);
+  });
+  it("读取旧网络搜索附件时不会再归一化为通用工具附件", async () => {
+    const session = {
+      id: "session-web-search-tool-attachment",
+      title: "旧附件兼容",
+      archived: false,
+      sortOrder: 1,
+      createdAt: 1,
+      updatedAt: 2,
+      messages: [
+        {
+          id: "message-web-search-tool-attachment",
+          role: "assistant",
+          content: "已搜索。",
+          createdAt: 1,
+          webSearchContextAttachment: {
+            provider: "tavily",
+            query: "Tavily API",
+            results: [{ title: "Tavily Docs", url: "https://docs.tavily.com/search", content: "官方文档内容" }],
+            createdAt: 3,
+            truncated: false,
+          },
+        },
+      ],
+    } as unknown as ChatSession;
+
+    await saveChatSession(session);
+
+    expect((await getChatSession("session-web-search-tool-attachment"))?.messages[0].toolAttachments).toBeUndefined();
   });
 });

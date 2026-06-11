@@ -7,6 +7,7 @@ export const AVAILABLE_MODEL_TOOLS: ModelToolRegistryEntry[] = [
   {
     id: TAVILY_SEARCH_TOOL_ID,
     name: TAVILY_SEARCH_TOOL_NAME,
+    displayName: "Tavily 搜索",
     description: "使用 Tavily 搜索公开网页信息，适合需要最新资料或外部来源时调用。",
     parameters: {
       type: "object",

@@ -1,5 +1,5 @@
 import type {
-  ChatWebSearchContextAttachment,
+  ChatWebSearchPayload,
   ChatWebSearchResult,
   TavilyIncludeAnswer,
   TavilyIncludeRawContent,
@@ -34,7 +34,7 @@ interface SearchTavilyInput {
 export type SearchTavilyResult =
   | {
       ok: true;
-      attachment: ChatWebSearchContextAttachment;
+      attachment: ChatWebSearchPayload;
       nextApiKeyIndex: number;
     }
   | {
@@ -126,7 +126,7 @@ export async function searchTavily(input: SearchTavilyInput): Promise<SearchTavi
   }
 }
 
-export function createTavilySearchContextPrompt(attachment: ChatWebSearchContextAttachment): string {
+export function createTavilySearchContextPrompt(attachment: ChatWebSearchPayload): string {
   const sections = [
     "网络搜索上下文：",
     `搜索渠道：${attachment.provider}`,
@@ -166,7 +166,7 @@ export function createTavilySearchContextPrompt(attachment: ChatWebSearchContext
   return sections.join("\n").trim();
 }
 
-export function formatTavilySearchAttachmentSummary(attachment: ChatWebSearchContextAttachment): string {
+export function formatTavilySearchAttachmentSummary(attachment: ChatWebSearchPayload): string {
   const first = attachment.results[0];
   if (!first) {
     return `已搜索：${attachment.query}，未返回结果`;
@@ -175,7 +175,7 @@ export function formatTavilySearchAttachmentSummary(attachment: ChatWebSearchCon
   return `已搜索：${attachment.query}，返回 ${attachment.results.length} 条结果，首条：${first.title || first.url}`;
 }
 
-function normalizeTavilyResponse(value: unknown, query: string): ChatWebSearchContextAttachment | undefined {
+function normalizeTavilyResponse(value: unknown, query: string): ChatWebSearchPayload | undefined {
   if (!value || typeof value !== "object") {
     return undefined;
   }

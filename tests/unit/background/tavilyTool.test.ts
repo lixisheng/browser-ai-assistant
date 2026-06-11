@@ -124,11 +124,14 @@ describe("Tavily 工具调用", () => {
     expect(result).toMatchObject({
       ok: true,
       content: "已结合搜索结果回答。",
-      webSearchContextAttachment: {
-        provider: "tavily",
-        query: "Tavily API",
-        answer: "Tavily 是搜索 API。",
-      },
+      toolAttachments: [
+        expect.objectContaining({
+          kind: "web-search",
+          provider: "tavily",
+          query: "Tavily API",
+          answer: "Tavily 是搜索 API。",
+        }),
+      ],
     });
     expect(fetcher.mock.calls[1][0]).toBe("https://api.tavily.com/search");
     expect(JSON.parse(String(fetcher.mock.calls[1][1]?.body))).toMatchObject({
@@ -236,10 +239,13 @@ describe("Tavily 工具调用", () => {
     expect(result).toMatchObject({
       ok: true,
       content: "结合搜索回答",
-      webSearchContextAttachment: {
-        provider: "tavily",
-        query: "Tavily API",
-      },
+      toolAttachments: [
+        expect.objectContaining({
+          kind: "web-search",
+          provider: "tavily",
+          query: "Tavily API",
+        }),
+      ],
     });
     expect(onContentChunk).toHaveBeenNthCalledWith(1, "结合");
     expect(onContentChunk).toHaveBeenNthCalledWith(2, "搜索回答");

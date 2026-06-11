@@ -1222,12 +1222,36 @@ describe("background 入口", () => {
     await vi.waitFor(() => {
       expect(port.postMessage).toHaveBeenCalledWith(
         expect.objectContaining({
+          type: "tool:start",
+          record: expect.objectContaining({
+            id: "call-1",
+            name: "tavily_search",
+            status: "running",
+          }),
+        }),
+      );
+      expect(port.postMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "tool:complete",
+          record: expect.objectContaining({
+            id: "call-1",
+            status: "success",
+            attachmentIds: ["tool-attachment-call-1"],
+          }),
+          attachments: [expect.objectContaining({ id: "tool-attachment-call-1", kind: "web-search" })],
+        }),
+      );
+      expect(port.postMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
           type: "complete",
           content: "最终回答",
-          webSearchContextAttachment: expect.objectContaining({
-            provider: "tavily",
-            query: "Tavily API",
-          }),
+          toolAttachments: [
+            expect.objectContaining({
+              kind: "web-search",
+              provider: "tavily",
+              query: "Tavily API",
+            }),
+          ],
         }),
       );
     });

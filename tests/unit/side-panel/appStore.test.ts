@@ -89,14 +89,21 @@ describe("appStore 网络搜索", () => {
             ? {
                 ok: true,
                 content: "AI 搜索回复",
-                webSearchContextAttachment: {
-                  provider: "tavily",
-                  query: "Tavily API 是什么",
-                  answer: "Tavily 是搜索 API。",
-                  results: [{ title: "Tavily Docs", url: "https://docs.tavily.com/search", content: "官方文档内容" }],
-                  createdAt: 1,
-                  truncated: false,
-                },
+                toolAttachments: [
+                  {
+                    id: "tool-attachment-search",
+                    kind: "web-search",
+                    title: "网络搜索结果",
+                    summary: "搜索问题：Tavily API 是什么",
+                    provider: "tavily",
+                    query: "Tavily API 是什么",
+                    answer: "Tavily 是搜索 API。",
+                    results: [{ title: "Tavily Docs", url: "https://docs.tavily.com/search", content: "官方文档内容" }],
+                    createdAt: 1,
+                    redacted: false,
+                    truncated: false,
+                  },
+                ],
               }
             : { ok: true, content: "后续回复" },
         );
@@ -137,10 +144,12 @@ describe("appStore 网络搜索", () => {
       },
     });
     expect(chatRequests[0].messages?.at(-1)?.content).not.toContain("网络搜索上下文：");
-    expect(useAppStore.getState().chatSessions[0].messages[1].webSearchContextAttachment).toMatchObject({
-      provider: "tavily",
-      query: "Tavily API 是什么",
-    });
+    expect(useAppStore.getState().chatSessions[0].messages[1].toolAttachments).toEqual([
+      expect.objectContaining({
+        kind: "web-search",
+        query: "Tavily API 是什么",
+      }),
+    ]);
     expect(chatRequests[1].messages?.some((message) => message.content.includes("后续追问需要继续参考以下历史网络搜索结果："))).toBe(true);
     expect(chatRequests[1].messages?.some((message) => message.content.includes("Tavily Docs"))).toBe(true);
   });
@@ -3066,23 +3075,32 @@ describe("appStore", () => {
       type: "complete",
       content: "工具调用后的 AI 回复内容",
       reasoningContent: "DeepSeek 工具调用思考原文",
-      webSearchContextAttachment: {
-        provider: "tavily",
-        query: "需要搜索",
-        results: [{ title: "Tavily Docs", url: "https://docs.tavily.com/search", content: "官方文档内容" }],
-        createdAt: 1,
-        truncated: false,
-      },
+      toolAttachments: [
+        {
+          id: "tool-attachment-search",
+          kind: "web-search",
+          title: "网络搜索结果",
+          summary: "搜索问题：需要搜索",
+          provider: "tavily",
+          query: "需要搜索",
+          results: [{ title: "Tavily Docs", url: "https://docs.tavily.com/search", content: "官方文档内容" }],
+          createdAt: 1,
+          redacted: false,
+          truncated: false,
+        },
+      ],
     });
     await sendPromise;
 
     const activeSession = useAppStore.getState().chatSessions[0];
     expect(activeSession.messages.map((message) => message.content)).toEqual(["需要搜索", "工具调用后的 AI 回复内容"]);
     expect(activeSession.messages[1].streaming).toBe(false);
-    expect(activeSession.messages[1].webSearchContextAttachment).toMatchObject({
-      provider: "tavily",
-      query: "需要搜索",
-    });
+    expect(activeSession.messages[1].toolAttachments).toEqual([
+      expect.objectContaining({
+        kind: "web-search",
+        query: "需要搜索",
+      }),
+    ]);
     expect(activeSession.messages[1].reasoningContent).toBe("DeepSeek 工具调用思考原文");
   });
 
@@ -3267,6 +3285,85 @@ describe("appStore", () => {
     expect(state.failure?.message).toBe("流式响应异常中断，请重新生成后重试");
     expect(activeSession?.messages.map((message) => message.content)).toEqual(["第一问", "流式响应异常中断，请重新生成后重试"]);
     expect(activeSession?.messages[1].streaming).toBe(false);
+  });
+
+  it("工具进度事件后端口断开时会把占位消息收尾为失败状态", async () => {
+    const provider = createProvider();
+    const model = createModel();
+    let portMessageListener: ((message: unknown) => void) | undefined;
+    let disconnectListener: (() => void) | undefined;
+    const port = {
+      postMessage: vi.fn(),
+      disconnect: vi.fn(),
+      onMessage: {
+        addListener: vi.fn((listener: (message: unknown) => void) => {
+          portMessageListener = listener;
+        }),
+      },
+      onDisconnect: {
+        addListener: vi.fn((listener: () => void) => {
+          disconnectListener = listener;
+        }),
+      },
+    };
+    vi.stubGlobal("chrome", {
+      runtime: {
+        connect: vi.fn(() => port),
+        sendMessage: vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
+          if (message.type === "pageContext.extract") {
+            callback({
+              ok: true,
+              url: "https://example.com/article",
+              text: "页面内容",
+              truncated: false,
+              usedFallback: false,
+            });
+          }
+
+          return undefined;
+        }),
+      },
+    });
+
+    await saveModelProvider(provider);
+    await saveProviderModel(model);
+    await useAppStore.getState().loadChannelConfig();
+    await useAppStore.getState().loadChatData();
+    await useAppStore.getState().refreshPageContext();
+    useAppStore.setState((state) => ({
+      chatPreferences: {
+        ...state.chatPreferences,
+        toolCallingEnabled: true,
+        enabledToolIds: ["web_search.tavily"],
+      },
+    }));
+
+    const sendPromise = useAppStore.getState().sendChatMessage("需要搜索");
+    await vi.waitFor(() => {
+      expect(portMessageListener).toBeTypeOf("function");
+    });
+    portMessageListener?.({
+      type: "tool:start",
+      record: {
+        id: "call-1",
+        toolId: "web_search.tavily",
+        name: "tavily_search",
+        displayName: "Tavily 搜索",
+        arguments: { query: "需要搜索" },
+        status: "running",
+        startedAt: 1,
+      },
+    });
+    disconnectListener?.();
+    await sendPromise;
+
+    const state = useAppStore.getState();
+    const activeSession = state.chatSessions.find((session) => session.id === state.activeSessionId);
+    expect(state.failure?.message).toBe("流式响应异常中断，请重新生成后重试");
+    expect(activeSession?.messages[1]).toMatchObject({
+      content: "流式响应异常中断，请重新生成后重试",
+      streaming: false,
+    });
   });
 
   it("提取模式切换后刷新页面上下文时传递 all 模式", async () => {

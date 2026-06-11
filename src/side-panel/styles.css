@@ -533,6 +533,65 @@ body {
     @apply flex min-h-0 flex-1 flex-col gap-3 overflow-auto p-3;
   }
 
+  .message-entry {
+    @apply grid min-w-0 gap-2;
+  }
+
+  .message-tool-call-list {
+    @apply grid justify-items-center gap-1;
+  }
+
+  .message-tool-call-row {
+    @apply relative max-w-full;
+  }
+
+  .message-tool-call-trigger {
+    @apply max-w-full rounded-full px-2 py-0.5 text-xs transition disabled:cursor-default;
+    color: var(--color-muted);
+    background: transparent;
+    border: 1px solid transparent;
+    overflow-wrap: anywhere;
+  }
+
+  .message-tool-call-trigger:not(:disabled):hover,
+  .message-tool-call-trigger[aria-expanded="true"] {
+    background: var(--color-surface-soft);
+    border-color: var(--color-hairline);
+    color: var(--color-body-strong);
+  }
+
+  .message-tool-call-popover {
+    @apply absolute left-1/2 top-7 z-20 grid w-[min(82vw,450px)] -translate-x-1/2 gap-2 rounded-lg p-3 text-xs;
+    background: var(--color-canvas);
+    border: 1px solid var(--color-hairline);
+    box-shadow: 0 12px 28px color-mix(in srgb, var(--color-surface-dark) 16%, transparent);
+    color: var(--color-body);
+  }
+
+  .message-tool-call-popover dl {
+    @apply m-0 grid gap-2;
+  }
+
+  .message-tool-call-popover div {
+    @apply grid gap-1;
+  }
+
+  .message-tool-call-popover dt {
+    @apply font-medium;
+    color: var(--color-ink);
+  }
+
+  .message-tool-call-popover dd {
+    @apply m-0 min-w-0;
+    overflow-wrap: anywhere;
+  }
+
+  .message-tool-call-popover pre {
+    @apply m-0 max-h-40 max-w-full overflow-auto rounded-md p-2;
+    background: var(--color-surface-dark-soft);
+    color: var(--color-on-dark);
+  }
+
   .message-row {
     @apply flex min-w-0 items-start gap-2;
   }
@@ -817,6 +876,7 @@ body {
     @apply mb-0 mt-2 whitespace-pre-wrap;
   }
 
+  .message-tool-attachment,
   .message-network-attachment,
   .message-web-search-attachment {
     @apply min-w-0 rounded-lg px-3 py-2 text-xs;
@@ -825,10 +885,21 @@ body {
     color: var(--color-body);
   }
 
+  .message-tool-attachment > summary,
   .message-network-attachment > summary,
   .message-web-search-attachment > summary {
     @apply flex cursor-pointer items-center gap-2 font-medium;
     color: var(--color-ink);
+  }
+
+  .message-tool-attachment-summary {
+    @apply mb-2 mt-2 whitespace-pre-wrap;
+  }
+
+  .message-tool-attachment pre {
+    @apply m-0 max-w-full overflow-x-auto rounded-md p-2;
+    background: var(--color-surface-dark-soft);
+    color: var(--color-on-dark);
   }
 
   .message-network-count,

@@ -6,8 +6,8 @@ import type {
   ChatMessage,
   ChatSessionPreferenceOverrides,
   ChatSession,
-  ChatWebSearchContextAttachment,
-  ChatWebSearchResult,
+  ChatToolAttachment,
+  ChatToolCallRecord,
   ExtractionRule,
   ModelConfig,
   ModelProvider,
@@ -15,6 +15,7 @@ import type {
   PromptTemplate,
   ProviderModel,
 } from "../types";
+import { createNetworkToolAttachment, mergeCompatibleToolAttachments, normalizeToolAttachment } from "../toolArtifacts";
 
 export async function saveModelConfig(model: ModelConfig): Promise<void> {
   await db.modelConfigs.put(model);
@@ -334,56 +335,74 @@ function normalizeChatPreferenceOverrides(value: unknown): ChatSessionPreference
 }
 
 function normalizeChatMessage(message: ChatMessage): ChatMessage {
+  // Tavily 旧字段已退出消息协议，读取历史脏数据时必须剥离，避免同步快照或后续保存继续传播。
+  const { webSearchContextAttachment: _discardedWebSearchContextAttachment, ...messageWithoutLegacyWebSearch } = message as ChatMessage & {
+    webSearchContextAttachment?: unknown;
+  };
+  const normalizedToolAttachments = normalizeChatToolAttachments(message.toolAttachments);
+  const legacyToolAttachments = createLegacyToolAttachments(message);
+  const toolAttachments = mergeCompatibleToolAttachments(normalizedToolAttachments, legacyToolAttachments ?? []);
   return {
-    ...message,
+    ...messageWithoutLegacyWebSearch,
     contextMode: message.contextMode ?? "text",
     reasoningContent: typeof message.reasoningContent === "string" ? message.reasoningContent : undefined,
-    webSearchContextAttachment: normalizeChatWebSearchContextAttachment(message.webSearchContextAttachment),
+    toolCallRecords: normalizeChatToolCallRecords(message.toolCallRecords),
+    toolAttachments: toolAttachments.length ? toolAttachments : undefined,
   };
 }
 
-function normalizeChatWebSearchContextAttachment(value: unknown): ChatWebSearchContextAttachment | undefined {
-  if (!value || typeof value !== "object") {
-    return undefined;
+function createLegacyToolAttachments(message: ChatMessage): ChatToolAttachment[] | undefined {
+  const attachments: ChatToolAttachment[] = [];
+  if (message.networkContextAttachment) {
+    attachments.push(createNetworkToolAttachment(message.networkContextAttachment));
   }
-
-  const attachment = value as Partial<ChatWebSearchContextAttachment>;
-  if (attachment.provider !== "tavily" || typeof attachment.query !== "string" || !Array.isArray(attachment.results)) {
-    return undefined;
-  }
-
-  const results = attachment.results
-    .map(normalizeChatWebSearchResult)
-    .filter((result): result is ChatWebSearchResult => Boolean(result));
-
-  return {
-    provider: "tavily",
-    query: attachment.query.trim(),
-    answer: typeof attachment.answer === "string" && attachment.answer.trim() ? attachment.answer.trim() : undefined,
-    results,
-    createdAt: typeof attachment.createdAt === "number" && Number.isFinite(attachment.createdAt) ? attachment.createdAt : Date.now(),
-    truncated: typeof attachment.truncated === "boolean" ? attachment.truncated : false,
-  };
+  return attachments.length ? attachments : undefined;
 }
 
-function normalizeChatWebSearchResult(value: unknown): ChatWebSearchResult | undefined {
-  if (!value || typeof value !== "object") {
+function normalizeChatToolCallRecords(value: unknown): ChatToolCallRecord[] | undefined {
+  if (!Array.isArray(value)) {
     return undefined;
   }
 
-  const result = value as Partial<ChatWebSearchResult>;
-  const url = typeof result.url === "string" ? result.url.trim() : "";
-  const content = typeof result.content === "string" ? result.content.trim() : "";
-  if (!url || !content) {
-    return undefined;
+  const records = value
+    .map((item): ChatToolCallRecord | undefined => {
+      if (!item || typeof item !== "object") {
+        return undefined;
+      }
+
+      const source = item as Partial<ChatToolCallRecord>;
+      const id = typeof source.id === "string" && source.id.trim() ? source.id.trim() : "";
+      const name = typeof source.name === "string" && source.name.trim() ? source.name.trim() : "";
+      const toolId = typeof source.toolId === "string" && source.toolId.trim() ? source.toolId.trim() : name;
+      const displayName = typeof source.displayName === "string" && source.displayName.trim() ? source.displayName.trim() : name;
+      const status = source.status === "success" || source.status === "error" || source.status === "running" ? source.status : undefined;
+      if (!id || !name || !status) {
+        return undefined;
+      }
+
+      return {
+        id,
+        toolId,
+        name,
+        displayName,
+        arguments: source.arguments && typeof source.arguments === "object" && !Array.isArray(source.arguments) ? source.arguments : {},
+        status,
+        startedAt: typeof source.startedAt === "number" && Number.isFinite(source.startedAt) ? source.startedAt : Date.now(),
+        completedAt: typeof source.completedAt === "number" && Number.isFinite(source.completedAt) ? source.completedAt : undefined,
+        resultSummary: typeof source.resultSummary === "string" && source.resultSummary.trim() ? source.resultSummary.trim() : undefined,
+        errorMessage: typeof source.errorMessage === "string" && source.errorMessage.trim() ? source.errorMessage.trim() : undefined,
+        attachmentIds: Array.isArray(source.attachmentIds) ? source.attachmentIds.filter((id): id is string => typeof id === "string" && Boolean(id.trim())) : undefined,
+      };
+    })
+    .filter((item): item is ChatToolCallRecord => Boolean(item));
+
+  return records.length ? records : undefined;
+}
+
+function normalizeChatToolAttachments(value: unknown): ChatToolAttachment[] {
+  if (!Array.isArray(value)) {
+    return [];
   }
 
-  return {
-    title: typeof result.title === "string" && result.title.trim() ? result.title.trim() : url,
-    url,
-    content,
-    rawContent: typeof result.rawContent === "string" && result.rawContent.trim() ? result.rawContent.trim() : undefined,
-    score: typeof result.score === "number" && Number.isFinite(result.score) ? result.score : undefined,
-    publishedDate: typeof result.publishedDate === "string" && result.publishedDate.trim() ? result.publishedDate.trim() : undefined,
-  };
+  return value.map(normalizeToolAttachment).filter((item): item is ChatToolAttachment => Boolean(item));
 }

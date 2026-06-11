@@ -139,7 +139,7 @@ export interface ChatWebSearchResult {
   publishedDate?: string;
 }
 
-export interface ChatWebSearchContextAttachment {
+export interface ChatWebSearchPayload {
   provider: WebSearchProviderType;
   query: string;
   answer?: string;
@@ -147,6 +147,53 @@ export interface ChatWebSearchContextAttachment {
   createdAt: number;
   truncated: boolean;
 }
+
+export type ChatToolCallStatus = "running" | "success" | "error";
+
+export interface ChatToolCallRecord {
+  id: string;
+  toolId: string;
+  name: string;
+  displayName: string;
+  arguments: Record<string, unknown>;
+  status: ChatToolCallStatus;
+  startedAt: number;
+  completedAt?: number;
+  resultSummary?: string;
+  errorMessage?: string;
+  attachmentIds?: string[];
+}
+
+export interface ChatToolAttachmentBase {
+  id: string;
+  kind: string;
+  title: string;
+  summary: string;
+  sourceToolCallId?: string;
+  createdAt: number;
+  redacted: boolean;
+  truncated: boolean;
+}
+
+export interface ChatWebSearchToolAttachment extends ChatToolAttachmentBase {
+  kind: "web-search";
+  provider: WebSearchProviderType;
+  query: string;
+  answer?: string;
+  results: ChatWebSearchResult[];
+}
+
+export interface ChatNetworkToolAttachment extends ChatToolAttachmentBase {
+  kind: "network";
+  requests: NetworkRequestDetail[];
+}
+
+export interface ChatGenericToolAttachment extends ChatToolAttachmentBase {
+  kind: string;
+  details?: string;
+}
+
+export type ChatToolAttachment = ChatWebSearchToolAttachment | ChatNetworkToolAttachment | ChatGenericToolAttachment;
 
 export interface PromptTemplate {
   id: string;
@@ -187,7 +234,8 @@ export interface ChatMessage {
   matchedRuleId?: string;
   attachments?: ChatImageAttachment[];
   networkContextAttachment?: ChatNetworkContextAttachment;
-  webSearchContextAttachment?: ChatWebSearchContextAttachment;
+  toolCallRecords?: ChatToolCallRecord[];
+  toolAttachments?: ChatToolAttachment[];
   promptInvocations?: ChatPromptInvocation[];
   thinking?: string;
   reasoningContent?: string;

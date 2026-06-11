@@ -3,9 +3,10 @@ import { createModelRequestPayload } from "../shared/models/modelRequestPayload"
 import { shouldPassDeepSeekReasoningContent } from "../shared/models/openaiChatAdapter";
 import { TAVILY_SEARCH_TOOL_NAME, getRegisteredModelTools, resolveEnabledModelTools } from "../shared/models/toolRegistry";
 import type { ModelRequestMessage, ModelToolCall, ModelToolChoice, ModelToolDefinition, ModelToolExecutor, ModelToolRegistryEntry, OpenAIStructuredOutputFormat } from "../shared/models/types";
-import type { ChatWebSearchContextAttachment, ModelConfig } from "../shared/types";
+import type { ChatToolAttachment, ChatToolCallRecord, ModelConfig } from "../shared/types";
 import type { TavilySearchOptions } from "../shared/webSearch/tavily";
 import { createTavilySearchContextPrompt } from "../shared/webSearch/tavily";
+import { createWebSearchToolAttachment } from "../shared/toolArtifacts";
 import { runModelToolLoop } from "./toolCalling/toolLoop";
 import { executeTavilySearchFromSettings } from "./webSearchMessageHandler";
 
@@ -31,7 +32,8 @@ export type ChatSendResponse =
       thinking?: string;
       reasoningContent?: string;
       toolCalls?: ModelToolCall[];
-      webSearchContextAttachment?: ChatWebSearchContextAttachment;
+      toolCallRecords?: ChatToolCallRecord[];
+      toolAttachments?: ChatToolAttachment[];
     }
   | {
       ok: false;
@@ -45,6 +47,8 @@ type Fetcher = typeof fetch;
 interface ChatStreamCallbacks {
   onContentChunk?: (content: string) => void;
   onThinkingChunk?: (content: string) => void;
+  onToolCallStart?: (record: ChatToolCallRecord) => void;
+  onToolCallComplete?: (record: ChatToolCallRecord, attachments: ChatToolAttachment[]) => void;
 }
 
 export async function handleChatSendMessage(
@@ -76,6 +80,8 @@ export async function handleChatSendMessage(
           }
         : {}),
       executeTool: toolExecutor,
+      onToolCallStart: callbacks.onToolCallStart,
+      onToolCallComplete: callbacks.onToolCallComplete,
     });
   }
 
@@ -185,7 +191,7 @@ async function executeTavilySearchTool(
     toolCallId: toolCall.id,
     name: toolCall.name,
     content: createTavilySearchContextPrompt(response.attachment),
-    webSearchContextAttachment: response.attachment,
+    toolAttachments: [createWebSearchToolAttachment(response.attachment, toolCall.id)],
   };
 }
 

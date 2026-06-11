@@ -72,7 +72,8 @@ import type {
   ChatPreferenceValues,
   ChatSession,
   ChatSessionPreferenceOverrides,
-  ChatWebSearchContextAttachment,
+  ChatToolAttachment,
+  ChatToolCallRecord,
   EndpointType,
   ExtractionRule,
   ModelProvider,
@@ -85,6 +86,7 @@ import type {
   SendShortcut,
   WebSearchSettings,
 } from "../../shared/types";
+import { createNetworkToolAttachment } from "../../shared/toolArtifacts";
 
 const DEBUG_PREFIX = "[提取规则 AI 生成诊断]";
 
@@ -2133,7 +2135,10 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
         : {}),
     };
 
-    if (requestStreamMode) {
+    const requestUsesProgressPort = requestStreamMode || enabledTools.length > 0;
+    const initialToolAttachments = preparedNetworkContext.attachment ? [createNetworkToolAttachment(preparedNetworkContext.attachment)] : undefined;
+
+    if (requestUsesProgressPort) {
       const streamResult = await sendStreamingChatMessage({
         set: input.set,
         sessionId: nextSession.id,
@@ -2145,6 +2150,8 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
         matchedRuleId: input.state.pageContext.matchedRuleId,
         privateMode: input.privateMode,
         networkContextAttachment: preparedNetworkContext.attachment,
+        streamMode: requestStreamMode,
+        toolAttachments: initialToolAttachments,
         request,
       });
       if (streamResult.completed) {
@@ -2155,7 +2162,14 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
     }
 
     const response = await sendRuntimeMessage<
-      | { ok: true; content: string; thinking?: string; reasoningContent?: string; webSearchContextAttachment?: ChatWebSearchContextAttachment }
+      | {
+          ok: true;
+          content: string;
+          thinking?: string;
+          reasoningContent?: string;
+          toolCallRecords?: ChatToolCallRecord[];
+          toolAttachments?: ChatToolAttachment[];
+        }
       | { ok: false; message: string }
       | undefined
     >(request);
@@ -2186,7 +2200,8 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
       contextMode: input.state.contextMode,
       matchedRuleId: input.state.pageContext.matchedRuleId,
       networkContextAttachment: preparedNetworkContext.attachment,
-      webSearchContextAttachment: response.webSearchContextAttachment,
+      toolCallRecords: response.toolCallRecords,
+      toolAttachments: mergeToolAttachments(initialToolAttachments, response.toolAttachments),
     };
     if (input.privateMode) {
       input.set((current) => {
@@ -2734,7 +2749,16 @@ function updateGeneratedTitleInState(
 type ChatStreamPortMessage =
   | { type: "chunk"; content: string }
   | { type: "thinking"; content: string }
-  | { type: "complete"; content: string; thinking?: string; reasoningContent?: string; webSearchContextAttachment?: ChatWebSearchContextAttachment }
+  | { type: "tool:start"; record: ChatToolCallRecord }
+  | { type: "tool:complete"; record: ChatToolCallRecord; attachments?: ChatToolAttachment[] }
+  | {
+      type: "complete";
+      content: string;
+      thinking?: string;
+      reasoningContent?: string;
+      toolCallRecords?: ChatToolCallRecord[];
+      toolAttachments?: ChatToolAttachment[];
+    }
   | { type: "error"; message?: string };
 
 interface StreamingChatResult {
@@ -2753,7 +2777,8 @@ interface StreamingChatInput {
   matchedRuleId?: string;
   privateMode?: boolean;
   networkContextAttachment?: ChatNetworkContextAttachment;
-  webSearchContextAttachment?: ChatWebSearchContextAttachment;
+  streamMode: boolean;
+  toolAttachments?: ChatToolAttachment[];
   request: AppChatSendMessage;
 }
 
@@ -2768,13 +2793,13 @@ async function createAssistantPlaceholder(input: AssistantPlaceholderInput): Pro
     createdAt: assistantCreatedAt,
     modelId: input.modelId,
     endpointType: input.endpointType,
-    streamMode: true,
+    streamMode: input.streamMode,
     systemPrompt: input.systemPrompt,
     contextPrompt: input.contextPrompt,
     contextMode: input.contextMode,
     matchedRuleId: input.matchedRuleId,
     networkContextAttachment: input.networkContextAttachment,
-    webSearchContextAttachment: input.webSearchContextAttachment,
+    toolAttachments: input.toolAttachments,
     streaming: true,
   };
 
@@ -2836,7 +2861,7 @@ async function sendStreamingChatMessage(input: StreamingChatInput): Promise<Stre
   return new Promise<StreamingChatResult>((resolve) => {
     const port = globalThis.chrome.runtime.connect({ name: "chat.stream" });
     let settled = false;
-    let receivedStreamResponse = false;
+    let receivedFinalComplete = false;
     let writeQueue = Promise.resolve();
 
     const finish = (result: StreamingChatResult, options: { disconnect: boolean } = { disconnect: true }) => {
@@ -2858,7 +2883,6 @@ async function sendStreamingChatMessage(input: StreamingChatInput): Promise<Stre
     };
 
     port.onMessage.addListener((message: ChatStreamPortMessage) => {
-      receivedStreamResponse = true;
       if (message.type === "chunk") {
         void enqueueWrite(() => appendAssistantChunk(input.sessionId, assistantMessage.id, message.content, input.set, input.privateMode));
         return;
@@ -2869,11 +2893,25 @@ async function sendStreamingChatMessage(input: StreamingChatInput): Promise<Stre
         return;
       }
 
+      if (message.type === "tool:start") {
+        void enqueueWrite(() => upsertAssistantToolCallRecord(input.sessionId, assistantMessage.id, message.record, [], input.set, input.privateMode));
+        return;
+      }
+
+      if (message.type === "tool:complete") {
+        void enqueueWrite(() =>
+          upsertAssistantToolCallRecord(input.sessionId, assistantMessage.id, message.record, message.attachments ?? [], input.set, input.privateMode),
+        );
+        return;
+      }
+
       if (message.type === "complete") {
+        receivedFinalComplete = true;
         void enqueueWrite(() =>
           finalizeAssistantMessage(input.sessionId, assistantMessage.id, message.content, message.thinking, input.set, input.privateMode, {
             reasoningContent: message.reasoningContent,
-            webSearchContextAttachment: message.webSearchContextAttachment,
+            toolCallRecords: message.toolCallRecords,
+            toolAttachments: mergeToolAttachments(input.toolAttachments, message.toolAttachments),
           }),
         ).then(() => finish({ completed: true, assistantContent: message.content }));
         return;
@@ -2886,7 +2924,7 @@ async function sendStreamingChatMessage(input: StreamingChatInput): Promise<Stre
     });
 
     port.onDisconnect.addListener(() => {
-      if (!receivedStreamResponse) {
+      if (!receivedFinalComplete) {
         input.set({ failure: { message: STREAM_FAILURE_MESSAGE } });
         void enqueueWrite(() => failAssistantMessage(input.sessionId, assistantMessage.id, STREAM_FAILURE_MESSAGE, input.set, input.privateMode)).then(() =>
           finish({ completed: true }, { disconnect: false }),
@@ -3029,9 +3067,65 @@ async function appendAssistantChunk(sessionId: string, messageId: string, conten
   );
 }
 
+async function upsertAssistantToolCallRecord(
+  sessionId: string,
+  messageId: string,
+  record: ChatToolCallRecord,
+  attachments: ChatToolAttachment[],
+  set: StoreSetter,
+  privateMode = false,
+): Promise<void> {
+  const applyToolUpdate = (message: ChatMessage): ChatMessage => ({
+    ...message,
+    toolCallRecords: upsertToolCallRecord(message.toolCallRecords, record),
+    toolAttachments: mergeToolAttachments(message.toolAttachments, attachments),
+  });
+
+  if (privateMode) {
+    set((current) => updatePrivateAssistantMessageInState(current, sessionId, messageId, applyToolUpdate));
+    return;
+  }
+
+  await updateChatSession(sessionId, (latestSession) => ({
+    ...latestSession,
+    updatedAt: Date.now(),
+    messages: latestSession.messages.map((message) => (message.id === messageId ? applyToolUpdate(message) : message)),
+  }));
+
+  set((current) => updateAssistantMessageInState(current, sessionId, messageId, applyToolUpdate));
+}
+
+function upsertToolCallRecord(records: ChatToolCallRecord[] | undefined, record: ChatToolCallRecord): ChatToolCallRecord[] {
+  const current = records ?? [];
+  const existingIndex = current.findIndex((item) => item.id === record.id);
+  if (existingIndex < 0) {
+    return [...current, record];
+  }
+
+  return current.map((item, index) => (index === existingIndex ? { ...item, ...record } : item));
+}
+
+function mergeToolAttachments(
+  current: ChatToolAttachment[] | undefined,
+  next: ChatToolAttachment[] | undefined,
+): ChatToolAttachment[] | undefined {
+  const merged: ChatToolAttachment[] = [];
+  for (const attachment of [...(current ?? []), ...(next ?? [])]) {
+    const existingIndex = merged.findIndex((item) => item.id === attachment.id);
+    if (existingIndex >= 0) {
+      merged[existingIndex] = attachment;
+    } else {
+      merged.push(attachment);
+    }
+  }
+
+  return merged.length ? merged : undefined;
+}
+
 interface FinalizeAssistantOptions {
   reasoningContent?: string;
-  webSearchContextAttachment?: ChatWebSearchContextAttachment;
+  toolCallRecords?: ChatToolCallRecord[];
+  toolAttachments?: ChatToolAttachment[];
 }
 
 async function finalizeAssistantMessage(
@@ -3050,7 +3144,8 @@ async function finalizeAssistantMessage(
         content,
         thinking,
         reasoningContent: options.reasoningContent ?? message.reasoningContent,
-        webSearchContextAttachment: options.webSearchContextAttachment ?? message.webSearchContextAttachment,
+        toolCallRecords: options.toolCallRecords ?? message.toolCallRecords,
+        toolAttachments: mergeToolAttachments(message.toolAttachments, options.toolAttachments),
         streaming: false,
       })),
     );
@@ -3067,7 +3162,8 @@ async function finalizeAssistantMessage(
             content,
             thinking,
             reasoningContent: options.reasoningContent ?? message.reasoningContent,
-            webSearchContextAttachment: options.webSearchContextAttachment ?? message.webSearchContextAttachment,
+            toolCallRecords: options.toolCallRecords ?? message.toolCallRecords,
+            toolAttachments: mergeToolAttachments(message.toolAttachments, options.toolAttachments),
             streaming: false,
           }
         : message,
@@ -3080,7 +3176,8 @@ async function finalizeAssistantMessage(
       content,
       thinking,
       reasoningContent: options.reasoningContent ?? message.reasoningContent,
-      webSearchContextAttachment: options.webSearchContextAttachment ?? message.webSearchContextAttachment,
+      toolCallRecords: options.toolCallRecords ?? message.toolCallRecords,
+      toolAttachments: mergeToolAttachments(message.toolAttachments, options.toolAttachments),
       streaming: false,
     })),
   );

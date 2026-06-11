@@ -1,11 +1,12 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { formatNetworkAttachmentSummary, redactNetworkRequestDetail } from "../../shared/networkContext";
 import { formatTavilySearchAttachmentSummary } from "../../shared/webSearch/tavily";
+import { collectMessageToolAttachments, collectRawMessageToolAttachments, isNetworkToolAttachment, isWebSearchToolAttachment } from "../../shared/toolArtifacts";
 import { createChatMessageMarkdown } from "../utils/chatMarkdownExport";
 import { copyOrDownloadMessageImage, copyTextToClipboard } from "../utils/messageClipboard";
-import type { ChatImageAttachment, ChatMessage, ChatPromptInvocation } from "../../shared/types";
+import type { ChatImageAttachment, ChatMessage, ChatPromptInvocation, ChatToolAttachment, ChatToolCallRecord } from "../../shared/types";
 import { PromptInlineEditor, PromptTokenContent } from "./PromptInlineEditor";
 
 interface MessageListProps {
@@ -22,7 +23,9 @@ export function MessageList({ messages, onRegenerateMessage, onEditAndRegenerate
   const [editingContent, setEditingContent] = useState("");
   const [editingPromptInvocations, setEditingPromptInvocations] = useState<ChatPromptInvocation[]>([]);
   const [messageActionFeedback, setMessageActionFeedback] = useState<{ messageId: string; text: string; tone: "success" | "error" } | undefined>();
+  const [activeToolCallId, setActiveToolCallId] = useState<string | undefined>();
   const regeneratePopoverRef = useRef<HTMLDivElement>(null);
+  const toolCallPopoverRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!pendingRegenerateMessageId) {
@@ -39,6 +42,31 @@ export function MessageList({ messages, onRegenerateMessage, onEditAndRegenerate
     document.addEventListener("pointerdown", handlePointerDown);
     return () => document.removeEventListener("pointerdown", handlePointerDown);
   }, [pendingRegenerateMessageId]);
+
+  useEffect(() => {
+    if (!activeToolCallId) {
+      return;
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Node && !toolCallPopoverRef.current?.contains(target)) {
+        setActiveToolCallId(undefined);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setActiveToolCallId(undefined);
+      }
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [activeToolCallId]);
 
   useEffect(() => {
     if (!messageActionFeedback) {
@@ -78,7 +106,17 @@ export function MessageList({ messages, onRegenerateMessage, onEditAndRegenerate
   return (
     <section aria-label="消息列表" className="message-list">
       {messages.map((message) => (
-        <article key={message.id} className={message.role === "user" ? "message-row message-row-user" : "message-row"}>
+        <div key={message.id} className="message-entry">
+          {message.role === "assistant" && message.toolCallRecords?.length ? (
+            <ToolCallTimeline
+              records={message.toolCallRecords}
+              attachments={collectRawMessageToolAttachments(message)}
+              activeToolCallId={activeToolCallId}
+              popoverRef={toolCallPopoverRef}
+              onToggle={(recordId) => setActiveToolCallId((current) => (current === recordId ? undefined : recordId))}
+            />
+          ) : null}
+        <article className={message.role === "user" ? "message-row message-row-user" : "message-row"}>
           <div className="message-avatar" aria-hidden="true">
             {message.role === "user" ? "我" : "AI"}
           </div>
@@ -160,8 +198,7 @@ export function MessageList({ messages, onRegenerateMessage, onEditAndRegenerate
                 {message.content.trim() ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown> : null}
               </div>
             )}
-            {message.role === "assistant" && message.networkContextAttachment ? <NetworkContextAttachmentView message={message} /> : null}
-            {message.role === "assistant" && message.webSearchContextAttachment ? <WebSearchContextAttachmentView message={message} /> : null}
+            {message.role === "assistant" ? <ToolAttachmentList message={message} /> : null}
             <div className={`message-regenerate-action message-regenerate-action-${message.role}`}>
               {message.role === "user" ? (
                 <button
@@ -238,6 +275,7 @@ export function MessageList({ messages, onRegenerateMessage, onEditAndRegenerate
             </div>
           </div>
         </article>
+        </div>
       ))}
       {previewAttachment ? (
         <>
@@ -254,16 +292,122 @@ export function MessageList({ messages, onRegenerateMessage, onEditAndRegenerate
   );
 }
 
-function NetworkContextAttachmentView({ message }: { message: ChatMessage }) {
-  const attachment = message.networkContextAttachment;
-  if (!attachment) {
+function ToolCallTimeline({
+  records,
+  attachments,
+  activeToolCallId,
+  popoverRef,
+  onToggle,
+}: {
+  records: ChatToolCallRecord[];
+  attachments: ChatToolAttachment[];
+  activeToolCallId?: string;
+  popoverRef: RefObject<HTMLDivElement | null>;
+  onToggle: (recordId: string) => void;
+}) {
+  return (
+    <div className="message-tool-call-list" aria-label="工具调用记录">
+      {records.map((record) => {
+        const completed = record.status !== "running";
+        const relatedAttachments = attachments.filter((attachment) => record.attachmentIds?.includes(attachment.id) || attachment.sourceToolCallId === record.id);
+        return (
+          <div key={record.id} className="message-tool-call-row">
+            <button
+              className="message-tool-call-trigger"
+              type="button"
+              disabled={!completed}
+              aria-disabled={!completed}
+              aria-expanded={activeToolCallId === record.id}
+              onClick={() => completed && onToggle(record.id)}
+            >
+              {formatToolCallLine(record)}
+            </button>
+            {activeToolCallId === record.id && completed ? (
+              <div className="message-tool-call-popover" role="dialog" aria-label={`${record.displayName} 调用详情`} ref={popoverRef}>
+                <dl>
+                  <div>
+                    <dt>工具</dt>
+                    <dd>{record.displayName}</dd>
+                  </div>
+                  <div>
+                    <dt>状态</dt>
+                    <dd>{record.status === "success" ? "已完成" : "失败"}</dd>
+                  </div>
+                  <div>
+                    <dt>耗时</dt>
+                    <dd>{formatToolDuration(record)}</dd>
+                  </div>
+                  <div>
+                    <dt>参数</dt>
+                    <dd>
+                      <pre>{JSON.stringify(record.arguments, null, 2)}</pre>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>{record.status === "error" ? "错误" : "结果"}</dt>
+                    <dd>{record.errorMessage || record.resultSummary || "工具没有返回可展示摘要"}</dd>
+                  </div>
+                  {relatedAttachments.length ? (
+                    <div>
+                      <dt>附件</dt>
+                      <dd>{relatedAttachments.map((attachment) => attachment.title).join("、")}</dd>
+                    </div>
+                  ) : null}
+                </dl>
+              </div>
+            ) : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function ToolAttachmentList({ message }: { message: ChatMessage }) {
+  const attachments = collectMessageToolAttachments(message);
+  if (attachments.length === 0) {
     return null;
   }
+
+  return (
+    <>
+      {attachments.map((attachment) => (
+        <ToolAttachmentView key={attachment.id} attachment={attachment} />
+      ))}
+    </>
+  );
+}
+
+function ToolAttachmentView({ attachment }: { attachment: ChatToolAttachment }) {
+  if (isNetworkToolAttachment(attachment)) {
+    return <NetworkToolAttachmentView attachment={attachment} />;
+  }
+
+  if (isWebSearchToolAttachment(attachment)) {
+    return <WebSearchToolAttachmentView attachment={attachment} />;
+  }
+
+  return (
+    <details className={`message-tool-attachment message-${attachment.kind}-attachment`}>
+      <summary>
+        <span>{attachment.title}</span>
+      </summary>
+      <p className="message-tool-attachment-summary">{attachment.summary}</p>
+      {attachment.details ? <pre>{attachment.details}</pre> : null}
+    </details>
+  );
+}
+
+function NetworkToolAttachmentView({ attachment }: { attachment: ChatToolAttachment }) {
+  if (!isNetworkToolAttachment(attachment)) {
+    return null;
+  }
+
   const requests = attachment.requests.map(redactNetworkRequestDetail);
   const summary = formatNetworkAttachmentSummary(requests);
 
   return (
-    <details className="message-network-attachment">
+    <details className="message-tool-attachment message-network-attachment">
       <summary>
         <span>Network 请求详情</span>
         <span className="message-network-count">{requests.length}</span>
@@ -291,14 +435,13 @@ function NetworkContextAttachmentView({ message }: { message: ChatMessage }) {
   );
 }
 
-function WebSearchContextAttachmentView({ message }: { message: ChatMessage }) {
-  const attachment = message.webSearchContextAttachment;
-  if (!attachment) {
+function WebSearchToolAttachmentView({ attachment }: { attachment: ChatToolAttachment }) {
+  if (!isWebSearchToolAttachment(attachment)) {
     return null;
   }
 
   return (
-    <details className="message-web-search-attachment">
+    <details className="message-tool-attachment message-web-search-attachment">
       <summary>
         <span>网络搜索结果</span>
         <span className="message-web-search-count">{attachment.results.length}</span>
@@ -319,6 +462,24 @@ function WebSearchContextAttachmentView({ message }: { message: ChatMessage }) {
       </ul>
     </details>
   );
+}
+
+function formatToolCallLine(record: ChatToolCallRecord): string {
+  const query = typeof record.arguments.query === "string" && record.arguments.query.trim() ? `：${record.arguments.query.trim()}` : "";
+  if (record.status === "running") {
+    return `正在调用 ${record.displayName}${query}`;
+  }
+  if (record.status === "error") {
+    return `${record.displayName} 调用失败${query}`;
+  }
+  return `已调用 ${record.displayName}${query}`;
+}
+
+function formatToolDuration(record: ChatToolCallRecord): string {
+  if (!record.completedAt) {
+    return "进行中";
+  }
+  return `${Math.max(0, record.completedAt - record.startedAt)} ms`;
 }
 
 function PromptTokenLinks({ prompts, ariaLabelPrefix }: { prompts: ChatPromptInvocation[]; ariaLabelPrefix: string }) {

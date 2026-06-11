@@ -1,4 +1,6 @@
+import type { ChatToolAttachment, ChatToolCallRecord } from "../../shared/types";
 import type { ModelRequestMessage, ModelResponseData, ModelToolCall, ModelToolExecutor, ModelToolRegistryEntry, ModelToolResultMessage } from "../../shared/models/types";
+import { truncateText } from "../../shared/utils/text";
 
 const DEFAULT_MAX_TOOL_ITERATIONS = 8;
 
@@ -9,6 +11,8 @@ export interface RunModelToolLoopInput {
   requestModel: (messages: ModelRequestMessage[]) => Promise<ModelToolLoopResponse>;
   requestFinalModel?: (messages: ModelRequestMessage[]) => Promise<ModelToolLoopResponse>;
   executeTool: ModelToolExecutor;
+  onToolCallStart?: (record: ChatToolCallRecord) => void;
+  onToolCallComplete?: (record: ChatToolCallRecord, attachments: ChatToolAttachment[]) => void;
   maxIterations?: number;
 }
 
@@ -23,7 +27,8 @@ export async function runModelToolLoop(input: RunModelToolLoopInput): Promise<Mo
   const maxIterations = Math.max(1, Math.floor(input.maxIterations ?? DEFAULT_MAX_TOOL_ITERATIONS));
   const enabledToolIds = new Set(input.enabledToolIds);
   let messages = [...input.initialMessages];
-  let webSearchContextAttachment: ModelResponseData["webSearchContextAttachment"];
+  const toolCallRecords: ChatToolCallRecord[] = [];
+  const toolAttachments: ChatToolAttachment[] = [];
   let lastResponse: ModelToolLoopResponse | undefined;
 
   for (let iteration = 0; iteration < maxIterations; iteration += 1) {
@@ -38,18 +43,34 @@ export async function runModelToolLoop(input: RunModelToolLoopInput): Promise<Mo
         content: response.content,
         thinking: response.thinking,
         ...(response.reasoningContent ? { reasoningContent: response.reasoningContent } : {}),
-        ...(webSearchContextAttachment ? { webSearchContextAttachment } : {}),
+        ...(toolCallRecords.length ? { toolCallRecords } : {}),
+        ...(toolAttachments.length ? { toolAttachments } : {}),
       };
       break;
     }
 
     const toolResultMessages = await Promise.all(
-      response.toolCalls.map((toolCall) => executeAllowedTool(toolCall, input.tools, enabledToolIds, input.executeTool)),
+      response.toolCalls.map((toolCall) =>
+        executeAllowedTool(toolCall, input.tools, enabledToolIds, input.executeTool, {
+          onStart: (record) => {
+            toolCallRecords.push(record);
+            input.onToolCallStart?.(record);
+          },
+          onComplete: (record, attachments) => {
+            const existingIndex = toolCallRecords.findIndex((item) => item.id === record.id);
+            if (existingIndex >= 0) {
+              toolCallRecords[existingIndex] = record;
+            } else {
+              toolCallRecords.push(record);
+            }
+            appendUniqueToolAttachments(toolAttachments, attachments);
+            input.onToolCallComplete?.(record, attachments);
+          },
+        }),
+      ),
     );
     for (const toolResultMessage of toolResultMessages) {
-      if (toolResultMessage.webSearchContextAttachment) {
-        webSearchContextAttachment = mergeWebSearchContextAttachment(webSearchContextAttachment, toolResultMessage.webSearchContextAttachment);
-      }
+      appendUniqueToolAttachments(toolAttachments, toolResultMessage.toolAttachments ?? []);
     }
 
     messages = [
@@ -75,7 +96,8 @@ export async function runModelToolLoop(input: RunModelToolLoopInput): Promise<Mo
       content: finalResponse.content,
       thinking: finalResponse.thinking,
       ...(finalResponse.reasoningContent ? { reasoningContent: finalResponse.reasoningContent } : {}),
-      ...(webSearchContextAttachment ? { webSearchContextAttachment } : {}),
+      ...(toolCallRecords.length ? { toolCallRecords } : {}),
+      ...(toolAttachments.length ? { toolAttachments } : {}),
     };
   }
 
@@ -87,33 +109,61 @@ async function executeAllowedTool(
   tools: ModelToolRegistryEntry[],
   enabledToolIds: Set<string>,
   executeTool: ModelToolExecutor,
+  callbacks: {
+    onStart: (record: ChatToolCallRecord) => void;
+    onComplete: (record: ChatToolCallRecord, attachments: ChatToolAttachment[]) => void;
+  },
 ): Promise<ModelToolResultMessage> {
   const tool = tools.find((candidate) => candidate.name === toolCall.name);
+  const runningRecord: ChatToolCallRecord = {
+    id: toolCall.id,
+    toolId: tool?.id ?? toolCall.name,
+    name: toolCall.name,
+    displayName: tool?.displayName ?? toolCall.name,
+    arguments: sanitizeToolArguments(toolCall.arguments),
+    status: "running",
+    startedAt: Date.now(),
+  };
+  callbacks.onStart(runningRecord);
+
   if (!tool) {
-    return createToolErrorResult(toolCall, `工具 ${toolCall.name} 未注册，已拒绝执行。`);
+    return completeToolError(runningRecord, toolCall, `工具 ${toolCall.name} 未注册，已拒绝执行。`, callbacks);
   }
 
   if (!enabledToolIds.has(tool.id)) {
-    return createToolErrorResult(toolCall, `工具 ${toolCall.name} 未启用，已拒绝执行。`);
+    return completeToolError(runningRecord, toolCall, `工具 ${toolCall.name} 未启用，已拒绝执行。`, callbacks);
   }
 
   if (toolCall.parseError) {
-    return createToolErrorResult(toolCall, `工具 ${toolCall.name} 参数无效：${toolCall.parseError}`);
+    return completeToolError(runningRecord, toolCall, `工具 ${toolCall.name} 参数无效：${toolCall.parseError}`, callbacks);
   }
 
   try {
     const result = await executeTool(toolCall, tool);
-    return {
+    const resultMessage: ModelToolResultMessage = {
       role: "tool",
       toolCallId: result.toolCallId,
       name: result.name,
       content: result.content,
       ...(result.isError ? { isError: true } : {}),
-      ...(result.webSearchContextAttachment ? { webSearchContextAttachment: result.webSearchContextAttachment } : {}),
+      ...(result.toolAttachments?.length ? { toolAttachments: result.toolAttachments } : {}),
     };
+    callbacks.onComplete(createCompletedToolRecord(runningRecord, resultMessage), result.toolAttachments ?? []);
+    return resultMessage;
   } catch {
-    return createToolErrorResult(toolCall, `工具 ${toolCall.name} 执行失败，请稍后重试。`);
+    return completeToolError(runningRecord, toolCall, `工具 ${toolCall.name} 执行失败，请稍后重试。`, callbacks);
   }
+}
+
+function completeToolError(
+  runningRecord: ChatToolCallRecord,
+  toolCall: ModelToolCall,
+  content: string,
+  callbacks: { onComplete: (record: ChatToolCallRecord, attachments: ChatToolAttachment[]) => void },
+): ModelToolResultMessage {
+  const result = createToolErrorResult(toolCall, content);
+  callbacks.onComplete(createCompletedToolRecord(runningRecord, result), []);
+  return result;
 }
 
 function createToolErrorResult(toolCall: ModelToolCall, content: string): ModelToolResultMessage {
@@ -126,32 +176,40 @@ function createToolErrorResult(toolCall: ModelToolCall, content: string): ModelT
   };
 }
 
-function mergeWebSearchContextAttachment(
-  current: ModelResponseData["webSearchContextAttachment"],
-  next: NonNullable<ModelResponseData["webSearchContextAttachment"]>,
-): NonNullable<ModelResponseData["webSearchContextAttachment"]> {
-  if (!current) {
-    return next;
-  }
-
-  const resultsByKey = new Map<string, (typeof next.results)[number]>();
-  for (const result of [...current.results, ...next.results]) {
-    resultsByKey.set(result.url || result.title, result);
-  }
-
-  // 现有消息结构只支持单个 Tavily 附件；多次搜索时合并内容，避免后一次覆盖前一次。
+function createCompletedToolRecord(record: ChatToolCallRecord, result: ModelToolResultMessage): ChatToolCallRecord {
+  const attachmentIds = result.toolAttachments?.map((attachment) => attachment.id).filter(Boolean) ?? [];
   return {
-    provider: next.provider,
-    query: uniqueNonEmpty([current.query, next.query]).join("；"),
-    ...(uniqueNonEmpty([current.answer, next.answer]).length
-      ? { answer: uniqueNonEmpty([current.answer, next.answer]).join("\n\n") }
-      : {}),
-    results: Array.from(resultsByKey.values()),
-    createdAt: Math.max(current.createdAt, next.createdAt),
-    truncated: current.truncated || next.truncated,
+    ...record,
+    status: result.isError ? "error" : "success",
+    completedAt: Date.now(),
+    resultSummary: truncateText(result.content.trim(), 280).text,
+    ...(result.isError ? { errorMessage: result.content } : {}),
+    ...(attachmentIds.length ? { attachmentIds } : {}),
   };
 }
 
-function uniqueNonEmpty(values: Array<string | undefined>): string[] {
-  return Array.from(new Set(values.map((value) => value?.trim()).filter((value): value is string => Boolean(value))));
+function appendUniqueToolAttachments(target: ChatToolAttachment[], attachments: ChatToolAttachment[]): void {
+  for (const attachment of attachments) {
+    if (!target.some((item) => item.id === attachment.id)) {
+      target.push(attachment);
+    }
+  }
+}
+
+function sanitizeToolArguments(args: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(args).map(([key, value]) => {
+      if (typeof value === "string") {
+        return [key, truncateText(value, 1000).text];
+      }
+      if (typeof value === "number" || typeof value === "boolean" || value === null) {
+        return [key, value];
+      }
+      try {
+        return [key, JSON.parse(JSON.stringify(value ?? null)) as unknown];
+      } catch {
+        return [key, "[无法序列化的参数]"];
+      }
+    }),
+  );
 }

@@ -1138,20 +1138,27 @@ describe("App", () => {
             id: "message-web-search-attachment",
             role: "assistant",
             content: "已参考 Tavily 搜索结果。",
-            webSearchContextAttachment: {
-              provider: "tavily",
-              query: "Tavily 搜索 API",
-              answer: "Tavily 提供网络搜索 API。",
-              results: [
-                {
-                  title: "Tavily Search",
-                  url: "https://docs.tavily.com/documentation/api-reference/endpoint/search",
-                  content: "Search endpoint documentation.",
-                },
-              ],
-              createdAt: 2,
-              truncated: false,
-            },
+            toolAttachments: [
+              {
+                id: "tool-attachment-search",
+                kind: "web-search",
+                title: "网络搜索结果",
+                summary: "搜索问题：Tavily 搜索 API",
+                provider: "tavily",
+                query: "Tavily 搜索 API",
+                answer: "Tavily 提供网络搜索 API。",
+                results: [
+                  {
+                    title: "Tavily Search",
+                    url: "https://docs.tavily.com/documentation/api-reference/endpoint/search",
+                    content: "Search endpoint documentation.",
+                  },
+                ],
+                createdAt: 2,
+                redacted: false,
+                truncated: false,
+              },
+            ],
           }),
         ],
       }),
@@ -1312,20 +1319,27 @@ describe("App", () => {
                 },
               ],
             },
-            webSearchContextAttachment: {
-              provider: "tavily",
-              query: "Tavily API",
-              answer: "Tavily 搜索结果",
-              results: [
-                {
-                  title: "Tavily Docs",
-                  url: "https://docs.tavily.com/search",
-                  content: "官方文档内容",
-                },
-              ],
-              createdAt: 2,
-              truncated: false,
-            },
+            toolAttachments: [
+              {
+                id: "tool-attachment-search",
+                kind: "web-search",
+                title: "网络搜索结果",
+                summary: "搜索问题：Tavily API",
+                provider: "tavily",
+                query: "Tavily API",
+                answer: "Tavily 搜索结果",
+                results: [
+                  {
+                    title: "Tavily Docs",
+                    url: "https://docs.tavily.com/search",
+                    content: "官方文档内容",
+                  },
+                ],
+                createdAt: 2,
+                redacted: false,
+                truncated: false,
+              },
+            ],
           }),
         ],
       }),
@@ -4079,4 +4093,150 @@ describe("App", () => {
     expect(await screen.findByText("最多只能添加 5 张图片")).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: /查看图片/ })).toHaveLength(5);
   });
+
+  it("助手消息会展示工具调用记录，完成后点击可查看气泡详情", async () => {
+    const user = userEvent.setup();
+    await saveChatSession(
+      createChatSession({
+        id: "session-tool-call-records",
+        title: "工具调用",
+        messages: [
+          createChatMessage({
+            id: "message-tool-call-records",
+            role: "assistant",
+            content: "已结合搜索结果回答。",
+            toolCallRecords: [
+              {
+                id: "call-running",
+                toolId: "web_search.tavily",
+                name: "tavily_search",
+                displayName: "Tavily 搜索",
+                arguments: { query: "运行中" },
+                status: "running",
+                startedAt: 1,
+              },
+              {
+                id: "call-done",
+                toolId: "web_search.tavily",
+                name: "tavily_search",
+                displayName: "Tavily 搜索",
+                arguments: { query: "Tavily API" },
+                status: "success",
+                startedAt: 1,
+                completedAt: 26,
+                resultSummary: "返回 1 条结果",
+                attachmentIds: ["tool-attachment-call-done"],
+              },
+            ],
+            toolAttachments: [
+              {
+                id: "tool-attachment-call-done",
+                kind: "web-search",
+                title: "网络搜索结果",
+                summary: "已搜索：Tavily API，返回 1 条结果",
+                sourceToolCallId: "call-done",
+                createdAt: 2,
+                redacted: false,
+                truncated: false,
+                provider: "tavily",
+                query: "Tavily API",
+                results: [{ title: "Tavily Search", url: "https://docs.tavily.com/search", content: "Search endpoint documentation." }],
+              },
+            ],
+          }),
+        ],
+      }),
+    );
+
+    render(<App />);
+
+    const running = await screen.findByRole("button", { name: "正在调用 Tavily 搜索：运行中" });
+    expect(running).toBeDisabled();
+    const completed = await screen.findByRole("button", { name: "已调用 Tavily 搜索：Tavily API" });
+    expect(completed.closest(".message-tool-call-row")).toBeInTheDocument();
+    await user.click(completed);
+
+    const dialog = await screen.findByRole("dialog", { name: "Tavily 搜索 调用详情" });
+    expect(dialog).toHaveTextContent("返回 1 条结果");
+    expect(dialog).toHaveTextContent("25 ms");
+    expect(screen.getAllByText("网络搜索结果").some((item) => Boolean(item.closest(".message-web-search-attachment")))).toBe(true);
+    expect(readFileSync(resolve(process.cwd(), "src/side-panel/styles.css"), "utf8")).toContain(".message-tool-call-row");
+  });
+
+  it("同一条助手消息里的多次网络搜索工具附件会聚合成一个展示块", async () => {
+    await saveChatSession(
+      createChatSession({
+        id: "session-aggregated-tool-attachments",
+        title: "工具附件聚合",
+        messages: [
+          createChatMessage({
+            id: "message-aggregated-tool-attachments",
+            role: "assistant",
+            content: "已结合多次搜索结果回答。",
+            toolCallRecords: [
+              {
+                id: "call-search-1",
+                toolId: "web_search.tavily",
+                name: "tavily_search",
+                displayName: "Tavily 搜索",
+                arguments: { query: "Tavily API" },
+                status: "success",
+                startedAt: 1,
+                completedAt: 2,
+              },
+              {
+                id: "call-search-2",
+                toolId: "web_search.tavily",
+                name: "tavily_search",
+                displayName: "Tavily 搜索",
+                arguments: { query: "Chrome 扩展" },
+                status: "success",
+                startedAt: 2,
+                completedAt: 3,
+              },
+            ],
+            toolAttachments: [
+              {
+                id: "tool-attachment-search-1",
+                kind: "web-search",
+                title: "网络搜索结果",
+                summary: "搜索问题：Tavily API",
+                sourceToolCallId: "call-search-1",
+                createdAt: 2,
+                redacted: false,
+                truncated: false,
+                provider: "tavily",
+                query: "Tavily API",
+                answer: "答案 A",
+                results: [
+                  { title: "Tavily Docs", url: "https://docs.tavily.com/search", content: "Search endpoint documentation." },
+                  { title: "Tavily Docs", url: "https://docs.tavily.com/search", content: "重复结果。" },
+                ],
+              },
+              {
+                id: "tool-attachment-search-2",
+                kind: "web-search",
+                title: "网络搜索结果",
+                summary: "搜索问题：Chrome 扩展",
+                sourceToolCallId: "call-search-2",
+                createdAt: 3,
+                redacted: false,
+                truncated: false,
+                provider: "tavily",
+                query: "Chrome 扩展",
+                answer: "答案 B",
+                results: [{ title: "Chrome Extensions", url: "https://developer.chrome.com/docs/extensions", content: "Chrome extension docs." }],
+              },
+            ],
+          }),
+        ],
+      }),
+    );
+
+    render(<App />);
+
+    await waitFor(() => expect(document.querySelectorAll(".message-web-search-attachment")).toHaveLength(1));
+    expect(document.querySelectorAll(".message-web-search-result-item")).toHaveLength(2);
+  });
+
 });

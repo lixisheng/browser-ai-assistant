@@ -1,6 +1,5 @@
 import type { ChatMessage, ModelConfig } from "../types";
-import { formatNetworkAttachmentForExport, redactNetworkRequestDetail } from "../networkContext";
-import { createTavilySearchContextPrompt } from "../webSearch/tavily";
+import { collectMessageToolAttachments, formatToolAttachmentForPrompt } from "../toolArtifacts";
 import { truncateText } from "../utils/text";
 
 interface BuildChatRequestMessagesInput {
@@ -18,12 +17,12 @@ export function buildChatRequestMessages(input: BuildChatRequestMessagesInput): 
   const existingMessages = input.existingMessages.map(expandAssistantContextAttachments);
   const pageContext = shouldAppendPageContext
     ? fitPageContextToModelBudget({
-    systemPrompt: effectiveSystemPrompt,
-    pageContext: input.pageContext,
-    existingMessages,
-    userMessage: input.userMessage,
-    maxTokens: input.model.maxTokens,
-  })
+        systemPrompt: effectiveSystemPrompt,
+        pageContext: input.pageContext,
+        existingMessages,
+        userMessage: input.userMessage,
+        maxTokens: input.model.maxTokens,
+      })
     : "";
   const systemContent = buildSystemContent(effectiveSystemPrompt, pageContext);
   const now = Date.now();
@@ -44,36 +43,21 @@ export function buildChatRequestMessages(input: BuildChatRequestMessagesInput): 
   return [systemMessage, ...existingMessages, expandUserMessagePromptInvocations(input.userMessage)];
 }
 
-function expandAssistantNetworkContextAttachment(message: ChatMessage): ChatMessage {
-  if (message.role !== "assistant" || !message.networkContextAttachment?.requests.length) {
+function expandAssistantContextAttachments(message: ChatMessage): ChatMessage {
+  if (message.role !== "assistant") {
+    return message;
+  }
+
+  const attachmentPrompts = collectMessageToolAttachments(message)
+    .map(formatToolAttachmentForPrompt)
+    .filter((item): item is string => Boolean(item?.trim()));
+  if (attachmentPrompts.length === 0) {
     return message;
   }
 
   return {
     ...message,
-    content: [
-      message.content,
-      "",
-      "后续追问需要继续参考以下历史 DevTools Network 请求详情：",
-      formatNetworkAttachmentForExport(message.networkContextAttachment.requests.map(redactNetworkRequestDetail)),
-    ].join("\n").trim(),
-  };
-}
-
-function expandAssistantContextAttachments(message: ChatMessage): ChatMessage {
-  const messageWithNetwork = expandAssistantNetworkContextAttachment(message);
-  if (messageWithNetwork.role !== "assistant" || !messageWithNetwork.webSearchContextAttachment) {
-    return messageWithNetwork;
-  }
-
-  return {
-    ...messageWithNetwork,
-    content: [
-      messageWithNetwork.content,
-      "",
-      "后续追问需要继续参考以下历史网络搜索结果：",
-      createTavilySearchContextPrompt(messageWithNetwork.webSearchContextAttachment),
-    ].join("\n").trim(),
+    content: [message.content, "", ...attachmentPrompts].join("\n").trim(),
   };
 }
 
@@ -138,7 +122,7 @@ function fitPageContextToModelBudget(input: FitPageContextInput): string {
     input.userMessage.content.length;
   const availablePageContextLength = requestBudget - fixedContentLength;
 
-  // 当前 maxTokens 作为本次请求预算使用，而不是只代表模型输出上限；无真实 tokenizer 时用偏向中文场景的保守字符预算兜底。
+  // 当前 maxTokens 同时参与请求预算估算；没有真实 tokenizer 时使用偏向中文场景的保守字符预算。
   if (availablePageContextLength <= 0) {
     return "";
   }
