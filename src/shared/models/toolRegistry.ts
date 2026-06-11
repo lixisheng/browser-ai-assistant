@@ -2,8 +2,22 @@ import type { ModelToolRegistryEntry } from "./types";
 
 export const TAVILY_SEARCH_TOOL_ID = "web_search.tavily";
 export const TAVILY_SEARCH_TOOL_NAME = "tavily_search";
+export const CURRENT_TIME_TOOL_ID = "system.current_time";
+export const CURRENT_TIME_TOOL_NAME = "get_current_time";
 
 export const AVAILABLE_MODEL_TOOLS: ModelToolRegistryEntry[] = [
+  {
+    id: CURRENT_TIME_TOOL_ID,
+    name: CURRENT_TIME_TOOL_NAME,
+    displayName: "当前系统时间",
+    description: "获取用户本机当前系统时间。仅在需要判断今天、当前日期、时区或时间相关问题时调用。",
+    parameters: {
+      type: "object",
+      properties: {},
+      required: [],
+      additionalProperties: false,
+    },
+  },
   {
     id: TAVILY_SEARCH_TOOL_ID,
     name: TAVILY_SEARCH_TOOL_NAME,

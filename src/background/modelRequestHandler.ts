@@ -1,7 +1,7 @@
 import { parseAssistantResponse } from "../shared/chat/parseAssistantResponse";
 import { createModelRequestPayload } from "../shared/models/modelRequestPayload";
 import { shouldPassDeepSeekReasoningContent } from "../shared/models/openaiChatAdapter";
-import { TAVILY_SEARCH_TOOL_NAME, getRegisteredModelTools, resolveEnabledModelTools } from "../shared/models/toolRegistry";
+import { CURRENT_TIME_TOOL_NAME, TAVILY_SEARCH_TOOL_NAME, getRegisteredModelTools, resolveEnabledModelTools } from "../shared/models/toolRegistry";
 import type { ModelRequestMessage, ModelToolCall, ModelToolChoice, ModelToolDefinition, ModelToolExecutor, ModelToolRegistryEntry, OpenAIStructuredOutputFormat } from "../shared/models/types";
 import type { ChatToolAttachment, ChatToolCallRecord, ModelConfig } from "../shared/types";
 import type { TavilySearchOptions } from "../shared/webSearch/tavily";
@@ -158,7 +158,49 @@ function createBackgroundToolExecutor(message: ChatSendMessage, fetcher: Fetcher
       return executeTavilySearchTool(toolCall, message.tavily, fetcher);
     }
 
+    if (tool.name === CURRENT_TIME_TOOL_NAME) {
+      return executeCurrentTimeTool(toolCall);
+    }
+
     return createUnavailableToolResult(toolCall);
+  };
+}
+
+function executeCurrentTimeTool(toolCall: ModelToolCall): Awaited<ReturnType<ModelToolExecutor>> {
+  const extraKeys = Object.keys(toolCall.arguments);
+  if (extraKeys.length > 0) {
+    return {
+      toolCallId: toolCall.id,
+      name: toolCall.name,
+      content: "当前系统时间工具不接受任何参数",
+      isError: true,
+    };
+  }
+
+  const now = new Date();
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const localText = now.toLocaleString("zh-CN", {
+    timeZone,
+    hour12: false,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+
+  // 当前时间只供模型推理使用，不产出 toolAttachments，避免在 AI 消息气泡下生成可见附件。
+  return {
+    toolCallId: toolCall.id,
+    name: toolCall.name,
+    content: [
+      "当前系统时间：",
+      `- 本地时间：${localText}`,
+      `- IANA 时区：${timeZone}`,
+      `- ISO 时间：${now.toISOString()}`,
+      `- Unix 毫秒时间戳：${now.getTime()}`,
+    ].join("\n"),
   };
 }
 
