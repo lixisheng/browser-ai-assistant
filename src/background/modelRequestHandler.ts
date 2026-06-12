@@ -202,6 +202,9 @@ function appendBrowserControlPromptIfNeeded(messages: ModelRequestMessage[], ena
     "- click、fill 和 press_key 成功后可按需设置 includeSnapshot=true 获取最新快照；失败时不要编造页面结构或操作结果。",
     "- press_key 只能用于白名单按键，并且应确认正确页面或元素已有焦点。",
     "- wait_for 只等待页面可见文本；超时后应重新 take_snapshot 或向用户说明等待失败。",
+    "- 导航、切换或新建页面后旧 UID 会失效；继续操作前必须重新 take_snapshot。",
+    "- 多页面操作只能使用 list_pages 返回的 index，不要猜测页面序号。",
+    "- 遇到网页 JS 弹窗时会等待用户手动处理；不要编造用户选择或弹窗处理结果。",
   ].join("\n");
   const systemIndex = messages.findIndex((message) => message.role === "system");
   if (systemIndex >= 0) {

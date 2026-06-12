@@ -19,6 +19,20 @@ type ChromeApi = typeof chrome;
 type DebuggerDetachReason = `${chrome.debugger.DetachReason}`;
 type BrowserControlDetachedReason = "canceled_by_user" | "target_closed" | "tab_removed" | "disabled_by_user" | "unknown";
 type BrowserControlTabInfo = { title: string; url: string };
+type BrowserControlPageToolName = "navigate_page" | "new_page" | "list_pages" | "select_page" | "close_page";
+type BrowserControlDialogType = "alert" | "confirm" | "prompt" | "beforeunload" | string;
+
+interface BrowserControlDialogState {
+  type: BrowserControlDialogType;
+  message: string;
+  defaultPrompt: string;
+  openedAt: number;
+}
+
+interface BrowserControlDialogCloseState extends BrowserControlDialogState {
+  result: boolean;
+  userInput?: string;
+}
 
 interface SnapshotFormatBudget {
   lines: string[];
@@ -60,6 +74,7 @@ const SNAPSHOT_EMPTY_TEXT = "未读取到可访问节点。";
 const SNAPSHOT_TRUNCATED_TEXT = "快照内容过长，已停止继续展开。";
 const BROWSER_SNAPSHOT_DISABLED_MESSAGE = "浏览器控制未开启，无法读取页面快照。请先在顶部浏览器控制按钮中显式开启。";
 const BROWSER_SNAPSHOT_FAILED_MESSAGE = "读取页面快照失败，请确认当前页面仍可访问后重试。";
+const DIALOG_WAIT_TIMEOUT_MS = 60_000;
 const SKIPPED_AX_ROLES = new Set(["none", "generic", "section", "paragraph", "StaticText", "InlineTextBox"]);
 const ALLOWED_BROWSER_CONTROL_CDP_METHODS = new Set([
   "Runtime.enable",
@@ -72,6 +87,11 @@ const ALLOWED_BROWSER_CONTROL_CDP_METHODS = new Set([
   "DOM.getBoxModel",
   "Runtime.callFunctionOn",
   "Runtime.evaluate",
+  "Page.navigate",
+  "Page.reload",
+  "Page.getNavigationHistory",
+  "Page.navigateToHistoryEntry",
+  "Page.getFrameTree",
   "Input.dispatchMouseEvent",
   "Input.dispatchKeyEvent",
   "Input.insertText",
@@ -85,6 +105,11 @@ export class BrowserDebuggerConnection {
   private currentTabId: number | undefined;
   private attached = false;
   private detachListenersInstalled = false;
+  private eventListenersInstalled = false;
+  private readonly eventListeners = new Set<(method: string, params?: Record<string, unknown>) => void>();
+  private currentDialog: BrowserControlDialogState | undefined;
+  private lastClosedDialog: BrowserControlDialogCloseState | undefined;
+  private dialogWaiter: ((dialog: BrowserControlDialogCloseState) => void) | undefined;
 
   constructor(private readonly chromeApi: ChromeApi | undefined = getChromeApi()) {}
 
@@ -94,6 +119,61 @@ export class BrowserDebuggerConnection {
 
   get isAttached(): boolean {
     return this.attached;
+  }
+
+  getDialogHint(): string {
+    const dialog = this.lastClosedDialog ?? this.currentDialog;
+    if (!dialog) {
+      return "";
+    }
+
+    const closed = isClosedDialog(dialog)
+      ? `\n用户处理结果：${formatDialogCloseResult(dialog)}`
+      : "\n用户处理结果：等待用户手动处理。";
+    return `检测到网页弹窗：${dialog.type}「${dialog.message || "无内容"}」${closed}`;
+  }
+
+  addEventListener(listener: (method: string, params?: Record<string, unknown>) => void): void {
+    this.eventListeners.add(listener);
+  }
+
+  removeEventListener(listener: (method: string, params?: Record<string, unknown>) => void): void {
+    this.eventListeners.delete(listener);
+  }
+
+  async waitForOpenDialogToClose(timeoutMs = DIALOG_WAIT_TIMEOUT_MS): Promise<string> {
+    if (this.lastClosedDialog) {
+      const hint = `检测到网页弹窗：${this.lastClosedDialog.type}「${this.lastClosedDialog.message || "无内容"}」\n用户处理结果：${formatDialogCloseResult(this.lastClosedDialog)}`;
+      this.lastClosedDialog = undefined;
+      return hint;
+    }
+
+    if (!this.currentDialog) {
+      return "";
+    }
+
+    const closedDialog = await new Promise<BrowserControlDialogCloseState | undefined>((resolve) => {
+      const timer = setTimeout(() => {
+        if (this.dialogWaiter === finish) {
+          this.dialogWaiter = undefined;
+        }
+        resolve(undefined);
+      }, timeoutMs);
+      const finish = (dialog: BrowserControlDialogCloseState) => {
+        clearTimeout(timer);
+        if (this.dialogWaiter === finish) {
+          this.dialogWaiter = undefined;
+        }
+        resolve(dialog);
+      };
+      this.dialogWaiter = finish;
+    });
+
+    if (!closedDialog) {
+      throw new Error("网页弹窗等待超时，请先在页面中手动处理弹窗后再继续。");
+    }
+
+    return `检测到网页弹窗：${closedDialog.type}「${closedDialog.message || "无内容"}」\n用户处理结果：${formatDialogCloseResult(closedDialog)}`;
   }
 
   installDetachListener(onDetach: (tabId: number, reason: DebuggerDetachReason) => void): void {
@@ -112,6 +192,42 @@ export class BrowserDebuggerConnection {
       this.currentTabId = undefined;
       if (detachedTabId) {
         onDetach(detachedTabId, reason);
+      }
+    });
+  }
+
+  installEventListener(): void {
+    if (this.eventListenersInstalled || !this.chromeApi?.debugger?.onEvent?.addListener) {
+      return;
+    }
+
+    this.eventListenersInstalled = true;
+    this.chromeApi.debugger.onEvent.addListener((source, method, params) => {
+      if (source.tabId !== this.currentTabId) {
+        return;
+      }
+
+      const normalizedParams = params && typeof params === "object" ? params as Record<string, unknown> : undefined;
+      if (method === "Page.javascriptDialogOpening") {
+        this.currentDialog = {
+          type: typeof normalizedParams?.type === "string" ? normalizedParams.type : "dialog",
+          message: typeof normalizedParams?.message === "string" ? normalizedParams.message : "",
+          defaultPrompt: typeof normalizedParams?.defaultPrompt === "string" ? normalizedParams.defaultPrompt : "",
+          openedAt: Date.now(),
+        };
+      }
+      if (method === "Page.javascriptDialogClosed" && this.currentDialog) {
+        this.lastClosedDialog = {
+          ...this.currentDialog,
+          result: normalizedParams?.result === true,
+          userInput: typeof normalizedParams?.userInput === "string" ? normalizedParams.userInput : undefined,
+        };
+        this.currentDialog = undefined;
+        this.dialogWaiter?.(this.lastClosedDialog);
+      }
+
+      for (const listener of this.eventListeners) {
+        listener(method, normalizedParams);
       }
     });
   }
@@ -141,6 +257,8 @@ export class BrowserDebuggerConnection {
 
         this.attached = true;
         this.currentTabId = tabId;
+        this.currentDialog = undefined;
+        this.lastClosedDialog = undefined;
         resolve({ ok: true, attached: true, tabId, message: "浏览器控制已开启，Chrome 会显示正在调试提示。" });
       });
     });
@@ -189,6 +307,9 @@ export class BrowserDebuggerConnection {
       // tab 已关闭或用户取消调试时，Chrome 可能拒绝 detach；本地状态仍必须立即清理，避免留下假连接。
       this.attached = false;
       this.currentTabId = undefined;
+      this.currentDialog = undefined;
+      this.lastClosedDialog = undefined;
+      this.dialogWaiter = undefined;
     }
   }
 
@@ -240,6 +361,26 @@ export class BrowserDebuggerConnection {
     return this.sendCommand("Input.insertText", { text });
   }
 
+  async navigate(url: string): Promise<unknown> {
+    return this.sendCommand("Page.navigate", { url });
+  }
+
+  async reload(): Promise<unknown> {
+    return this.sendCommand("Page.reload");
+  }
+
+  async getNavigationHistory(): Promise<unknown> {
+    return this.sendCommand("Page.getNavigationHistory");
+  }
+
+  async navigateToHistoryEntry(entryId: number): Promise<unknown> {
+    return this.sendCommand("Page.navigateToHistoryEntry", { entryId });
+  }
+
+  async getFrameTree(): Promise<unknown> {
+    return this.sendCommand("Page.getFrameTree");
+  }
+
   private async sendCommand(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
     if (!ALLOWED_BROWSER_CONTROL_CDP_METHODS.has(method)) {
       throw new Error("浏览器控制不允许调用该 CDP 方法。");
@@ -255,7 +396,7 @@ export class BrowserDebuggerConnection {
       chromeApi.debugger.sendCommand({ tabId: currentTabId }, method, params, (result) => {
         const lastError = chromeApi.runtime.lastError;
         if (lastError) {
-          reject(new Error(lastError.message));
+          reject(new Error("浏览器调试命令执行失败，请确认当前页面仍可访问后重试。"));
           return;
         }
 
@@ -293,6 +434,14 @@ export class BrowserControlSnapshotManager {
 
   getAXNode(uid: string): AccessibilityNode | undefined {
     return this.uidToAxNode.get(uid);
+  }
+
+  clearSnapshotCache(): void {
+    this.snapshotVersion += 1;
+    this.lastPageIdentity = "";
+    this.uidToBackendNodeId.clear();
+    this.uidToAxNode.clear();
+    this.backendNodeIdToUid.clear();
   }
 
   async takeSnapshot(): Promise<string> {
@@ -463,6 +612,8 @@ export class BrowserControlSnapshotManager {
 
 export class BrowserControlManager {
   private targetTabId: number | undefined;
+  private readonly controlledTabIds = new Set<number>();
+  private suppressNextDetachTabId: number | undefined;
   private desiredEnabled = false;
   private operationVersion = 0;
   private readonly snapshotManager: BrowserControlSnapshotManager;
@@ -471,14 +622,23 @@ export class BrowserControlManager {
   constructor(
     private readonly connection = new BrowserDebuggerConnection(),
     private readonly chromeApi: ChromeApi | undefined = getChromeApi(),
+    private readonly onDetach?: (tabId: number, reason: BrowserControlDetachedReason) => void,
   ) {
     this.snapshotManager = new BrowserControlSnapshotManager(this.connection, () => this.getTargetTabInfo());
     this.actionExecutor = new BrowserControlActionExecutor(this.connection, this.snapshotManager);
     this.connection.installDetachListener((tabId, reason) => {
+      if (this.suppressNextDetachTabId === tabId) {
+        this.suppressNextDetachTabId = undefined;
+        return;
+      }
+
       this.targetTabId = undefined;
       this.desiredEnabled = false;
+      this.controlledTabIds.clear();
+      this.snapshotManager.clearSnapshotCache();
       this.notifyDetached(tabId, normalizeDetachReason(reason));
     });
+    this.connection.installEventListener();
   }
 
   handleTabRemoved(tabId: number): void {
@@ -487,6 +647,8 @@ export class BrowserControlManager {
     }
 
     this.targetTabId = undefined;
+    this.controlledTabIds.delete(tabId);
+    this.snapshotManager.clearSnapshotCache();
     this.notifyDetached(tabId, "tab_removed");
     void this.connection.detach(tabId).catch(() => {
       // 标签页关闭期间 detach 只是尽力清理；异常不能冒泡成未处理 Promise。
@@ -501,6 +663,8 @@ export class BrowserControlManager {
       const detachedTabId = tabId ?? this.connection.attachedTabId;
       await this.connection.detach();
       this.targetTabId = undefined;
+      this.controlledTabIds.clear();
+      this.snapshotManager.clearSnapshotCache();
       this.notifyDetached(detachedTabId, "disabled_by_user");
       return { ok: true, attached: false, message: "浏览器控制已关闭。" };
     }
@@ -508,24 +672,29 @@ export class BrowserControlManager {
     const tabResult = await this.resolveTargetTab(tabId);
     if (!this.isCurrentEnableOperation(operationVersion)) {
       this.targetTabId = undefined;
+      this.controlledTabIds.clear();
       return { ok: true, attached: false, message: "浏览器控制已关闭。" };
     }
 
     if (!tabResult.ok) {
       this.targetTabId = undefined;
+      this.controlledTabIds.clear();
       return tabResult;
     }
 
     this.targetTabId = tabResult.tab.id;
+    await this.initializeControlledTabs(tabResult.tab);
     const attachResult = await this.connection.attach(tabResult.tab.id, () => this.isCurrentEnableOperation(operationVersion));
     if (!this.isCurrentEnableOperation(operationVersion)) {
       await this.connection.detach(tabResult.tab.id);
       this.targetTabId = undefined;
+      this.controlledTabIds.clear();
       return { ok: true, attached: false, message: "浏览器控制已关闭。" };
     }
 
     if (!attachResult.ok) {
       this.targetTabId = undefined;
+      this.controlledTabIds.clear();
     }
 
     return attachResult;
@@ -561,6 +730,14 @@ export class BrowserControlManager {
   }
 
   async executeBrowserTool(toolCall: ModelToolCall): Promise<ModelToolResult> {
+    if (isBrowserControlPageToolName(toolCall.name)) {
+      if (!this.canExposeBrowserTool()) {
+        return createBrowserActionDisabledResult(toolCall);
+      }
+
+      return this.executePageTool(toolCall);
+    }
+
     if (!isBrowserControlActionName(toolCall.name)) {
       return createBrowserActionErrorResult(toolCall, `未知的浏览器操作工具：${toolCall.name}。`);
     }
@@ -569,7 +746,236 @@ export class BrowserControlManager {
       return createBrowserActionDisabledResult(toolCall);
     }
 
-    return this.actionExecutor.execute(toolCall);
+    const result = await this.actionExecutor.execute(toolCall);
+    if (result.isError) {
+      return result;
+    }
+
+    try {
+      const content = await this.waitAfterPageChange(result.content);
+      return {
+        ...result,
+        content: toolCall.arguments.includeSnapshot === true ? await this.appendSnapshot(content) : content,
+      };
+    } catch (error) {
+      return createBrowserActionErrorResult(toolCall, normalizePageToolError(error));
+    }
+  }
+
+  private async executePageTool(toolCall: ModelToolCall): Promise<ModelToolResult> {
+    const validation = validatePageToolArguments(toolCall);
+    if (!validation.ok) {
+      return createBrowserToolErrorResult(toolCall, validation.message);
+    }
+
+    try {
+      let content = "";
+      if (toolCall.name === "navigate_page") {
+        content = await this.navigatePage(toolCall.arguments);
+      } else if (toolCall.name === "new_page") {
+        content = await this.newPage(toolCall.arguments);
+      } else if (toolCall.name === "list_pages") {
+        content = await this.listPages();
+      } else if (toolCall.name === "select_page") {
+        content = await this.selectPage(Number(toolCall.arguments.index), toolCall.arguments.includeSnapshot === true);
+      } else {
+        content = await this.closePage(Number(toolCall.arguments.index));
+      }
+
+      return {
+        toolCallId: toolCall.id,
+        name: toolCall.name,
+        content,
+      };
+    } catch (error) {
+      return createBrowserToolErrorResult(toolCall, normalizePageToolError(error));
+    }
+  }
+
+  private async navigatePage(args: Record<string, unknown>): Promise<string> {
+    const action = String(args.action);
+    let content = "";
+    if (action === "goto") {
+      const urlResult = normalizeNavigableUrl(args.url);
+      if (!urlResult.ok) {
+        throw new Error(urlResult.message);
+      }
+      await this.connection.navigate(urlResult.url);
+      this.snapshotManager.clearSnapshotCache();
+      content = `已导航到 ${urlResult.url}。`;
+    } else if (action === "reload") {
+      await this.connection.reload();
+      this.snapshotManager.clearSnapshotCache();
+      content = "已刷新当前页面。";
+    } else {
+      const history = normalizeNavigationHistory(await this.connection.getNavigationHistory());
+      const nextIndex = action === "back" ? history.currentIndex - 1 : history.currentIndex + 1;
+      const target = history.entries[nextIndex];
+      if (!target) {
+        throw new Error(action === "back" ? "当前页面没有可后退的历史记录。" : "当前页面没有可前进的历史记录。");
+      }
+      await this.connection.navigateToHistoryEntry(target.id);
+      this.snapshotManager.clearSnapshotCache();
+      content = action === "back" ? "已后退到上一页。" : "已前进到下一页。";
+    }
+
+    content = await this.waitAfterPageChange(content);
+    return args.includeSnapshot === true ? this.appendSnapshot(content) : content;
+  }
+
+  private async newPage(args: Record<string, unknown>): Promise<string> {
+    const urlResult = normalizeNavigableUrl(args.url);
+    if (!urlResult.ok) {
+      throw new Error(urlResult.message);
+    }
+
+    const currentTab = await this.getCurrentControlledTab();
+    const active = args.background !== true;
+    const createdTab = await this.chromeApi?.tabs.create?.({
+      url: urlResult.url,
+      active,
+      ...(typeof currentTab?.windowId === "number" ? { windowId: currentTab.windowId } : {}),
+    });
+    if (!createdTab?.id) {
+      throw new Error("新建页面失败，请确认浏览器仍可创建标签页。");
+    }
+
+    this.controlledTabIds.add(createdTab.id);
+    if (!active) {
+      return `已在后台新建页面：${urlResult.url}。如需切换，请先调用 list_pages 获取页面 index。`;
+    }
+
+    await this.switchToTab(createdTab.id);
+    let content = `已新建并切换到新页面：${urlResult.url}。`;
+    content = await this.waitAfterPageChange(content);
+    return args.includeSnapshot === true ? this.appendSnapshot(content) : content;
+  }
+
+  private async listPages(): Promise<string> {
+    const pages = await this.getControlledPages();
+    if (!pages.length) {
+      return "当前浏览器控制后台受控列表内没有可控页面。";
+    }
+
+    const activeTabId = this.connection.attachedTabId ?? this.targetTabId;
+    return [
+      "当前浏览器控制任务页面：",
+      ...pages.map((page, index) => {
+        const marker = page.id === activeTabId ? "当前 " : "";
+        return `${index + 1}. ${marker}${page.title || "无标题"} - ${getBrowserControlTabUrl(page)}`;
+      }),
+    ].join("\n");
+  }
+
+  private async selectPage(index: number, includeSnapshot: boolean): Promise<string> {
+    const page = await this.getControlledPageByIndex(index);
+    await this.switchToTab(page.id);
+    let content = `已切换到页面 ${index}：${page.title || "无标题"}。`;
+    content = await this.waitAfterPageChange(content);
+    return includeSnapshot ? this.appendSnapshot(content) : content;
+  }
+
+  private async closePage(index: number): Promise<string> {
+    const page = await this.getControlledPageByIndex(index);
+    const closedCurrent = page.id === this.connection.attachedTabId || page.id === this.targetTabId;
+    const remainingPages = (await this.getControlledPages()).filter((item) => item.id !== page.id);
+    if (closedCurrent) {
+      this.suppressNextDetachTabId = page.id;
+    }
+
+    await this.chromeApi?.tabs.remove?.(page.id);
+    this.controlledTabIds.delete(page.id);
+    if (!closedCurrent) {
+      return `已关闭页面 ${index}：${page.title || "无标题"}。`;
+    }
+
+    if (!remainingPages.length) {
+      const detachedTabId = this.connection.attachedTabId;
+      await this.connection.detach();
+      this.targetTabId = undefined;
+      this.controlledTabIds.clear();
+      this.snapshotManager.clearSnapshotCache();
+      this.notifyDetached(detachedTabId, "tab_removed");
+      return `已关闭当前受控页面 ${index}，浏览器控制后台受控列表内没有其他可控页面。`;
+    }
+
+    await this.switchToTab(remainingPages[0].id);
+    return `已关闭当前受控页面 ${index}，并切换到页面 1：${remainingPages[0].title || "无标题"}。`;
+  }
+
+  private async switchToTab(tabId: number): Promise<void> {
+    await this.chromeApi?.tabs.update?.(tabId, { active: true });
+    this.snapshotManager.clearSnapshotCache();
+    this.targetTabId = tabId;
+    this.controlledTabIds.add(tabId);
+    const attachResult = await this.connection.attach(tabId);
+    if (!attachResult.ok) {
+      this.targetTabId = undefined;
+      throw new Error(attachResult.message);
+    }
+  }
+
+  private async waitAfterPageChange(content: string): Promise<string> {
+    const dialogHint = await this.connection.waitForOpenDialogToClose();
+    const normalized = dialogHint ? `${content}\n${dialogHint}` : content;
+    await waitForStableDom(this.connection);
+    return normalized;
+  }
+
+  private async appendSnapshot(content: string): Promise<string> {
+    return `${content}\n\n## 最新页面快照\n${await this.snapshotManager.takeSnapshot()}`;
+  }
+
+  private async initializeControlledTabs(targetTab: chrome.tabs.Tab & { id: number }): Promise<void> {
+    this.controlledTabIds.clear();
+    const tabs = await (this.chromeApi?.tabs.query({
+      currentWindow: true,
+      ...(typeof targetTab.windowId === "number" ? { windowId: targetTab.windowId } : {}),
+    }) ?? Promise.resolve([]));
+
+    for (const tab of tabs) {
+      if (typeof tab.id === "number" && !isBrowserControlRestrictedUrl(getBrowserControlTabUrl(tab))) {
+        this.controlledTabIds.add(tab.id);
+      }
+    }
+
+    // 当前目标页是用户显式开启控制的入口，即使 query 在测试环境或浏览器瞬态下没有返回，也必须纳入后台受控列表。
+    this.controlledTabIds.add(targetTab.id);
+  }
+
+  private async getControlledPages(): Promise<Array<chrome.tabs.Tab & { id: number }>> {
+    const pages = await Promise.all(Array.from(this.controlledTabIds).map(async (tabId) => {
+      try {
+        return await this.chromeApi?.tabs.get(tabId);
+      } catch {
+        this.controlledTabIds.delete(tabId);
+        return undefined;
+      }
+    }));
+    return pages.filter((tab): tab is chrome.tabs.Tab & { id: number } =>
+      Boolean(tab?.id) &&
+      !isBrowserControlRestrictedUrl(getBrowserControlTabUrl(tab)),
+    );
+  }
+
+  private async getControlledPageByIndex(index: number): Promise<chrome.tabs.Tab & { id: number }> {
+    const pages = await this.getControlledPages();
+    const page = pages[index - 1];
+    if (!page) {
+      throw new Error("页面 index 不在当前浏览器控制任务范围内。");
+    }
+
+    return page;
+  }
+
+  private async getCurrentControlledTab(): Promise<(chrome.tabs.Tab & { id: number }) | undefined> {
+    const tabId = this.connection.attachedTabId ?? this.targetTabId;
+    if (!tabId) {
+      return undefined;
+    }
+
+    const tab = await this.chromeApi?.tabs.get(tabId);
+    return tab?.id ? tab as chrome.tabs.Tab & { id: number } : undefined;
   }
 
   private async resolveTargetTab(tabId?: number): Promise<{ ok: true; tab: chrome.tabs.Tab & { id: number } } | { ok: false; message: string }> {
@@ -620,6 +1026,10 @@ export class BrowserControlManager {
   }
 
   private notifyDetached(tabId: number | undefined, reason: BrowserControlDetachedReason): void {
+    if (typeof tabId === "number") {
+      this.onDetach?.(tabId, reason);
+    }
+
     // Side Panel 的浏览器控制按钮是全局运行态；用户点击 Chrome 顶部“取消”不会经过前端，所以必须广播状态失效事件。
     this.chromeApi?.runtime?.sendMessage?.({
       type: BROWSER_CONTROL_DETACHED_MESSAGE_TYPE,
@@ -640,6 +1050,166 @@ function createBrowserToolErrorResult(toolCall: ModelToolCall, content: string):
     content,
     isError: true,
   };
+}
+
+function isBrowserControlPageToolName(name: string): name is BrowserControlPageToolName {
+  return name === "navigate_page" || name === "new_page" || name === "list_pages" || name === "select_page" || name === "close_page";
+}
+
+function validatePageToolArguments(toolCall: ModelToolCall): { ok: true } | { ok: false; message: string } {
+  const args = toolCall.arguments;
+  const allowedKeysByName: Record<BrowserControlPageToolName, string[]> = {
+    navigate_page: ["action", "url", "includeSnapshot"],
+    new_page: ["url", "background", "includeSnapshot"],
+    list_pages: [],
+    select_page: ["index", "includeSnapshot"],
+    close_page: ["index"],
+  };
+  const allowedKeys = allowedKeysByName[toolCall.name as BrowserControlPageToolName] ?? [];
+  const extraKeys = Object.keys(args).filter((key) => !allowedKeys.includes(key));
+  if (extraKeys.length > 0) {
+    return { ok: false, message: `浏览器页面工具 ${toolCall.name} 不接受参数：${extraKeys.join("、")}。` };
+  }
+
+  if (toolCall.name === "navigate_page") {
+    const action = args.action;
+    if (action !== "goto" && action !== "back" && action !== "forward" && action !== "reload") {
+      return { ok: false, message: "navigate_page 的 action 必须是 goto、back、forward 或 reload。" };
+    }
+    if (action === "goto" && (typeof args.url !== "string" || !args.url.trim())) {
+      return { ok: false, message: "navigate_page 的 goto 动作需要非空 URL。" };
+    }
+    if (action !== "goto" && args.url !== undefined) {
+      return { ok: false, message: "navigate_page 只有 goto 动作可以携带 URL。" };
+    }
+    if (args.includeSnapshot !== undefined && typeof args.includeSnapshot !== "boolean") {
+      return { ok: false, message: "includeSnapshot 必须是布尔值。" };
+    }
+  }
+
+  if (toolCall.name === "new_page") {
+    if (typeof args.url !== "string" || !args.url.trim()) {
+      return { ok: false, message: "new_page 需要非空 URL。" };
+    }
+    if (args.background !== undefined && typeof args.background !== "boolean") {
+      return { ok: false, message: "background 必须是布尔值。" };
+    }
+    if (args.includeSnapshot !== undefined && typeof args.includeSnapshot !== "boolean") {
+      return { ok: false, message: "includeSnapshot 必须是布尔值。" };
+    }
+    if (args.background === true && args.includeSnapshot === true) {
+      return { ok: false, message: "new_page 在后台打开页面时不能同时请求 includeSnapshot。" };
+    }
+  }
+
+  if ((toolCall.name === "select_page" || toolCall.name === "close_page") &&
+    (typeof args.index !== "number" || !Number.isInteger(args.index) || args.index < 1)) {
+    return { ok: false, message: "页面 index 必须是从 1 开始的整数。" };
+  }
+  if (toolCall.name === "select_page" && args.includeSnapshot !== undefined && typeof args.includeSnapshot !== "boolean") {
+    return { ok: false, message: "includeSnapshot 必须是布尔值。" };
+  }
+
+  return { ok: true };
+}
+
+function normalizeNavigableUrl(value: unknown): { ok: true; url: string } | { ok: false; message: string } {
+  if (typeof value !== "string") {
+    return { ok: false, message: "导航 URL 必须是字符串。" };
+  }
+
+  let url: URL;
+  try {
+    url = new URL(value.trim());
+  } catch {
+    return { ok: false, message: "导航 URL 格式无效，已拒绝执行。" };
+  }
+
+  const normalized = url.toString();
+  if (isBrowserControlRestrictedUrl(normalized)) {
+    return { ok: false, message: "导航 URL 属于浏览器或扩展受限页面，已拒绝执行。" };
+  }
+
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    return { ok: false, message: "导航 URL 只允许 http 或 https 普通网页。" };
+  }
+
+  return { ok: true, url: normalized };
+}
+
+function normalizeNavigationHistory(response: unknown): { currentIndex: number; entries: Array<{ id: number; url: string }> } {
+  if (!response || typeof response !== "object") {
+    return { currentIndex: -1, entries: [] };
+  }
+
+  const source = response as { currentIndex?: unknown; entries?: unknown };
+  const entries = Array.isArray(source.entries)
+    ? source.entries
+        .map((entry) => entry && typeof entry === "object" ? entry as { id?: unknown; url?: unknown } : undefined)
+        .filter((entry): entry is { id: number; url: string } => typeof entry?.id === "number" && typeof entry.url === "string")
+    : [];
+  return {
+    currentIndex: typeof source.currentIndex === "number" ? source.currentIndex : -1,
+    entries,
+  };
+}
+
+async function waitForStableDom(connection: BrowserDebuggerConnection): Promise<void> {
+  try {
+    await connection.evaluate({
+      expression: `
+        (async () => {
+          const start = Date.now();
+          while (typeof document === "undefined" || !document.body) {
+            if (Date.now() - start > 3000) return false;
+            await new Promise((resolve) => setTimeout(resolve, 50));
+          }
+          return await new Promise((resolve) => {
+            let timer = null;
+            const done = () => {
+              observer.disconnect();
+              resolve(true);
+            };
+            const observer = new MutationObserver(() => {
+              if (timer) clearTimeout(timer);
+              timer = setTimeout(done, 100);
+            });
+            observer.observe(document.body, { childList: true, subtree: true, attributes: true });
+            timer = setTimeout(done, 100);
+            setTimeout(() => {
+              observer.disconnect();
+              resolve(false);
+            }, 3000);
+          });
+        })()
+      `,
+      awaitPromise: true,
+      returnByValue: true,
+    });
+  } catch {
+    // 页面跳转或关闭时 Runtime 上下文可能瞬间失效；动作结果已经返回，稳定等待只做尽力补偿。
+  }
+}
+
+function normalizePageToolError(error: unknown): string {
+  const message = error instanceof Error ? error.message : "";
+  if (message) {
+    return message;
+  }
+
+  return "浏览器页面工具执行失败，请确认当前页面仍可访问后重试。";
+}
+
+function formatDialogCloseResult(dialog: BrowserControlDialogCloseState): string {
+  if (dialog.type === "prompt" && dialog.result) {
+    return `用户已确认并输入：${dialog.userInput ?? ""}`;
+  }
+
+  return dialog.result ? "用户已确认" : "用户已取消";
+}
+
+function isClosedDialog(dialog: BrowserControlDialogState | BrowserControlDialogCloseState): dialog is BrowserControlDialogCloseState {
+  return "result" in dialog && typeof dialog.result === "boolean";
 }
 
 function normalizeAccessibilityNodes(response: unknown): AccessibilityNode[] {

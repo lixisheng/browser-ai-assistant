@@ -82,7 +82,7 @@ export class BrowserControlActionExecutor {
       return {
         toolCallId: toolCall.id,
         name: toolCall.name,
-        content: await this.appendSnapshotIfRequested(content, toolCall.arguments),
+        content,
       };
     } catch (error) {
       return createBrowserActionErrorResult(toolCall, normalizeActionError(error, Boolean(toolCall.arguments.includeSnapshot)));
@@ -240,14 +240,6 @@ export class BrowserControlActionExecutor {
     }
 
     throw new Error(`等待页面文本超时：${targets.join("、")}。`);
-  }
-
-  private async appendSnapshotIfRequested(content: string, args: Record<string, unknown>): Promise<string> {
-    if (args.includeSnapshot !== true) {
-      return content;
-    }
-
-    return `${content}\n\n## 最新页面快照\n${await this.snapshot.takeSnapshot()}`;
   }
 
   private async getObjectIdFromUid(uid: string): Promise<string> {

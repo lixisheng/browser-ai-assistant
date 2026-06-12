@@ -4,12 +4,22 @@ import {
   BROWSER_CLICK_TOOL_NAME,
   BROWSER_FILL_TOOL_ID,
   BROWSER_FILL_TOOL_NAME,
+  BROWSER_LIST_PAGES_TOOL_ID,
+  BROWSER_LIST_PAGES_TOOL_NAME,
+  BROWSER_NAVIGATE_PAGE_TOOL_ID,
+  BROWSER_NAVIGATE_PAGE_TOOL_NAME,
+  BROWSER_NEW_PAGE_TOOL_ID,
+  BROWSER_NEW_PAGE_TOOL_NAME,
   BROWSER_PRESS_KEY_TOOL_ID,
   BROWSER_PRESS_KEY_TOOL_NAME,
+  BROWSER_SELECT_PAGE_TOOL_ID,
+  BROWSER_SELECT_PAGE_TOOL_NAME,
   BROWSER_TAKE_SNAPSHOT_TOOL_ID,
   BROWSER_TAKE_SNAPSHOT_TOOL_NAME,
   BROWSER_WAIT_FOR_TOOL_ID,
   BROWSER_WAIT_FOR_TOOL_NAME,
+  BROWSER_CLOSE_PAGE_TOOL_ID,
+  BROWSER_CLOSE_PAGE_TOOL_NAME,
   CURRENT_TIME_TOOL_ID,
   CURRENT_TIME_TOOL_NAME,
   TAVILY_SEARCH_TOOL_ID,
@@ -128,6 +138,87 @@ describe("模型工具注册表", () => {
     expect(waitForTool?.parameters.properties).toMatchObject({
       text: { type: "array", items: { type: "string" } },
       timeout: { type: "number", minimum: 1, maximum: 30000 },
+    });
+  });
+
+  it("注册阶段四浏览器导航和多页面工具并收紧参数 schema", () => {
+    const tools = getRegisteredModelTools();
+    const navigateTool = tools.find((tool) => tool.id === BROWSER_NAVIGATE_PAGE_TOOL_ID);
+    const newPageTool = tools.find((tool) => tool.id === BROWSER_NEW_PAGE_TOOL_ID);
+    const listPagesTool = tools.find((tool) => tool.id === BROWSER_LIST_PAGES_TOOL_ID);
+    const selectPageTool = tools.find((tool) => tool.id === BROWSER_SELECT_PAGE_TOOL_ID);
+    const closePageTool = tools.find((tool) => tool.id === BROWSER_CLOSE_PAGE_TOOL_ID);
+
+    expect(navigateTool).toMatchObject({
+      id: BROWSER_NAVIGATE_PAGE_TOOL_ID,
+      name: BROWSER_NAVIGATE_PAGE_TOOL_NAME,
+      displayName: "浏览器导航页面",
+      parameters: {
+        type: "object",
+        required: ["action"],
+        additionalProperties: false,
+      },
+    });
+    expect(navigateTool?.parameters.properties).toMatchObject({
+      action: { type: "string", enum: ["goto", "back", "forward", "reload"] },
+      url: { type: "string" },
+      includeSnapshot: { type: "boolean" },
+    });
+
+    expect(newPageTool).toMatchObject({
+      id: BROWSER_NEW_PAGE_TOOL_ID,
+      name: BROWSER_NEW_PAGE_TOOL_NAME,
+      displayName: "浏览器新建页面",
+      parameters: {
+        type: "object",
+        required: ["url"],
+        additionalProperties: false,
+      },
+    });
+    expect(newPageTool?.parameters.properties).toMatchObject({
+      url: { type: "string" },
+      background: { type: "boolean" },
+      includeSnapshot: { type: "boolean" },
+    });
+
+    expect(listPagesTool).toMatchObject({
+      id: BROWSER_LIST_PAGES_TOOL_ID,
+      name: BROWSER_LIST_PAGES_TOOL_NAME,
+      displayName: "浏览器列出页面",
+      parameters: {
+        type: "object",
+        required: [],
+        additionalProperties: false,
+      },
+    });
+
+    expect(selectPageTool).toMatchObject({
+      id: BROWSER_SELECT_PAGE_TOOL_ID,
+      name: BROWSER_SELECT_PAGE_TOOL_NAME,
+      displayName: "浏览器切换页面",
+      parameters: {
+        type: "object",
+        required: ["index"],
+        additionalProperties: false,
+      },
+    });
+    expect(selectPageTool?.parameters.properties).toMatchObject({
+      index: { type: "integer", minimum: 1 },
+      includeSnapshot: { type: "boolean" },
+    });
+
+    expect(closePageTool).toMatchObject({
+      id: BROWSER_CLOSE_PAGE_TOOL_ID,
+      name: BROWSER_CLOSE_PAGE_TOOL_NAME,
+      displayName: "浏览器关闭页面",
+      parameters: {
+        type: "object",
+        required: ["index"],
+        additionalProperties: false,
+      },
+    });
+    expect(closePageTool?.parameters.properties).toMatchObject({
+      index: { type: "integer", minimum: 1 },
     });
   });
 });

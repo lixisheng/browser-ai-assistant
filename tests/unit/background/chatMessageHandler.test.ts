@@ -827,6 +827,74 @@ describe("聊天模型请求处理", () => {
     );
   });
 
+  it("默认 background 执行器会把阶段四浏览器导航工具转发给浏览器控制管理器", async () => {
+    registeredModelToolsMock.tools = [
+      {
+        id: "browser.navigate_page",
+        name: "navigate_page",
+        description: "导航当前受控页面",
+        parameters: {
+          type: "object",
+          properties: { action: { type: "string" }, url: { type: "string" }, includeSnapshot: { type: "boolean" } },
+          required: ["action"],
+          additionalProperties: false,
+        },
+      },
+    ];
+    browserControlManagerMock.executeBrowserTool.mockResolvedValue({
+      toolCallId: "call-1",
+      name: "navigate_page",
+      content: "已导航到 https://example.com/docs。",
+    });
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          choices: [
+            {
+              message: {
+                content: "",
+                tool_calls: [
+                  {
+                    id: "call-1",
+                    type: "function",
+                    function: {
+                      name: "navigate_page",
+                      arguments: "{\"action\":\"goto\",\"url\":\"https://example.com/docs\"}",
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          choices: [{ message: { content: "页面已打开" } }],
+        }),
+      });
+
+    const result = await handleChatSendMessage(
+      {
+        type: "chat.send",
+        model: createModel(),
+        messages: [createMessage("user", "打开文档页面")],
+        stream: false,
+        enabledToolIds: ["browser.navigate_page"],
+        toolChoice: "auto",
+      },
+      fetcher,
+    );
+
+    expect(result).toMatchObject({ ok: true, content: "页面已打开" });
+    expect(browserControlManagerMock.executeBrowserTool).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "call-1", name: "navigate_page", arguments: { action: "goto", url: "https://example.com/docs" } }),
+    );
+  });
+
   it("暴露浏览器快照工具时追加浏览器控制系统提示", async () => {
     registeredModelToolsMock.tools = [
       {
@@ -858,6 +926,49 @@ describe("聊天模型请求处理", () => {
     const body = JSON.parse(String(fetcher.mock.calls[0][1]?.body)) as { messages: Array<{ role: string; content?: string }> };
     expect(body.messages.some((message) => message.role === "system" && message.content?.includes("不要猜测 UID"))).toBe(true);
     expect(body.messages.some((message) => message.role === "system" && message.content?.includes("take_snapshot"))).toBe(true);
+  });
+
+  it("暴露阶段四浏览器工具时系统提示包含导航后 UID 失效和弹窗等待规则", async () => {
+    registeredModelToolsMock.tools = [
+      {
+        id: "browser.navigate_page",
+        name: "navigate_page",
+        description: "导航当前受控页面",
+        parameters: {
+          type: "object",
+          properties: {
+            action: { type: "string", enum: ["goto", "back", "forward", "reload"] },
+            url: { type: "string" },
+            includeSnapshot: { type: "boolean" },
+          },
+          required: ["action"],
+          additionalProperties: false,
+        },
+      },
+    ];
+    const fetcher = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({
+        choices: [{ message: { content: "普通回答" } }],
+      }),
+    });
+
+    await handleChatSendMessage(
+      {
+        type: "chat.send",
+        model: createModel(),
+        messages: [createMessage("system", "你是网页助手"), createMessage("user", "打开页面")],
+        stream: false,
+        enabledToolIds: ["browser.navigate_page"],
+        toolChoice: "auto",
+      },
+      fetcher,
+    );
+
+    const body = JSON.parse(String(fetcher.mock.calls[0][1]?.body)) as { messages: Array<{ role: string; content?: string }> };
+    const systemPrompt = body.messages.find((message) => message.role === "system")?.content ?? "";
+    expect(systemPrompt).toContain("导航、切换或新建页面后旧 UID 会失效");
+    expect(systemPrompt).toContain("遇到网页 JS 弹窗时会等待用户手动处理");
   });
 
   it("background 未连接浏览器控制时即使 runtime 传入快照工具也不向模型暴露", async () => {

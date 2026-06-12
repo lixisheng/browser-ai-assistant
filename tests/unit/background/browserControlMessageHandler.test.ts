@@ -27,6 +27,8 @@ function createNamedToolCall(name: string, argumentsValue: Record<string, unknow
 function createChromeMock(options: {
   url?: string;
   title?: string;
+  tabs?: Array<chrome.tabs.Tab & { id: number }>;
+  createdTab?: chrome.tabs.Tab & { id: number };
   attachError?: string;
   detachError?: string;
   sendCommandError?: string;
@@ -35,10 +37,30 @@ function createChromeMock(options: {
   tabGetError?: boolean;
   delayAttach?: boolean;
   axNodes?: unknown[];
+  detachOnRemove?: boolean;
 } = {}) {
   const detachListeners: Array<(source: chrome.debugger.Debuggee, reason: `${chrome.debugger.DetachReason}`) => void> = [];
+  const eventListeners: Array<(source: chrome.debugger.Debuggee, method: string, params?: Record<string, unknown>) => void> = [];
   const tabRemovedListeners: Array<(tabId: number) => void> = [];
   const attachCallbacks: Array<() => void> = [];
+  const tabs = options.tabs ?? [
+    {
+      id: 7,
+      title: options.title ?? "示例页面",
+      url: options.url ?? "https://example.com/",
+      active: true,
+      windowId: 1,
+      groupId: -1,
+    } as chrome.tabs.Tab & { id: number },
+  ];
+  const createdTab = options.createdTab ?? ({
+    id: 11,
+    title: "新页面",
+    url: "https://example.com/new",
+    active: true,
+    windowId: 1,
+    groupId: -1,
+  } as chrome.tabs.Tab & { id: number });
   const chromeMock = {
     runtime: {
       lastError: undefined as { message: string } | undefined,
@@ -74,15 +96,50 @@ function createChromeMock(options: {
       onDetach: {
         addListener: vi.fn((listener: (source: chrome.debugger.Debuggee, reason: `${chrome.debugger.DetachReason}`) => void) => detachListeners.push(listener)),
       },
+      onEvent: {
+        addListener: vi.fn((listener: (source: chrome.debugger.Debuggee, method: string, params?: Record<string, unknown>) => void) => eventListeners.push(listener)),
+      },
     },
     tabs: {
       get: vi.fn(async (tabId: number) => {
         if (options.tabGetError) {
           throw new Error("tab closed");
         }
-        return { id: tabId, title: options.title ?? "示例页面", url: options.url ?? "https://example.com/" };
+        return tabs.find((tab) => tab.id === tabId) ?? { id: tabId, title: options.title ?? "示例页面", url: options.url ?? "https://example.com/", windowId: 1 };
       }),
-      query: vi.fn(async () => [{ id: 7, title: options.title ?? "示例页面", url: options.url ?? "https://example.com/" }]),
+      query: vi.fn(async (queryInfo?: chrome.tabs.QueryInfo) => {
+        if (queryInfo && "groupId" in queryInfo && typeof queryInfo.groupId === "number") {
+          return tabs.filter((tab) => tab.groupId === queryInfo.groupId);
+        }
+        if (queryInfo?.active) {
+          return tabs.filter((tab) => tab.active);
+        }
+        return tabs;
+      }),
+      create: vi.fn(async (createProperties: chrome.tabs.CreateProperties) => {
+        const tab = {
+          ...createdTab,
+          url: createProperties.url ?? createdTab.url,
+          active: createProperties.active ?? true,
+        };
+        tabs.push(tab);
+        return tab;
+      }),
+      update: vi.fn(async (tabId: number, updateProperties: chrome.tabs.UpdateProperties) => {
+        const tab = tabs.find((item) => item.id === tabId) ?? createdTab;
+        Object.assign(tab, updateProperties);
+        return tab;
+      }),
+      remove: vi.fn(async (tabId: number) => {
+        const index = tabs.findIndex((tab) => tab.id === tabId);
+        if (index >= 0) {
+          tabs.splice(index, 1);
+        }
+        if (options.detachOnRemove) {
+          detachListeners[0]?.({ tabId }, "target_closed");
+        }
+      }),
+      group: vi.fn(async () => 3),
       onRemoved: {
         addListener: vi.fn((listener: (tabId: number) => void) => tabRemovedListeners.push(listener)),
       },
@@ -94,19 +151,28 @@ function createChromeMock(options: {
       detach: ReturnType<typeof vi.fn>;
       sendCommand: ReturnType<typeof vi.fn>;
       onDetach: { addListener: ReturnType<typeof vi.fn> };
+      onEvent: { addListener: ReturnType<typeof vi.fn> };
     };
     tabs: {
       get: ReturnType<typeof vi.fn>;
       query: ReturnType<typeof vi.fn>;
+      create: ReturnType<typeof vi.fn>;
+      update: ReturnType<typeof vi.fn>;
+      remove: ReturnType<typeof vi.fn>;
+      group?: ReturnType<typeof vi.fn>;
     };
     detachListeners: typeof detachListeners;
+    eventListeners: typeof eventListeners;
     tabRemovedListeners: typeof tabRemovedListeners;
     attachCallbacks: typeof attachCallbacks;
+    tabsState: typeof tabs;
   };
 
   chromeMock.detachListeners = detachListeners;
+  chromeMock.eventListeners = eventListeners;
   chromeMock.tabRemovedListeners = tabRemovedListeners;
   chromeMock.attachCallbacks = attachCallbacks;
+  chromeMock.tabsState = tabs;
   return chromeMock;
 }
 
@@ -526,7 +592,7 @@ describe("浏览器控制地基", () => {
 
     await manager.setEnabled(true, 9);
     const snapshot = await manager.takeSnapshot(createToolCall());
-    const uid = snapshot.content.match(/uid=([^\s]+)/)?.[1] ?? "";
+    const uid = snapshot.content.match(/uid=([0-9_]+)/)?.[1] ?? "";
     const result = await manager.executeBrowserTool(createNamedToolCall("click", { uid }));
 
     expect(result).toEqual({
@@ -734,5 +800,312 @@ describe("浏览器控制地基", () => {
     expect(failure.isError).toBe(true);
     expect(failure.content).not.toContain("## 最新页面快照");
     expect(failure.content).toContain("请重新调用 take_snapshot");
+  });
+
+  it("开启浏览器控制后把当前窗口所有可控标签页加入后台受控列表", async () => {
+    const chromeMock = createChromeMock({
+      tabs: [
+        { id: 9, title: "任务页", url: "https://example.com/", active: true, windowId: 1, groupId: -1 } as chrome.tabs.Tab & { id: number },
+        { id: 10, title: "同窗口页面", url: "https://example.com/other", active: false, windowId: 1, groupId: -1 } as chrome.tabs.Tab & { id: number },
+        { id: 11, title: "受限页面", url: "chrome://settings", active: false, windowId: 1, groupId: -1 } as chrome.tabs.Tab & { id: number },
+      ],
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const result = await manager.executeBrowserTool(createNamedToolCall("list_pages"));
+
+    expect(result.content).toContain("1. 当前 任务页");
+    expect(result.content).toContain("2. 同窗口页面");
+    expect(result.content).not.toContain("受限页面");
+    expect(chromeMock.tabs.group).not.toHaveBeenCalled();
+  });
+
+  it("new_page 新建页面并加入后台受控列表", async () => {
+    const chromeMock = createChromeMock({
+      tabs: [{ id: 9, title: "任务页", url: "https://example.com/", active: true, windowId: 1, groupId: -1 } as chrome.tabs.Tab & { id: number }],
+      createdTab: { id: 12, title: "新页面", url: "https://example.com/new", active: true, windowId: 1, groupId: -1 } as chrome.tabs.Tab & { id: number },
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const result = await manager.executeBrowserTool(createNamedToolCall("new_page", { url: "https://example.com/new" }));
+
+    expect(result.content).toContain("已新建并切换到新页面");
+    expect(result.content).not.toContain("12");
+    expect(chromeMock.tabs.create).toHaveBeenCalledWith({ url: "https://example.com/new", active: true, windowId: 1 });
+    expect(chromeMock.tabs.group).not.toHaveBeenCalled();
+    expect(connection.attachedTabId).toBe(12);
+  });
+
+  it("后台受控列表保留 new_page 页面", async () => {
+    const chromeMock = createChromeMock({
+      tabs: [{ id: 9, title: "任务页", url: "https://example.com/", active: true, windowId: 1, groupId: -1 } as chrome.tabs.Tab & { id: number }],
+      createdTab: { id: 12, title: "新页面", url: "https://example.com/new", active: true, windowId: 1, groupId: -1 } as chrome.tabs.Tab & { id: number },
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const newPageResult = await manager.executeBrowserTool(createNamedToolCall("new_page", { url: "https://example.com/new" }));
+    const result = await manager.executeBrowserTool(createNamedToolCall("list_pages"));
+
+    expect(newPageResult.content).not.toContain("12");
+    expect(result.content).toContain("1. 任务页");
+    expect(result.content).toContain("2. 当前 新页面");
+    expect(connection.attachedTabId).toBe(12);
+  });
+
+  it("list_pages 只列出后台受控列表内页面并使用一基 index", async () => {
+    const chromeMock = createChromeMock({
+      tabs: [
+        { id: 9, title: "任务页 A", url: "https://example.com/a", active: true, windowId: 1, groupId: 4 } as chrome.tabs.Tab & { id: number },
+        { id: 99, title: "受限页", url: "chrome://settings", active: false, windowId: 1, groupId: -1 } as chrome.tabs.Tab & { id: number },
+      ],
+      createdTab: { id: 10, title: "任务页 B", url: "https://example.com/b", active: true, windowId: 1, groupId: -1 } as chrome.tabs.Tab & { id: number },
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    await manager.executeBrowserTool(createNamedToolCall("new_page", { url: "https://example.com/b", background: true }));
+    const result = await manager.executeBrowserTool(createNamedToolCall("list_pages"));
+
+    expect(result.content).toContain("1. 当前 任务页 A");
+    expect(result.content).toContain("2. 任务页 B");
+    expect(result.content).not.toContain("受限页");
+    expect(chromeMock.tabs.query).not.toHaveBeenCalledWith({ groupId: 4 });
+  });
+
+  it("目标页原本属于用户分组时不修改用户标签组", async () => {
+    const chromeMock = createChromeMock({
+      tabs: [
+        { id: 9, title: "任务页", url: "https://example.com/task", active: true, windowId: 1, groupId: 4 } as chrome.tabs.Tab & { id: number },
+        { id: 99, title: "用户同组页", url: "https://outside.example/", active: false, windowId: 1, groupId: 4 } as chrome.tabs.Tab & { id: number },
+      ],
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const result = await manager.executeBrowserTool(createNamedToolCall("list_pages"));
+
+    expect(result.content).toContain("1. 当前 任务页");
+    expect(result.content).toContain("2. 用户同组页");
+    expect(chromeMock.tabs.group).not.toHaveBeenCalled();
+  });
+
+  it("select_page 只能切换到后台受控列表内页面", async () => {
+    const chromeMock = createChromeMock({
+      tabs: [
+        { id: 9, title: "任务页 A", url: "https://example.com/a", active: true, windowId: 1, groupId: 4 } as chrome.tabs.Tab & { id: number },
+      ],
+      createdTab: { id: 10, title: "任务页 B", url: "https://example.com/b", active: true, windowId: 1, groupId: -1 } as chrome.tabs.Tab & { id: number },
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    await manager.executeBrowserTool(createNamedToolCall("new_page", { url: "https://example.com/b", background: true }));
+    const result = await manager.executeBrowserTool(createNamedToolCall("select_page", { index: 2 }));
+
+    expect(result.content).toContain("已切换到页面 2");
+    expect(chromeMock.tabs.update).toHaveBeenCalledWith(10, { active: true });
+    expect(connection.attachedTabId).toBe(10);
+  });
+
+  it("close_page 拒绝关闭后台受控列表之外的页面 index", async () => {
+    const chromeMock = createChromeMock({
+      tabs: [{ id: 9, title: "任务页 A", url: "https://example.com/a", active: true, windowId: 1, groupId: 4 } as chrome.tabs.Tab & { id: number }],
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const result = await manager.executeBrowserTool(createNamedToolCall("close_page", { index: 2 }));
+
+    expect(result).toEqual({
+      toolCallId: "call-1",
+      name: "close_page",
+      content: "页面 index 不在当前浏览器控制任务范围内。",
+      isError: true,
+    });
+    expect(chromeMock.tabs.remove).not.toHaveBeenCalled();
+  });
+
+  it("close_page 关闭当前页触发 debugger detach 时仍切换到剩余受控页", async () => {
+    const chromeMock = createChromeMock({
+      detachOnRemove: true,
+      tabs: [
+        { id: 9, title: "任务页 A", url: "https://example.com/a", active: true, windowId: 1, groupId: 4 } as chrome.tabs.Tab & { id: number },
+      ],
+      createdTab: { id: 10, title: "任务页 B", url: "https://example.com/b", active: true, windowId: 1, groupId: -1 } as chrome.tabs.Tab & { id: number },
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const onDetach = vi.fn();
+    const manager = new BrowserControlManager(connection, chromeMock, onDetach);
+
+    await manager.setEnabled(true, 9);
+    await manager.executeBrowserTool(createNamedToolCall("new_page", { url: "https://example.com/b", background: true }));
+    const result = await manager.executeBrowserTool(createNamedToolCall("close_page", { index: 1 }));
+
+    expect(result.content).toContain("已关闭当前受控页面 1");
+    expect(result.content).toContain("并切换到页面 1");
+    expect(connection.attachedTabId).toBe(10);
+    expect(onDetach).not.toHaveBeenCalled();
+  });
+
+  it("navigate_page 拒绝受限或非 http URL", async () => {
+    const chromeMock = createChromeMock();
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 7);
+    const result = await manager.executeBrowserTool(createNamedToolCall("navigate_page", { action: "goto", url: "chrome://settings" }));
+
+    expect(result).toEqual({
+      toolCallId: "call-1",
+      name: "navigate_page",
+      content: "导航 URL 属于浏览器或扩展受限页面，已拒绝执行。",
+      isError: true,
+    });
+    expect(chromeMock.debugger.sendCommand).not.toHaveBeenCalledWith({ tabId: 7 }, "Page.navigate", expect.anything(), expect.any(Function));
+  });
+
+  it("navigate_page 非 goto 动作拒绝携带 url 参数", async () => {
+    const chromeMock = createChromeMock();
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 7);
+    const result = await manager.executeBrowserTool(createNamedToolCall("navigate_page", { action: "reload", url: "https://example.com/ignored" }));
+
+    expect(result).toEqual({
+      toolCallId: "call-1",
+      name: "navigate_page",
+      content: "navigate_page 只有 goto 动作可以携带 URL。",
+      isError: true,
+    });
+    expect(chromeMock.debugger.sendCommand).not.toHaveBeenCalledWith({ tabId: 7 }, "Page.reload", expect.anything(), expect.any(Function));
+  });
+
+  it("页面工具底层调试错误不会透出原始错误详情", async () => {
+    const chromeMock = createChromeMock({
+      sendCommandError: "Cannot access https://secret.example/?token=abc",
+      sendCommandErrorMethod: "Page.reload",
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 7);
+    const result = await manager.executeBrowserTool(createNamedToolCall("navigate_page", { action: "reload" }));
+
+    expect(result).toEqual({
+      toolCallId: "call-1",
+      name: "navigate_page",
+      content: "浏览器调试命令执行失败，请确认当前页面仍可访问后重试。",
+      isError: true,
+    });
+    expect(result.content).not.toContain("secret.example");
+    expect(result.content).not.toContain("token=abc");
+  });
+
+  it("new_page 后台打开时拒绝 includeSnapshot 避免误读当前页快照", async () => {
+    const chromeMock = createChromeMock();
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 7);
+    const result = await manager.executeBrowserTool(createNamedToolCall("new_page", { url: "https://example.com/new", background: true, includeSnapshot: true }));
+
+    expect(result).toEqual({
+      toolCallId: "call-1",
+      name: "new_page",
+      content: "new_page 在后台打开页面时不能同时请求 includeSnapshot。",
+      isError: true,
+    });
+    expect(chromeMock.tabs.create).not.toHaveBeenCalled();
+  });
+
+  it("navigate_page 支持后退前进且无历史项时返回中文错误", async () => {
+    const chromeMock = createChromeMock({
+      sendCommandResults: {
+        "Page.getNavigationHistory": { currentIndex: 0, entries: [{ id: 1, url: "https://example.com/" }] },
+      },
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 7);
+    const result = await manager.executeBrowserTool(createNamedToolCall("navigate_page", { action: "back" }));
+
+    expect(result).toEqual({
+      toolCallId: "call-1",
+      name: "navigate_page",
+      content: "当前页面没有可后退的历史记录。",
+      isError: true,
+    });
+  });
+
+  it("JS 弹窗出现时等待用户手动处理并把确认结果追加到工具结果", async () => {
+    const chromeMock = createChromeMock({
+      sendCommandResults: {
+        "Runtime.evaluate": { result: { value: "完成" } },
+      },
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 7);
+    const resultPromise = manager.executeBrowserTool(createNamedToolCall("wait_for", { text: ["完成"] }));
+    chromeMock.eventListeners[0]?.({ tabId: 7 }, "Page.javascriptDialogOpening", { type: "confirm", message: "确定继续吗？" });
+    chromeMock.eventListeners[0]?.({ tabId: 7 }, "Page.javascriptDialogClosed", { result: true });
+    const result = await resultPromise;
+
+    expect(result.content).toContain("已等待到页面文本：完成。");
+    expect(result.content).toContain("检测到网页弹窗：confirm「确定继续吗？」");
+    expect(result.content).toContain("用户已确认");
+  });
+
+  it("动作 includeSnapshot 在稳定等待后读取最新快照", async () => {
+    const callOrder: string[] = [];
+    const chromeMock = createChromeMock({
+      axNodes: [
+        { nodeId: "root", role: { value: "RootWebArea" }, name: { value: "示例页面" }, childIds: ["button"] },
+        { nodeId: "button", role: { value: "button" }, name: { value: "打开" }, backendDOMNodeId: 101 },
+      ],
+    });
+    chromeMock.debugger.sendCommand.mockImplementation((_debuggee: chrome.debugger.Debuggee, method: string, _params: unknown, callback: (result?: unknown) => void) => {
+      callOrder.push(method);
+      callback(method === "Accessibility.getFullAXTree"
+        ? { nodes: [
+            { nodeId: "root", role: { value: "RootWebArea" }, name: { value: "示例页面" }, childIds: ["button"] },
+            { nodeId: "button", role: { value: "button" }, name: { value: "打开" }, backendDOMNodeId: 101 },
+          ] }
+        : method === "DOM.resolveNode"
+          ? { object: { objectId: "node-101" } }
+          : method === "DOM.getBoxModel"
+            ? { model: { content: [0, 0, 100, 0, 100, 40, 0, 40] } }
+            : method === "Runtime.callFunctionOn"
+              ? { result: { value: true } }
+              : {});
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 7);
+    const snapshot = await manager.takeSnapshot(createToolCall());
+    const uid = snapshot.content.match(/uid=([^\s]+)/)?.[1] ?? "";
+    callOrder.length = 0;
+
+    const result = await manager.executeBrowserTool(createNamedToolCall("click", { uid, includeSnapshot: true }));
+
+    expect(result.isError).toBeFalsy();
+    const stableWaitIndex = callOrder.indexOf("Runtime.evaluate");
+    const snapshotIndex = callOrder.indexOf("Accessibility.getFullAXTree");
+    expect(stableWaitIndex).toBeGreaterThanOrEqual(0);
+    expect(snapshotIndex).toBeGreaterThan(stableWaitIndex);
   });
 });

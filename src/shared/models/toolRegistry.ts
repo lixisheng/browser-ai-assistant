@@ -14,6 +14,16 @@ export const BROWSER_PRESS_KEY_TOOL_ID = "browser.press_key";
 export const BROWSER_PRESS_KEY_TOOL_NAME = "press_key";
 export const BROWSER_WAIT_FOR_TOOL_ID = "browser.wait_for";
 export const BROWSER_WAIT_FOR_TOOL_NAME = "wait_for";
+export const BROWSER_NAVIGATE_PAGE_TOOL_ID = "browser.navigate_page";
+export const BROWSER_NAVIGATE_PAGE_TOOL_NAME = "navigate_page";
+export const BROWSER_NEW_PAGE_TOOL_ID = "browser.new_page";
+export const BROWSER_NEW_PAGE_TOOL_NAME = "new_page";
+export const BROWSER_LIST_PAGES_TOOL_ID = "browser.list_pages";
+export const BROWSER_LIST_PAGES_TOOL_NAME = "list_pages";
+export const BROWSER_SELECT_PAGE_TOOL_ID = "browser.select_page";
+export const BROWSER_SELECT_PAGE_TOOL_NAME = "select_page";
+export const BROWSER_CLOSE_PAGE_TOOL_ID = "browser.close_page";
+export const BROWSER_CLOSE_PAGE_TOOL_NAME = "close_page";
 
 export const AVAILABLE_MODEL_TOOLS: ModelToolRegistryEntry[] = [
   {
@@ -145,6 +155,109 @@ export const AVAILABLE_MODEL_TOOLS: ModelToolRegistryEntry[] = [
         },
       },
       required: ["text"],
+      additionalProperties: false,
+    },
+  },
+  {
+    id: BROWSER_NAVIGATE_PAGE_TOOL_ID,
+    name: BROWSER_NAVIGATE_PAGE_TOOL_NAME,
+    displayName: "浏览器导航页面",
+    description: "在当前受控页面中执行跳转、后退、前进或刷新。导航后旧 UID 会失效，继续操作前应重新读取快照。",
+    parameters: {
+      type: "object",
+      properties: {
+        action: {
+          type: "string",
+          enum: ["goto", "back", "forward", "reload"],
+          description: "导航动作：goto 跳转到 URL，back 后退，forward 前进，reload 刷新当前页。",
+        },
+        url: {
+          type: "string",
+          description: "goto 动作的目标 URL，仅允许 http 或 https 普通网页。",
+        },
+        includeSnapshot: {
+          type: "boolean",
+          description: "导航成功后是否附带最新页面快照。",
+        },
+      },
+      required: ["action"],
+      additionalProperties: false,
+    },
+  },
+  {
+    id: BROWSER_NEW_PAGE_TOOL_ID,
+    name: BROWSER_NEW_PAGE_TOOL_NAME,
+    displayName: "浏览器新建页面",
+    description: "打开新的普通网页并加入浏览器控制后台受控页面列表，默认切换为当前受控页面。",
+    parameters: {
+      type: "object",
+      properties: {
+        url: {
+          type: "string",
+          description: "要打开的目标 URL，仅允许 http 或 https 普通网页。",
+        },
+        background: {
+          type: "boolean",
+          description: "是否在后台打开；默认 false 表示打开后切换到新页面。",
+        },
+        includeSnapshot: {
+          type: "boolean",
+          description: "新页面打开并切换成功后是否附带最新页面快照。",
+        },
+      },
+      required: ["url"],
+      additionalProperties: false,
+    },
+  },
+  {
+    id: BROWSER_LIST_PAGES_TOOL_ID,
+    name: BROWSER_LIST_PAGES_TOOL_NAME,
+    displayName: "浏览器列出页面",
+    description: "列出当前浏览器控制后台受控页面列表。select_page 和 close_page 只能使用这里返回的 index。",
+    parameters: {
+      type: "object",
+      properties: {},
+      required: [],
+      additionalProperties: false,
+    },
+  },
+  {
+    id: BROWSER_SELECT_PAGE_TOOL_ID,
+    name: BROWSER_SELECT_PAGE_TOOL_NAME,
+    displayName: "浏览器切换页面",
+    description: "根据 list_pages 返回的 index 切换当前受控页面。切换后旧 UID 会失效。",
+    parameters: {
+      type: "object",
+      properties: {
+        index: {
+          type: "integer",
+          minimum: 1,
+          description: "list_pages 返回的一基页面序号。",
+        },
+        includeSnapshot: {
+          type: "boolean",
+          description: "切换成功后是否附带最新页面快照。",
+        },
+      },
+      required: ["index"],
+      additionalProperties: false,
+    },
+  },
+  {
+    id: BROWSER_CLOSE_PAGE_TOOL_ID,
+    name: BROWSER_CLOSE_PAGE_TOOL_NAME,
+    displayName: "浏览器关闭页面",
+    description: "关闭当前浏览器控制后台受控列表中指定 index 的页面，不允许关闭列表外页面。",
+    parameters: {
+      type: "object",
+      properties: {
+        index: {
+          type: "integer",
+          minimum: 1,
+          description: "list_pages 返回的一基页面序号。",
+        },
+      },
+      required: ["index"],
       additionalProperties: false,
     },
   },

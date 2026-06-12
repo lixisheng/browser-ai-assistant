@@ -3,7 +3,7 @@
   "name": "Browser AI Assistant",
   "version": "0.1.0",
   "description": "基于当前网页内容进行 AI 对话的浏览器侧边栏助手。",
-  "permissions": ["sidePanel", "storage", "contextMenus", "activeTab", "scripting", "alarms", "debugger"],
+  "permissions": ["sidePanel", "storage", "contextMenus", "activeTab", "scripting", "alarms", "debugger", "tabs"],
   "host_permissions": ["<all_urls>"],
   "action": {
     "default_title": "打开 AI 助手"
