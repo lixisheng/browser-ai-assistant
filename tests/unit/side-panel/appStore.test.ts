@@ -216,7 +216,7 @@ describe("appStore 网络搜索", () => {
       chatPreferences: {
         ...state.chatPreferences,
         toolCallingEnabled: true,
-        enabledToolIds: ["web_search.tavily", "browser.take_snapshot"],
+        enabledToolIds: ["web_search.tavily", "browser.take_snapshot", "browser.click"],
       },
       browserControlEnabled: false,
     }));
@@ -229,7 +229,7 @@ describe("appStore 网络搜索", () => {
       .map(([message]) => message as { type: string; enabledToolIds?: string[] })
       .filter((message) => message.type === "chat.send");
     expect(chatRequests[0].enabledToolIds).toEqual(["web_search.tavily"]);
-    expect(chatRequests[1].enabledToolIds).toEqual(["web_search.tavily", "browser.take_snapshot"]);
+    expect(chatRequests[1].enabledToolIds).toEqual(["web_search.tavily", "browser.take_snapshot", "browser.click"]);
   });
 });
 

@@ -6,6 +6,14 @@ export const CURRENT_TIME_TOOL_ID = "system.current_time";
 export const CURRENT_TIME_TOOL_NAME = "get_current_time";
 export const BROWSER_TAKE_SNAPSHOT_TOOL_ID = "browser.take_snapshot";
 export const BROWSER_TAKE_SNAPSHOT_TOOL_NAME = "take_snapshot";
+export const BROWSER_CLICK_TOOL_ID = "browser.click";
+export const BROWSER_CLICK_TOOL_NAME = "click";
+export const BROWSER_FILL_TOOL_ID = "browser.fill";
+export const BROWSER_FILL_TOOL_NAME = "fill";
+export const BROWSER_PRESS_KEY_TOOL_ID = "browser.press_key";
+export const BROWSER_PRESS_KEY_TOOL_NAME = "press_key";
+export const BROWSER_WAIT_FOR_TOOL_ID = "browser.wait_for";
+export const BROWSER_WAIT_FOR_TOOL_NAME = "wait_for";
 
 export const AVAILABLE_MODEL_TOOLS: ModelToolRegistryEntry[] = [
   {
@@ -46,6 +54,97 @@ export const AVAILABLE_MODEL_TOOLS: ModelToolRegistryEntry[] = [
       type: "object",
       properties: {},
       required: [],
+      additionalProperties: false,
+    },
+  },
+  {
+    id: BROWSER_CLICK_TOOL_ID,
+    name: BROWSER_CLICK_TOOL_NAME,
+    displayName: "浏览器点击元素",
+    description: "点击当前受控网页快照中的指定 UID 元素。必须先通过 take_snapshot 获取 UID，不能猜测 UID。",
+    parameters: {
+      type: "object",
+      properties: {
+        uid: {
+          type: "string",
+          description: "take_snapshot 返回的元素 UID。",
+        },
+        includeSnapshot: {
+          type: "boolean",
+          description: "成功点击后是否附带最新页面快照。",
+        },
+      },
+      required: ["uid"],
+      additionalProperties: false,
+    },
+  },
+  {
+    id: BROWSER_FILL_TOOL_ID,
+    name: BROWSER_FILL_TOOL_NAME,
+    displayName: "浏览器填写元素",
+    description: "填写当前受控网页快照中的输入、选择、复选框、单选框或开关元素。",
+    parameters: {
+      type: "object",
+      properties: {
+        uid: {
+          type: "string",
+          description: "take_snapshot 返回的元素 UID。",
+        },
+        value: {
+          type: "string",
+          description: "要填写的文本；复选框、单选框和开关只接受 true 或 false。",
+        },
+        includeSnapshot: {
+          type: "boolean",
+          description: "成功填写后是否附带最新页面快照。",
+        },
+      },
+      required: ["uid", "value"],
+      additionalProperties: false,
+    },
+  },
+  {
+    id: BROWSER_PRESS_KEY_TOOL_ID,
+    name: BROWSER_PRESS_KEY_TOOL_NAME,
+    displayName: "浏览器按键",
+    description: "向当前受控网页发送白名单键盘按键或常见组合键。使用前应确认目标页面或元素已有焦点。",
+    parameters: {
+      type: "object",
+      properties: {
+        key: {
+          type: "string",
+          description: "按键名称，例如 Enter、Escape、ArrowDown、Ctrl+Enter。",
+        },
+        includeSnapshot: {
+          type: "boolean",
+          description: "成功按键后是否附带最新页面快照。",
+        },
+      },
+      required: ["key"],
+      additionalProperties: false,
+    },
+  },
+  {
+    id: BROWSER_WAIT_FOR_TOOL_ID,
+    name: BROWSER_WAIT_FOR_TOOL_NAME,
+    displayName: "浏览器等待文本",
+    description: "等待当前受控网页出现指定可见文本。超时后返回中文错误，不会继续阻塞。",
+    parameters: {
+      type: "object",
+      properties: {
+        text: {
+          type: "array",
+          items: { type: "string" },
+          description: "任一出现即可成功的页面文本列表。",
+        },
+        timeout: {
+          type: "number",
+          minimum: 1,
+          maximum: 30000,
+          description: "等待毫秒数，最大 30000。",
+        },
+      },
+      required: ["text"],
       additionalProperties: false,
     },
   },

@@ -16,6 +16,14 @@ function createToolCall(argumentsValue: Record<string, unknown> = {}): ModelTool
   };
 }
 
+function createNamedToolCall(name: string, argumentsValue: Record<string, unknown> = {}): ModelToolCall {
+  return {
+    id: "call-1",
+    name,
+    arguments: argumentsValue,
+  };
+}
+
 function createChromeMock(options: {
   url?: string;
   title?: string;
@@ -23,6 +31,7 @@ function createChromeMock(options: {
   detachError?: string;
   sendCommandError?: string;
   sendCommandErrorMethod?: string;
+  sendCommandResults?: Record<string, unknown>;
   tabGetError?: boolean;
   delayAttach?: boolean;
   axNodes?: unknown[];
@@ -59,7 +68,7 @@ function createChromeMock(options: {
         chromeMock.runtime.lastError = options.sendCommandError && (!options.sendCommandErrorMethod || options.sendCommandErrorMethod === method)
           ? { message: options.sendCommandError }
           : undefined;
-        callback(method === "Accessibility.getFullAXTree" ? { nodes: options.axNodes ?? [] } : {});
+        callback(options.sendCommandResults?.[method] ?? (method === "Accessibility.getFullAXTree" ? { nodes: options.axNodes ?? [] } : {}));
         chromeMock.runtime.lastError = undefined;
       }),
       onDetach: {
@@ -125,6 +134,17 @@ describe("浏览器控制地基", () => {
     expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith({ tabId: 9 }, "Page.enable", {}, expect.any(Function));
     expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith({ tabId: 9 }, "DOM.enable", {}, expect.any(Function));
     expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith({ tabId: 9 }, "Accessibility.enable", {}, expect.any(Function));
+  });
+
+  it("底层调试连接运行时拒绝未允许的 CDP 方法", async () => {
+    const chromeMock = createChromeMock();
+    const connection = new BrowserDebuggerConnection(chromeMock);
+
+    await connection.attach(9);
+    await expect((connection as unknown as { sendCommand: (method: string) => Promise<unknown> }).sendCommand("Network.getAllCookies")).rejects.toThrow(
+      "浏览器控制不允许调用该 CDP 方法。",
+    );
+    expect(chromeMock.debugger.sendCommand).not.toHaveBeenCalledWith({ tabId: 9 }, "Network.getAllCookies", {}, expect.any(Function));
   });
 
   it("受限页面不会 attach debugger", async () => {
@@ -466,5 +486,253 @@ describe("浏览器控制地基", () => {
       content: "读取页面快照失败，请确认当前页面仍可访问后重试。",
       isError: true,
     });
+  });
+
+  it("未开启浏览器控制时拒绝阶段三操作工具且不自动 attach", async () => {
+    const chromeMock = createChromeMock();
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    const clickResult = await manager.executeBrowserTool(createNamedToolCall("click", { uid: "1_1" }));
+    const fillResult = await manager.executeBrowserTool(createNamedToolCall("fill", { uid: "1_1", value: "你好" }));
+    const pressKeyResult = await manager.executeBrowserTool(createNamedToolCall("press_key", { key: "Enter" }));
+    const waitForResult = await manager.executeBrowserTool(createNamedToolCall("wait_for", { text: ["完成"] }));
+
+    expect(clickResult.content).toBe("浏览器控制未开启，无法执行浏览器操作。请先在顶部浏览器控制按钮中显式开启。");
+    expect(fillResult.content).toBe("浏览器控制未开启，无法执行浏览器操作。请先在顶部浏览器控制按钮中显式开启。");
+    expect(pressKeyResult.content).toBe("浏览器控制未开启，无法执行浏览器操作。请先在顶部浏览器控制按钮中显式开启。");
+    expect(waitForResult.content).toBe("浏览器控制未开启，无法执行浏览器操作。请先在顶部浏览器控制按钮中显式开启。");
+    expect(clickResult.isError).toBe(true);
+    expect(fillResult.isError).toBe(true);
+    expect(pressKeyResult.isError).toBe(true);
+    expect(waitForResult.isError).toBe(true);
+    expect(chromeMock.debugger.attach).not.toHaveBeenCalled();
+  });
+
+  it("click 使用 UID 解析 DOM 节点并优先发送真实鼠标事件", async () => {
+    const chromeMock = createChromeMock({
+      axNodes: [
+        { nodeId: "1", role: { value: "RootWebArea" }, name: { value: "示例页面" }, childIds: ["2"] },
+        { nodeId: "2", role: { value: "button" }, name: { value: "提交" }, backendDOMNodeId: 101 },
+      ],
+      sendCommandResults: {
+        "DOM.resolveNode": { object: { objectId: "object-101" } },
+        "DOM.getBoxModel": { model: { content: [0, 10, 20, 10, 20, 30, 0, 30] } },
+        "Runtime.callFunctionOn": { result: { value: true } },
+      },
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const snapshot = await manager.takeSnapshot(createToolCall());
+    const uid = snapshot.content.match(/uid=([^\s]+)/)?.[1] ?? "";
+    const result = await manager.executeBrowserTool(createNamedToolCall("click", { uid }));
+
+    expect(result).toEqual({
+      toolCallId: "call-1",
+      name: "click",
+      content: `已点击元素 ${uid}。`,
+    });
+    expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith({ tabId: 9 }, "DOM.resolveNode", { backendNodeId: 101 }, expect.any(Function));
+    expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith({ tabId: 9 }, "Input.dispatchMouseEvent", { type: "mouseMoved", x: 10, y: 20 }, expect.any(Function));
+    expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith({ tabId: 9 }, "Input.dispatchMouseEvent", { type: "mousePressed", x: 10, y: 20, button: "left", clickCount: 1 }, expect.any(Function));
+    expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith({ tabId: 9 }, "Input.dispatchMouseEvent", { type: "mouseReleased", x: 10, y: 20, button: "left", clickCount: 1 }, expect.any(Function));
+  });
+
+  it("click 真实鼠标事件失败时走受控 JS fallback", async () => {
+    const chromeMock = createChromeMock({
+      axNodes: [
+        { nodeId: "1", role: { value: "RootWebArea" }, name: { value: "示例页面" }, childIds: ["2"] },
+        { nodeId: "2", role: { value: "button" }, name: { value: "提交" }, backendDOMNodeId: 101 },
+      ],
+    });
+    chromeMock.debugger.sendCommand.mockImplementation((_debuggee: chrome.debugger.Debuggee, method: string, params: { functionDeclaration?: string }, callback: (result?: unknown) => void) => {
+      chromeMock.runtime.lastError = method === "DOM.getBoxModel" ? { message: "No layout object" } : undefined;
+      if (method === "Accessibility.getFullAXTree") {
+        callback({
+          nodes: [
+            { nodeId: "1", role: { value: "RootWebArea" }, name: { value: "示例页面" }, childIds: ["2"] },
+            { nodeId: "2", role: { value: "button" }, name: { value: "提交" }, backendDOMNodeId: 101 },
+          ],
+        });
+      } else if (method === "DOM.resolveNode") {
+        callback({ object: { objectId: "object-101" } });
+      } else {
+        callback({});
+      }
+      chromeMock.runtime.lastError = undefined;
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const snapshot = await manager.takeSnapshot(createToolCall());
+    const uid = snapshot.content.match(/uid=([^\s]+)/)?.[1] ?? "";
+    const result = await manager.executeBrowserTool(createNamedToolCall("click", { uid }));
+
+    expect(result.content).toBe(`已点击元素 ${uid}。`);
+    expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith(
+      { tabId: 9 },
+      "Runtime.callFunctionOn",
+      expect.objectContaining({
+        objectId: "object-101",
+        functionDeclaration: expect.stringContaining("mousedown"),
+      }),
+      expect.any(Function),
+    );
+  });
+
+  it("fill 对文本输入使用聚焦、清空和 Input.insertText", async () => {
+    const chromeMock = createChromeMock({
+      axNodes: [
+        { nodeId: "1", role: { value: "RootWebArea" }, name: { value: "示例页面" }, childIds: ["2"] },
+        { nodeId: "2", role: { value: "textbox" }, name: { value: "用户名" }, backendDOMNodeId: 101 },
+      ],
+      sendCommandResults: {
+        "DOM.resolveNode": { object: { objectId: "object-101" } },
+        "Runtime.callFunctionOn": { result: { value: { tagName: "INPUT", isContentEditable: false, type: "text", role: "" } } },
+      },
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const snapshot = await manager.takeSnapshot(createToolCall());
+    const uid = snapshot.content.match(/uid=([^\s]+)/)?.[1] ?? "";
+    const result = await manager.executeBrowserTool(createNamedToolCall("fill", { uid, value: "张三" }));
+
+    expect(result.content).toBe(`已填写元素 ${uid}。`);
+    expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith({ tabId: 9 }, "Input.insertText", { text: "张三" }, expect.any(Function));
+    expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith(
+      { tabId: 9 },
+      "Input.dispatchKeyEvent",
+      expect.objectContaining({ type: "keyDown", key: "Backspace" }),
+      expect.any(Function),
+    );
+  });
+
+  it("fill 对 checkbox/radio/switch 只接受 true 或 false", async () => {
+    const chromeMock = createChromeMock({
+      axNodes: [
+        { nodeId: "1", role: { value: "RootWebArea" }, name: { value: "示例页面" }, childIds: ["2"] },
+        { nodeId: "2", role: { value: "checkbox" }, name: { value: "同意" }, backendDOMNodeId: 101 },
+      ],
+      sendCommandResults: {
+        "DOM.resolveNode": { object: { objectId: "object-101" } },
+        "Runtime.callFunctionOn": { result: { value: { tagName: "INPUT", isContentEditable: false, type: "checkbox", role: "" } } },
+      },
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const snapshot = await manager.takeSnapshot(createToolCall());
+    const uid = snapshot.content.match(/uid=([^\s]+)/)?.[1] ?? "";
+    const invalid = await manager.executeBrowserTool(createNamedToolCall("fill", { uid, value: "yes" }));
+    const valid = await manager.executeBrowserTool(createNamedToolCall("fill", { uid, value: "true" }));
+
+    expect(invalid).toEqual({
+      toolCallId: "call-1",
+      name: "fill",
+      content: "复选框、单选框和开关只能填写 true 或 false。",
+      isError: true,
+    });
+    expect(valid.content).toBe(`已填写元素 ${uid}。`);
+    expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith(
+      { tabId: 9 },
+      "Runtime.callFunctionOn",
+      expect.objectContaining({
+        objectId: "object-101",
+        arguments: [{ value: true }],
+        functionDeclaration: expect.stringContaining("aria-checked"),
+        userGesture: true,
+      }),
+      expect.any(Function),
+    );
+  });
+
+  it("press_key 只允许白名单按键和常见组合键", async () => {
+    const chromeMock = createChromeMock();
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const valid = await manager.executeBrowserTool(createNamedToolCall("press_key", { key: "Ctrl+Enter" }));
+    const invalid = await manager.executeBrowserTool(createNamedToolCall("press_key", { key: "F13" }));
+
+    expect(valid.content).toBe("已按下按键 Ctrl+Enter。");
+    expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith(
+      { tabId: 9 },
+      "Input.dispatchKeyEvent",
+      expect.objectContaining({ type: "keyDown", key: "Control" }),
+      expect.any(Function),
+    );
+    expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith(
+      { tabId: 9 },
+      "Input.dispatchKeyEvent",
+      expect.objectContaining({ type: "keyDown", key: "Enter", modifiers: 2 }),
+      expect.any(Function),
+    );
+    expect(invalid).toEqual({
+      toolCallId: "call-1",
+      name: "press_key",
+      content: "按键 F13 不在允许列表中。",
+      isError: true,
+    });
+  });
+
+  it("wait_for 等待页面文本并限制 timeout 上限", async () => {
+    const chromeMock = createChromeMock({
+      sendCommandResults: {
+        "Runtime.evaluate": { result: { value: "完成" } },
+      },
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const result = await manager.executeBrowserTool(createNamedToolCall("wait_for", { text: ["完成"], timeout: 60000 }));
+
+    expect(result.content).toBe("已等待到页面文本：完成。");
+    expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith(
+      { tabId: 9 },
+      "Runtime.evaluate",
+      expect.objectContaining({
+        awaitPromise: true,
+        returnByValue: true,
+        expression: expect.stringContaining("30000"),
+      }),
+      expect.any(Function),
+    );
+  });
+
+  it("成功操作 includeSnapshot 时追加最新快照，失败时不追加", async () => {
+    const chromeMock = createChromeMock({
+      axNodes: [
+        { nodeId: "1", role: { value: "RootWebArea" }, name: { value: "示例页面" }, childIds: ["2"] },
+        { nodeId: "2", role: { value: "button" }, name: { value: "提交" }, backendDOMNodeId: 101 },
+      ],
+      sendCommandResults: {
+        "DOM.resolveNode": { object: { objectId: "object-101" } },
+        "DOM.getBoxModel": { model: { content: [0, 10, 20, 10, 20, 30, 0, 30] } },
+        "Runtime.callFunctionOn": { result: { value: true } },
+      },
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 9);
+    const snapshot = await manager.takeSnapshot(createToolCall());
+    const uid = snapshot.content.match(/uid=([^\s]+)/)?.[1] ?? "";
+    const success = await manager.executeBrowserTool(createNamedToolCall("click", { uid, includeSnapshot: true }));
+    const failure = await manager.executeBrowserTool(createNamedToolCall("click", { uid: "bad", includeSnapshot: true }));
+
+    expect(success.content).toContain("已点击元素");
+    expect(success.content).toContain("## 最新页面快照");
+    expect(success.content).toContain("页面标题：示例页面");
+    expect(failure.isError).toBe(true);
+    expect(failure.content).not.toContain("## 最新页面快照");
+    expect(failure.content).toContain("请重新调用 take_snapshot");
   });
 });

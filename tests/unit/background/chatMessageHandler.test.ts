@@ -9,7 +9,9 @@ const registeredModelToolsMock = vi.hoisted(() => ({
 
 const browserControlManagerMock = vi.hoisted(() => ({
   canExposeTakeSnapshotTool: vi.fn(),
+  canExposeBrowserTool: vi.fn(),
   takeSnapshot: vi.fn(),
+  executeBrowserTool: vi.fn(),
 }));
 
 vi.mock("../../../src/shared/models/toolRegistry", async (importOriginal) => {
@@ -70,7 +72,10 @@ describe("聊天模型请求处理", () => {
     registeredModelToolsMock.tools = [];
     browserControlManagerMock.canExposeTakeSnapshotTool.mockReset();
     browserControlManagerMock.canExposeTakeSnapshotTool.mockReturnValue(true);
+    browserControlManagerMock.canExposeBrowserTool.mockReset();
+    browserControlManagerMock.canExposeBrowserTool.mockReturnValue(true);
     browserControlManagerMock.takeSnapshot.mockReset();
+    browserControlManagerMock.executeBrowserTool.mockReset();
   });
 
   it("OpenAI-compatible 成功时返回解析后的正文和思考过程", async () => {
@@ -748,6 +753,80 @@ describe("聊天模型请求处理", () => {
     );
   });
 
+  it("默认 background 执行器会把阶段三浏览器操作工具转发给浏览器控制管理器", async () => {
+    registeredModelToolsMock.tools = [
+      {
+        id: "browser.click",
+        name: "click",
+        description: "点击当前页面元素",
+        parameters: {
+          type: "object",
+          properties: { uid: { type: "string" }, includeSnapshot: { type: "boolean" } },
+          required: ["uid"],
+          additionalProperties: false,
+        },
+      },
+    ];
+    browserControlManagerMock.executeBrowserTool.mockResolvedValue({
+      toolCallId: "call-1",
+      name: "click",
+      content: "已点击元素 1_2。",
+    });
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          choices: [
+            {
+              message: {
+                content: "",
+                tool_calls: [
+                  {
+                    id: "call-1",
+                    type: "function",
+                    function: {
+                      name: "click",
+                      arguments: "{\"uid\":\"1_2\",\"includeSnapshot\":true}",
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          choices: [{ message: { content: "按钮已点击" } }],
+        }),
+      });
+
+    const result = await handleChatSendMessage(
+      {
+        type: "chat.send",
+        model: createModel(),
+        messages: [createMessage("user", "点击提交按钮")],
+        stream: false,
+        enabledToolIds: ["browser.click"],
+        toolChoice: "auto",
+      },
+      fetcher,
+    );
+
+    expect(result).toMatchObject({ ok: true, content: "按钮已点击" });
+    expect(browserControlManagerMock.executeBrowserTool).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "call-1", name: "click", arguments: { uid: "1_2", includeSnapshot: true } }),
+    );
+    const secondBody = JSON.parse(String(fetcher.mock.calls[1][1]?.body)) as { messages: Array<{ role: string; content?: string }> };
+    expect(secondBody.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ role: "tool", content: "已点击元素 1_2。" }),
+      ]),
+    );
+  });
+
   it("暴露浏览器快照工具时追加浏览器控制系统提示", async () => {
     registeredModelToolsMock.tools = [
       {
@@ -815,6 +894,47 @@ describe("聊天模型请求处理", () => {
     expect(body.tool_choice).toBeUndefined();
     expect(body.messages.some((message) => message.content?.includes("不要猜测 UID"))).toBe(false);
     expect(browserControlManagerMock.takeSnapshot).not.toHaveBeenCalled();
+  });
+
+  it("background 未连接浏览器控制时不向模型暴露阶段三浏览器操作工具", async () => {
+    registeredModelToolsMock.tools = [
+      {
+        id: "browser.click",
+        name: "click",
+        description: "点击当前页面元素",
+        parameters: {
+          type: "object",
+          properties: { uid: { type: "string" }, includeSnapshot: { type: "boolean" } },
+          required: ["uid"],
+          additionalProperties: false,
+        },
+      },
+    ];
+    browserControlManagerMock.canExposeBrowserTool.mockReturnValue(false);
+    const fetcher = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({
+        choices: [{ message: { content: "普通回答" } }],
+      }),
+    });
+
+    await handleChatSendMessage(
+      {
+        type: "chat.send",
+        model: createModel(),
+        messages: [createMessage("system", "你是网页助手"), createMessage("user", "点击按钮")],
+        stream: false,
+        enabledToolIds: ["browser.click"],
+        toolChoice: "auto",
+      },
+      fetcher,
+    );
+
+    const body = JSON.parse(String(fetcher.mock.calls[0][1]?.body)) as { tools?: unknown[]; tool_choice?: unknown; messages: Array<{ role: string; content?: string }> };
+    expect(body.tools).toBeUndefined();
+    expect(body.tool_choice).toBeUndefined();
+    expect(body.messages.some((message) => message.content?.includes("浏览器控制工具使用规则"))).toBe(false);
+    expect(browserControlManagerMock.executeBrowserTool).not.toHaveBeenCalled();
   });
 
   it("结构化输出请求不会因为启用浏览器快照工具而追加工具提示或进入工具循环", async () => {

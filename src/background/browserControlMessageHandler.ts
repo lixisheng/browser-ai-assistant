@@ -7,6 +7,12 @@ import {
   type BrowserControlResponse,
 } from "../shared/browserControl";
 import type { ModelToolCall, ModelToolResult } from "../shared/models/types";
+import {
+  BrowserControlActionExecutor,
+  createBrowserActionDisabledResult,
+  createBrowserActionErrorResult,
+  isBrowserControlActionName,
+} from "./browserControl/actions";
 
 type Debuggee = chrome.debugger.Debuggee;
 type ChromeApi = typeof chrome;
@@ -55,6 +61,21 @@ const SNAPSHOT_TRUNCATED_TEXT = "快照内容过长，已停止继续展开。";
 const BROWSER_SNAPSHOT_DISABLED_MESSAGE = "浏览器控制未开启，无法读取页面快照。请先在顶部浏览器控制按钮中显式开启。";
 const BROWSER_SNAPSHOT_FAILED_MESSAGE = "读取页面快照失败，请确认当前页面仍可访问后重试。";
 const SKIPPED_AX_ROLES = new Set(["none", "generic", "section", "paragraph", "StaticText", "InlineTextBox"]);
+const ALLOWED_BROWSER_CONTROL_CDP_METHODS = new Set([
+  "Runtime.enable",
+  "Page.enable",
+  "DOM.enable",
+  "Accessibility.enable",
+  "Accessibility.getFullAXTree",
+  "DOM.resolveNode",
+  "DOM.scrollIntoViewIfNeeded",
+  "DOM.getBoxModel",
+  "Runtime.callFunctionOn",
+  "Runtime.evaluate",
+  "Input.dispatchMouseEvent",
+  "Input.dispatchKeyEvent",
+  "Input.insertText",
+]);
 
 function getChromeApi(): ChromeApi | undefined {
   return globalThis.chrome;
@@ -187,7 +208,43 @@ export class BrowserDebuggerConnection {
     return this.sendCommand("Accessibility.getFullAXTree");
   }
 
+  async resolveNodeByBackendId(backendNodeId: number): Promise<unknown> {
+    return this.sendCommand("DOM.resolveNode", { backendNodeId });
+  }
+
+  async scrollIntoViewIfNeeded(objectId: string): Promise<unknown> {
+    return this.sendCommand("DOM.scrollIntoViewIfNeeded", { objectId });
+  }
+
+  async getBoxModel(backendNodeId: number): Promise<unknown> {
+    return this.sendCommand("DOM.getBoxModel", { backendNodeId });
+  }
+
+  async callFunctionOn(params: Record<string, unknown>): Promise<unknown> {
+    return this.sendCommand("Runtime.callFunctionOn", params);
+  }
+
+  async evaluate(params: Record<string, unknown>): Promise<unknown> {
+    return this.sendCommand("Runtime.evaluate", params);
+  }
+
+  async dispatchMouseEvent(params: Record<string, unknown>): Promise<unknown> {
+    return this.sendCommand("Input.dispatchMouseEvent", params);
+  }
+
+  async dispatchKeyEvent(params: Record<string, unknown>): Promise<unknown> {
+    return this.sendCommand("Input.dispatchKeyEvent", params);
+  }
+
+  async insertText(text: string): Promise<unknown> {
+    return this.sendCommand("Input.insertText", { text });
+  }
+
   private async sendCommand(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
+    if (!ALLOWED_BROWSER_CONTROL_CDP_METHODS.has(method)) {
+      throw new Error("浏览器控制不允许调用该 CDP 方法。");
+    }
+
     const chromeApi = this.chromeApi;
     const currentTabId = this.currentTabId;
     if (!this.attached || !currentTabId || !chromeApi?.debugger?.sendCommand) {
@@ -220,8 +277,18 @@ export class BrowserControlSnapshotManager {
     private readonly getTabInfo: () => Promise<BrowserControlTabInfo>,
   ) {}
 
-  getBackendNodeId(uid: string): number | undefined {
-    return this.uidToBackendNodeId.get(uid);
+  getBackendNodeId(uid: string): number {
+    const backendNodeId = this.uidToBackendNodeId.get(uid);
+    if (backendNodeId) {
+      return backendNodeId;
+    }
+
+    const snapshotVersion = Number.parseInt(uid.split("_")[0] ?? "", 10);
+    if (Number.isFinite(snapshotVersion) && snapshotVersion > 0 && snapshotVersion !== this.snapshotVersion) {
+      throw new Error(`UID ${uid} 来自旧快照，当前页面快照版本是 ${this.snapshotVersion}。`);
+    }
+
+    throw new Error(`UID ${uid} 在当前页面快照中不存在。`);
   }
 
   getAXNode(uid: string): AccessibilityNode | undefined {
@@ -399,12 +466,14 @@ export class BrowserControlManager {
   private desiredEnabled = false;
   private operationVersion = 0;
   private readonly snapshotManager: BrowserControlSnapshotManager;
+  private readonly actionExecutor: BrowserControlActionExecutor;
 
   constructor(
     private readonly connection = new BrowserDebuggerConnection(),
     private readonly chromeApi: ChromeApi | undefined = getChromeApi(),
   ) {
     this.snapshotManager = new BrowserControlSnapshotManager(this.connection, () => this.getTargetTabInfo());
+    this.actionExecutor = new BrowserControlActionExecutor(this.connection, this.snapshotManager);
     this.connection.installDetachListener((tabId, reason) => {
       this.targetTabId = undefined;
       this.desiredEnabled = false;
@@ -466,6 +535,10 @@ export class BrowserControlManager {
     return this.desiredEnabled && this.connection.isAttached && Boolean(this.connection.attachedTabId);
   }
 
+  canExposeBrowserTool(): boolean {
+    return this.canExposeTakeSnapshotTool();
+  }
+
   async takeSnapshot(toolCall: ModelToolCall): Promise<ModelToolResult> {
     const extraKeys = Object.keys(toolCall.arguments);
     if (extraKeys.length > 0) {
@@ -485,6 +558,18 @@ export class BrowserControlManager {
     } catch {
       return createBrowserToolErrorResult(toolCall, BROWSER_SNAPSHOT_FAILED_MESSAGE);
     }
+  }
+
+  async executeBrowserTool(toolCall: ModelToolCall): Promise<ModelToolResult> {
+    if (!isBrowserControlActionName(toolCall.name)) {
+      return createBrowserActionErrorResult(toolCall, `未知的浏览器操作工具：${toolCall.name}。`);
+    }
+
+    if (!this.canExposeBrowserTool()) {
+      return createBrowserActionDisabledResult(toolCall);
+    }
+
+    return this.actionExecutor.execute(toolCall);
   }
 
   private async resolveTargetTab(tabId?: number): Promise<{ ok: true; tab: chrome.tabs.Tab & { id: number } } | { ok: false; message: string }> {

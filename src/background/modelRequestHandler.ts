@@ -97,6 +97,10 @@ function shouldExposeTool(tool: ModelToolRegistryEntry): boolean {
     return browserControlManager.canExposeTakeSnapshotTool();
   }
 
+  if (tool.id.startsWith("browser.")) {
+    return browserControlManager.canExposeBrowserTool();
+  }
+
   return true;
 }
 
@@ -170,6 +174,10 @@ function createBackgroundToolExecutor(message: ChatSendMessage, fetcher: Fetcher
       return browserControlManager.takeSnapshot(toolCall);
     }
 
+    if (tool.id.startsWith("browser.")) {
+      return browserControlManager.executeBrowserTool(toolCall);
+    }
+
     if (tool.name === TAVILY_SEARCH_TOOL_NAME) {
       return executeTavilySearchTool(toolCall, message.tavily, fetcher);
     }
@@ -183,7 +191,7 @@ function createBackgroundToolExecutor(message: ChatSendMessage, fetcher: Fetcher
 }
 
 function appendBrowserControlPromptIfNeeded(messages: ModelRequestMessage[], enabledTools: ModelToolRegistryEntry[]): ModelRequestMessage[] {
-  if (!enabledTools.some((tool) => tool.id === BROWSER_TAKE_SNAPSHOT_TOOL_ID)) {
+  if (!enabledTools.some((tool) => tool.id.startsWith("browser."))) {
     return messages;
   }
 
@@ -191,7 +199,9 @@ function appendBrowserControlPromptIfNeeded(messages: ModelRequestMessage[], ena
     "浏览器控制工具使用规则：",
     "- 需要当前页面结构时先调用 take_snapshot。",
     "- 不要猜测 UID；只能使用 take_snapshot 返回的 UID。",
-    "- 工具失败时不要编造页面结构或操作结果，应向用户说明无法读取当前页面。",
+    "- click、fill 和 press_key 成功后可按需设置 includeSnapshot=true 获取最新快照；失败时不要编造页面结构或操作结果。",
+    "- press_key 只能用于白名单按键，并且应确认正确页面或元素已有焦点。",
+    "- wait_for 只等待页面可见文本；超时后应重新 take_snapshot 或向用户说明等待失败。",
   ].join("\n");
   const systemIndex = messages.findIndex((message) => message.role === "system");
   if (systemIndex >= 0) {
