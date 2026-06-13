@@ -1,0 +1,561 @@
+import { updateChatSession } from "../../shared/storage/repositories";
+import type {
+  ChatMessage,
+  ChatNetworkContextAttachment,
+  ChatToolAttachment,
+  ChatToolCallRecord,
+  EndpointType,
+  PageContextExtractMode,
+} from "../../shared/types";
+import type { AppChatSendMessage, AppState, StoreSetter } from "./appStore";
+import { upsertSession } from "./appStoreSessionUtils";
+
+const STREAM_FAILURE_MESSAGE = "流式响应异常中断，请重新生成后重试";
+
+type ChatStreamPortMessage =
+  | { type: "chunk"; content: string }
+  | { type: "thinking"; content: string }
+  | { type: "assistant:tool-turn"; message: ChatMessage }
+  | { type: "tool:start"; record: ChatToolCallRecord }
+  | { type: "tool:complete"; record: ChatToolCallRecord; attachments?: ChatToolAttachment[] }
+  | {
+      type: "complete";
+      content: string;
+      thinking?: string;
+      reasoningContent?: string;
+      toolCallRecords?: ChatToolCallRecord[];
+      toolAttachments?: ChatToolAttachment[];
+      toolTurnMessages?: ChatMessage[];
+    }
+  | { type: "error"; message?: string };
+
+interface StreamingChatResult {
+  completed: boolean;
+  assistantContent?: string;
+}
+
+interface StreamingChatInput {
+  set: StoreSetter;
+  sessionId: string;
+  modelId: string;
+  endpointType: EndpointType;
+  systemPrompt: string;
+  contextPrompt: string;
+  contextMode: PageContextExtractMode;
+  matchedRuleId?: string;
+  privateMode?: boolean;
+  networkContextAttachment?: ChatNetworkContextAttachment;
+  streamMode: boolean;
+  toolAttachments?: ChatToolAttachment[];
+  request: AppChatSendMessage;
+}
+
+type AssistantPlaceholderInput = Omit<StreamingChatInput, "request">;
+
+async function appendAssistantMessageToSession(
+  sessionId: string,
+  assistantMessage: ChatMessage,
+  set: StoreSetter,
+  privateMode = false,
+): Promise<ChatMessage | undefined> {
+  if (privateMode) {
+    set((current) => {
+      const currentSession = current.privateChatSession;
+      if (!current.privateModeActive || !currentSession || currentSession.id !== sessionId) {
+        return {};
+      }
+
+      return {
+        privateChatSession: {
+          ...currentSession,
+          updatedAt: assistantMessage.createdAt,
+          messages: [...currentSession.messages, assistantMessage],
+        },
+      };
+    });
+    return assistantMessage;
+  }
+
+  const initializedSession = await updateChatSession(sessionId, (latestSession) => ({
+    ...latestSession,
+    updatedAt: assistantMessage.createdAt,
+    messages: [...latestSession.messages, assistantMessage],
+  }));
+  if (!initializedSession) {
+    return undefined;
+  }
+
+  set((current) => {
+    const currentSession = current.chatSessions.find((session) => session.id === initializedSession.id);
+    if (!currentSession) {
+      return {};
+    }
+
+    return {
+      chatSessions: upsertSession(current.chatSessions, {
+        ...currentSession,
+        updatedAt: assistantMessage.createdAt,
+        messages: [...currentSession.messages, assistantMessage],
+      }),
+    };
+  });
+
+  return assistantMessage;
+}
+
+async function createAssistantPlaceholder(input: AssistantPlaceholderInput): Promise<ChatMessage | undefined> {
+  const assistantCreatedAt = Date.now();
+  const assistantMessage: ChatMessage = {
+    id: `message-${assistantCreatedAt}-assistant`,
+    role: "assistant",
+    content: "",
+    createdAt: assistantCreatedAt,
+    modelId: input.modelId,
+    endpointType: input.endpointType,
+    streamMode: input.streamMode,
+    systemPrompt: input.systemPrompt,
+    contextPrompt: input.contextPrompt,
+    contextMode: input.contextMode,
+    matchedRuleId: input.matchedRuleId,
+    networkContextAttachment: input.networkContextAttachment,
+    toolAttachments: input.toolAttachments,
+    streaming: true,
+  };
+
+  return appendAssistantMessageToSession(input.sessionId, assistantMessage, input.set, input.privateMode);
+}
+
+export async function sendStreamingChatMessage(input: StreamingChatInput): Promise<StreamingChatResult> {
+  if (!globalThis.chrome?.runtime?.connect) {
+    return { completed: false };
+  }
+
+  const usesTools = Boolean(input.request.enabledToolIds?.length);
+  let assistantMessage: ChatMessage | undefined = usesTools ? undefined : await createAssistantPlaceholder(input);
+  let currentToolTurnMessageId: string | undefined;
+  if (!usesTools && !assistantMessage) {
+    return { completed: true };
+  }
+
+  return new Promise<StreamingChatResult>((resolve) => {
+    const port = globalThis.chrome.runtime.connect({ name: "chat.stream" });
+    let settled = false;
+    let receivedFinalComplete = false;
+    let writeQueue = Promise.resolve();
+
+    const finish = (result: StreamingChatResult, options: { disconnect: boolean } = { disconnect: true }) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      if (options.disconnect) {
+        port.disconnect();
+      }
+      resolve(result);
+    };
+    const enqueueWrite = (operation: () => Promise<void>) => {
+      writeQueue = writeQueue.then(operation).catch(() => {
+        input.set({ failure: { message: "消息保存失败，请重试" } });
+      });
+      return writeQueue;
+    };
+    const ensureFinalAssistantMessage = async (): Promise<ChatMessage | undefined> => {
+      if (assistantMessage) {
+        return assistantMessage;
+      }
+
+      assistantMessage = await createAssistantPlaceholder(input);
+      return assistantMessage;
+    };
+
+    port.onMessage.addListener((message: ChatStreamPortMessage) => {
+      if (message.type === "chunk") {
+        void enqueueWrite(async () => {
+          const finalAssistantMessage = await ensureFinalAssistantMessage();
+          if (finalAssistantMessage) {
+            await appendAssistantChunk(input.sessionId, finalAssistantMessage.id, message.content, input.set, input.privateMode);
+          }
+        });
+        return;
+      }
+
+      if (message.type === "thinking") {
+        void enqueueWrite(async () => {
+          const finalAssistantMessage = await ensureFinalAssistantMessage();
+          if (finalAssistantMessage) {
+            await appendAssistantThinkingChunk(input.sessionId, finalAssistantMessage.id, message.content, input.set, input.privateMode);
+          }
+        });
+        return;
+      }
+
+      if (message.type === "assistant:tool-turn") {
+        void enqueueWrite(async () => {
+          const storedMessage = await appendAssistantMessageToSession(input.sessionId, message.message, input.set, input.privateMode);
+          currentToolTurnMessageId = storedMessage?.id;
+        });
+        return;
+      }
+
+      if (message.type === "tool:start") {
+        void enqueueWrite(async () => {
+          if (currentToolTurnMessageId) {
+            await upsertAssistantToolCallRecord(input.sessionId, currentToolTurnMessageId, message.record, [], input.set, input.privateMode);
+          }
+        });
+        return;
+      }
+
+      if (message.type === "tool:complete") {
+        void enqueueWrite(async () => {
+          if (currentToolTurnMessageId) {
+            await upsertAssistantToolCallRecord(input.sessionId, currentToolTurnMessageId, message.record, message.attachments ?? [], input.set, input.privateMode);
+          }
+        });
+        return;
+      }
+
+      if (message.type === "complete") {
+        receivedFinalComplete = true;
+        void enqueueWrite(async () => {
+          const finalAssistantMessage = await ensureFinalAssistantMessage();
+          if (!finalAssistantMessage) {
+            return;
+          }
+          await finalizeAssistantMessage(input.sessionId, finalAssistantMessage.id, message.content, message.thinking, input.set, input.privateMode, {
+            reasoningContent: message.reasoningContent,
+            toolAttachments: mergeToolAttachments(input.toolAttachments, message.toolAttachments),
+          });
+        }).then(() => finish({ completed: true, assistantContent: message.content }));
+        return;
+      }
+
+      const failureMessage = resolveStreamPortFailureMessage(message);
+      input.set({ failure: { message: failureMessage } });
+      void enqueueWrite(async () => {
+        const finalAssistantMessage = await ensureFinalAssistantMessage();
+        if (finalAssistantMessage) {
+          await failAssistantMessage(input.sessionId, finalAssistantMessage.id, failureMessage, input.set, input.privateMode);
+        }
+      }).then(() => finish({ completed: true }));
+    });
+
+    port.onDisconnect.addListener(() => {
+      if (!receivedFinalComplete) {
+        input.set({ failure: { message: STREAM_FAILURE_MESSAGE } });
+        void enqueueWrite(async () => {
+          const finalAssistantMessage = await ensureFinalAssistantMessage();
+          if (finalAssistantMessage) {
+            await failAssistantMessage(input.sessionId, finalAssistantMessage.id, STREAM_FAILURE_MESSAGE, input.set, input.privateMode);
+          }
+        }).then(() => finish({ completed: true }, { disconnect: false }));
+        return;
+      }
+
+      finish({ completed: true }, { disconnect: false });
+    });
+
+    port.postMessage({
+      type: "chat.stream.start",
+      payload: input.request,
+    });
+  });
+}
+
+function resolveStreamPortFailureMessage(message: ChatStreamPortMessage): string {
+  if (message.type !== "error" || typeof message.message !== "string") {
+    return STREAM_FAILURE_MESSAGE;
+  }
+
+  const failureMessage = message.message.trim();
+  if (!failureMessage || containsSensitiveErrorFragment(failureMessage)) {
+    return STREAM_FAILURE_MESSAGE;
+  }
+
+  return failureMessage;
+}
+
+function containsSensitiveErrorFragment(message: string): boolean {
+  // 端口消息异常时仍按外部输入处理，避免模型供应商原始报文把密钥、鉴权头或连接串带到用户可见错误里。
+  return /(?:\bsk-[A-Za-z0-9_-]+|authorization|bearer\s+[A-Za-z0-9._~+/-]+|\btoken\b|secret|password)/i.test(message);
+}
+
+async function failAssistantMessage(
+  sessionId: string,
+  messageId: string,
+  failureMessage: string,
+  set: StoreSetter,
+  privateMode = false,
+): Promise<void> {
+  const applyFailure = (message: ChatMessage): ChatMessage => {
+    const content = message.content.trim() ? `${message.content}\n\n${failureMessage}` : failureMessage;
+    return {
+      ...message,
+      content,
+      streaming: false,
+    };
+  };
+
+  if (privateMode) {
+    set((current) => updatePrivateAssistantMessageInState(current, sessionId, messageId, applyFailure));
+    return;
+  }
+
+  await updateChatSession(sessionId, (latestSession) => ({
+    ...latestSession,
+    updatedAt: Date.now(),
+    messages: latestSession.messages.map((message) => (message.id === messageId ? applyFailure(message) : message)),
+  }));
+
+  set((current) => updateAssistantMessageInState(current, sessionId, messageId, applyFailure));
+}
+
+async function removeAssistantMessage(sessionId: string, messageId: string, set: StoreSetter, privateMode = false): Promise<void> {
+  if (privateMode) {
+    set((current) => {
+      const session = current.privateChatSession;
+      if (!current.privateModeActive || !session || session.id !== sessionId) {
+        return {};
+      }
+
+      return {
+        privateChatSession: {
+          ...session,
+          messages: session.messages.filter((message) => message.id !== messageId),
+        },
+      };
+    });
+    return;
+  }
+
+  await updateChatSession(sessionId, (latestSession) => ({
+    ...latestSession,
+    messages: latestSession.messages.filter((message) => message.id !== messageId),
+  }));
+
+  set((current) => {
+    const session = current.chatSessions.find((item) => item.id === sessionId);
+    if (!session) {
+      return {};
+    }
+
+    return {
+      chatSessions: upsertSession(current.chatSessions, {
+        ...session,
+        messages: session.messages.filter((message) => message.id !== messageId),
+      }),
+    };
+  });
+}
+
+async function appendAssistantThinkingChunk(sessionId: string, messageId: string, content: string, set: StoreSetter, privateMode = false): Promise<void> {
+  if (privateMode) {
+    set((current) =>
+      updatePrivateAssistantMessageInState(current, sessionId, messageId, (message) => ({
+        ...message,
+        thinking: `${message.thinking ?? ""}${content}`,
+      })),
+    );
+    return;
+  }
+
+  await updateChatSession(sessionId, (latestSession) => ({
+    ...latestSession,
+    messages: latestSession.messages.map((message) =>
+      message.id === messageId
+        ? {
+            ...message,
+            thinking: `${message.thinking ?? ""}${content}`,
+          }
+        : message,
+    ),
+  }));
+
+  set((current) =>
+    updateAssistantMessageInState(current, sessionId, messageId, (message) => ({
+      ...message,
+      thinking: `${message.thinking ?? ""}${content}`,
+    })),
+  );
+}
+
+async function appendAssistantChunk(sessionId: string, messageId: string, content: string, set: StoreSetter, privateMode = false): Promise<void> {
+  if (privateMode) {
+    set((current) =>
+      updatePrivateAssistantMessageInState(current, sessionId, messageId, (message) => ({
+        ...message,
+        content: `${message.content}${content}`,
+      })),
+    );
+    return;
+  }
+
+  await updateChatSession(sessionId, (latestSession) => ({
+    ...latestSession,
+    messages: latestSession.messages.map((message) =>
+      message.id === messageId ? { ...message, content: `${message.content}${content}` } : message,
+    ),
+  }));
+
+  set((current) =>
+    updateAssistantMessageInState(current, sessionId, messageId, (message) => ({
+      ...message,
+      content: `${message.content}${content}`,
+    })),
+  );
+}
+
+async function upsertAssistantToolCallRecord(
+  sessionId: string,
+  messageId: string,
+  record: ChatToolCallRecord,
+  attachments: ChatToolAttachment[],
+  set: StoreSetter,
+  privateMode = false,
+): Promise<void> {
+  const applyToolUpdate = (message: ChatMessage): ChatMessage => ({
+    ...message,
+    toolCallRecords: upsertToolCallRecord(message.toolCallRecords, record),
+    toolAttachments: mergeToolAttachments(message.toolAttachments, attachments),
+  });
+
+  if (privateMode) {
+    set((current) => updatePrivateAssistantMessageInState(current, sessionId, messageId, applyToolUpdate));
+    return;
+  }
+
+  await updateChatSession(sessionId, (latestSession) => ({
+    ...latestSession,
+    updatedAt: Date.now(),
+    messages: latestSession.messages.map((message) => (message.id === messageId ? applyToolUpdate(message) : message)),
+  }));
+
+  set((current) => updateAssistantMessageInState(current, sessionId, messageId, applyToolUpdate));
+}
+
+function upsertToolCallRecord(records: ChatToolCallRecord[] | undefined, record: ChatToolCallRecord): ChatToolCallRecord[] {
+  const current = records ?? [];
+  const existingIndex = current.findIndex((item) => item.id === record.id);
+  if (existingIndex < 0) {
+    return [...current, record];
+  }
+
+  return current.map((item, index) => (index === existingIndex ? { ...item, ...record } : item));
+}
+
+export function mergeToolAttachments(
+  current: ChatToolAttachment[] | undefined,
+  next: ChatToolAttachment[] | undefined,
+): ChatToolAttachment[] | undefined {
+  const merged: ChatToolAttachment[] = [];
+  for (const attachment of [...(current ?? []), ...(next ?? [])]) {
+    const existingIndex = merged.findIndex((item) => item.id === attachment.id);
+    if (existingIndex >= 0) {
+      merged[existingIndex] = attachment;
+    } else {
+      merged.push(attachment);
+    }
+  }
+
+  return merged.length ? merged : undefined;
+}
+
+interface FinalizeAssistantOptions {
+  reasoningContent?: string;
+  toolCallRecords?: ChatToolCallRecord[];
+  toolAttachments?: ChatToolAttachment[];
+}
+
+async function finalizeAssistantMessage(
+  sessionId: string,
+  messageId: string,
+  content: string,
+  thinking: string | undefined,
+  set: StoreSetter,
+  privateMode = false,
+  options: FinalizeAssistantOptions = {},
+): Promise<void> {
+  if (privateMode) {
+    set((current) =>
+      updatePrivateAssistantMessageInState(current, sessionId, messageId, (message) => ({
+        ...message,
+        content,
+        thinking,
+        reasoningContent: options.reasoningContent ?? message.reasoningContent,
+        toolCallRecords: options.toolCallRecords ?? message.toolCallRecords,
+        toolAttachments: mergeToolAttachments(message.toolAttachments, options.toolAttachments),
+        streaming: false,
+      })),
+    );
+    return;
+  }
+
+  await updateChatSession(sessionId, (latestSession) => ({
+    ...latestSession,
+    updatedAt: Date.now(),
+    messages: latestSession.messages.map((message) =>
+      message.id === messageId
+        ? {
+            ...message,
+            content,
+            thinking,
+            reasoningContent: options.reasoningContent ?? message.reasoningContent,
+            toolCallRecords: options.toolCallRecords ?? message.toolCallRecords,
+            toolAttachments: mergeToolAttachments(message.toolAttachments, options.toolAttachments),
+            streaming: false,
+          }
+        : message,
+    ),
+  }));
+
+  set((current) =>
+    updateAssistantMessageInState(current, sessionId, messageId, (message) => ({
+      ...message,
+      content,
+      thinking,
+      reasoningContent: options.reasoningContent ?? message.reasoningContent,
+      toolCallRecords: options.toolCallRecords ?? message.toolCallRecords,
+      toolAttachments: mergeToolAttachments(message.toolAttachments, options.toolAttachments),
+      streaming: false,
+    })),
+  );
+}
+
+function updateAssistantMessageInState(
+  state: AppState,
+  sessionId: string,
+  messageId: string,
+  updater: (message: ChatMessage) => ChatMessage,
+): Partial<AppState> {
+  const session = state.chatSessions.find((item) => item.id === sessionId);
+  if (!session) {
+    return {};
+  }
+
+  return {
+    chatSessions: upsertSession(state.chatSessions, {
+      ...session,
+      messages: session.messages.map((message) => (message.id === messageId ? updater(message) : message)),
+    }),
+  };
+}
+
+function updatePrivateAssistantMessageInState(
+  state: AppState,
+  sessionId: string,
+  messageId: string,
+  updater: (message: ChatMessage) => ChatMessage,
+): Partial<AppState> {
+  const session = state.privateChatSession;
+  if (!state.privateModeActive || !session || session.id !== sessionId) {
+    return {};
+  }
+
+  return {
+    privateChatSession: {
+      ...session,
+      messages: session.messages.map((message) => (message.id === messageId ? updater(message) : message)),
+    },
+  };
+}

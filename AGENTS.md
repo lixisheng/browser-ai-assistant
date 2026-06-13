@@ -228,6 +228,7 @@
 * 新增 background message type 时必须同步更新 `RuntimeMessage` 联合类型、入口分发、单元测试和必要的中文错误处理。
 * 修改 `src/shared/types.ts` 中的持久化类型时，必须同步检查：默认值、旧数据 normalize、存储测试、同步快照、导出、UI 展示和模型请求构造。
 * 持久化设置中的 boolean 字段不能直接用 `??` 接收旧数据或同步快照；必须通过 `typeof value === "boolean"` 归一化，非 boolean 值回退默认值。
+* `src/side-panel/state/appStore.ts` 应保持为 Zustand store 壳层和 action 绑定入口；聊天请求链路中的 Network 上下文准备、流式消息写入、标题生成、runtime message 封装，以及提取规则、Prompt 模板、页面上下文、同步设置、会话文件夹和会话生命周期小动作等独立动作，应放在同目录相邻模块中，避免重新堆回单个超大 store 文件。
 * 文档或配置之外的代码改动，最小验证通常至少包括 `npm run typecheck` 和相关 `vitest` 文件；涉及构建、content script、background 或 manifest 时还必须执行 `npm run build:extension`。
 * 项目级综合验证统一使用 `npm run check`；新增质量门禁时优先挂入该脚本，避免不同任务各自维护零散命令。
 * 涉及侧边栏关键交互、响应式布局、扩展加载、页面提取或导出菜单时，除单元测试外应补充 `npm run test:e2e` 或等价 Playwright 冒烟验证。
