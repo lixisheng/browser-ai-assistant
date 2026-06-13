@@ -2404,6 +2404,7 @@ async function prepareNetworkContextForRequest(input: {
     return { ok: false, message: snapshot?.message ?? "获取 Network 请求失败，请确认 DevTools 已打开" };
   }
 
+  // background 正常会先脱敏；这里保留二次脱敏，用于防御旧版本 IndexedDB、同步恢复或导入数据绕过 background 边界。
   const filteredRequests = filterNetworkRequestsByType(snapshot.requests.map(redactNetworkRequestMeta), input.networkRequestTypeFilters);
   const dedupedRequests = filterNewNetworkRequestsByUrl(filteredRequests, input.existingMessages);
   const requests = dedupedRequests.requests;
@@ -2448,6 +2449,7 @@ async function prepareNetworkContextForRequest(input: {
     return { ok: false, message: detailsResponse?.message ?? "读取 Network 请求详情失败" };
   }
 
+  // 详情会进入提示词、附件和历史记录，侧边栏侧再次脱敏可以兜住旧数据或异常 runtime 返回。
   const details = detailsResponse.details.map(redactNetworkRequestDetail);
   if (details.length === 0) {
     return { ok: false, message: "未读取到筛选请求的完整详情" };

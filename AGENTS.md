@@ -98,6 +98,7 @@
 * `manifest.json` 的 `content_scripts[].js` 和 `chrome.scripting.executeScript({ files })` 注入的是普通内容脚本，不要产出带静态 `import` 的 ES Module 文件。
 * `dist/content/index.js` 必须是可直接执行的单文件脚本，例如 IIFE；构建后必须检查不包含 `^import` 或动态 `import(`。
 * 如果 content script 依赖共享工具函数，应通过构建阶段内联到 content script 产物中，而不是让 content script 运行时再 import `dist/assets/*`。
+* 修改 `public/manifest.json`、`vite.config.ts` 或扩展运行时入口时，必须同步维护 manifest 与 Vite 构建入口的合约测试，确保 background、side panel、devtools 和 content script 的产物路径一致。
 * 遇到 `Could not establish connection. Receiving end does not exist.` 时，优先排查目标 tab 是否已有 content script 接收器、扩展重载后旧页面是否未注入、构建产物是否为普通脚本、当前页面是否为受限页面。
 * background 向 tab 发送消息失败且确认为 content script 缺失时，可以用 `chrome.scripting.executeScript` 按需注入后重试一次；受限页面注入失败时必须返回明确中文错误。
 * 扩展重载后，已打开页面不一定自动拥有当前版本 content script。修复相关问题时，必须覆盖“未连接时注入后重试”的测试。
@@ -228,7 +229,10 @@
 * 修改 `src/shared/types.ts` 中的持久化类型时，必须同步检查：默认值、旧数据 normalize、存储测试、同步快照、导出、UI 展示和模型请求构造。
 * 持久化设置中的 boolean 字段不能直接用 `??` 接收旧数据或同步快照；必须通过 `typeof value === "boolean"` 归一化，非 boolean 值回退默认值。
 * 文档或配置之外的代码改动，最小验证通常至少包括 `npm run typecheck` 和相关 `vitest` 文件；涉及构建、content script、background 或 manifest 时还必须执行 `npm run build:extension`。
+* 项目级综合验证统一使用 `npm run check`；新增质量门禁时优先挂入该脚本，避免不同任务各自维护零散命令。
 * 涉及侧边栏关键交互、响应式布局、扩展加载、页面提取或导出菜单时，除单元测试外应补充 `npm run test:e2e` 或等价 Playwright 冒烟验证。
+* 修改 `public/manifest.json`、background、content script、side panel 入口或 Playwright 扩展 fixture 时，应运行 `npx playwright test --project=chrome-extension` 验证真实 Chrome/Edge 扩展加载；fixture 可优先读取 `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH`、`CHROME_PATH`、`EDGE_PATH` 或本机 Chrome/Edge 路径，运行前必须能找到 `dist/manifest.json`，缺失时返回明确中文构建提示。
+* `SettingsPanel` 只作为设置页签壳层；渠道管理、提取规则、聊天偏好、提示词和同步设置应继续放在 `src/side-panel/components/settings/*` 独立组件中，共享表单控件优先沉到同目录小组件，避免重新堆回单个超大文件。
 
 ### 10.13 DevTools Network 上下文
 
@@ -239,6 +243,9 @@
 * 已挂载到历史 assistant 消息的 Network 详情附件必须在后续正式模型请求中继续作为上下文发送，但不得改写用户或 AI 的可见正文，避免聊天列表和导出内容重复膨胀；模型请求、聊天面板展示和聊天记录导出在使用历史附件前都必须重新脱敏，不能信任 IndexedDB、同步恢复、导入或旧版本遗留数据。
 * 历史 Network 附件的 `title`、`summary` 属于可迁移脏数据，展示和导出前必须使用固定标题，并基于重新脱敏后的 `requests` 调用统一格式化逻辑重新生成摘要，不得直接展示或导出旧 `title`、`summary` 字段，避免旧版本、导入或同步恢复带入敏感 URL、Header 或 Body 摘要。
 * 采集、筛选、详情读取和附件展示都必须默认脱敏敏感 header、query 和 body 字段，并保留 `redacted`、`truncated` 标记；新增原文发送入口前必须增加显式确认和对应测试。
+* Background 返回 Network 快照或详情前必须先按统一口径脱敏；`networkContext.getDetails` 的 `requestIds` 属于外部输入，必须校验数组类型、非空字符串、长度和数量边界，非法时不得转发给 DevTools。
+* Side Panel 读取 background 返回的 Network 快照和详情后仍应保留二次脱敏，用于防御旧版本 IndexedDB、同步恢复、导入数据或异常 runtime 返回绕过 background 边界；相关测试必须覆盖非法 `requestIds`、请求/响应 header、URL query 和 body 脱敏。
+* Network URL 脱敏不能只依赖标准绝对 URL 解析；相对 URL、缺少协议的 URL 或旧快照脏数据也必须尽量脱敏 query 中的敏感参数。DevTools port 返回的快照和详情结构属于外部输入，必须校验数组和必要字段，异常时 fail closed 返回固定中文错误，不能让监听器抛错或让详情请求永久等待。
 * DevTools 未连接、没有请求、筛选为空或详情部分读取失败时，必须返回明确中文提示，且不得发送空详情正式分析请求。
 * 当前标签页刷新时必须通过 `chrome.tabs.onUpdated` 显式记录刷新状态，并配合 DevTools recorder 的 `chrome.devtools.network.onNavigated` 清空旧请求缓存、重新读取 HAR、重新上报连接；刷新中不得使用旧快照分析，应返回明确中文提示。
 * background 对 DevTools port 短暂断开应保留最近快照一小段时间，避免刷新期间立即误报未连接；同 tab 重连后必须取消旧清理并用新快照覆盖。

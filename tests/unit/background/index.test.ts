@@ -593,6 +593,78 @@ describe("background 入口", () => {
     });
   });
 
+  it("DevTools Network 快照在 background 返回前会先脱敏", async () => {
+    const mock = createChromeMock();
+    vi.stubGlobal("chrome", mock.chrome);
+    await import("../../../src/background/index");
+    const port = createPortMock("network.devtools");
+    mock.connectListeners[0](port);
+    port.emitMessage({
+      type: "networkContext.devtoolsConnected",
+      tabId: 7,
+      requests: [
+        {
+          id: "req-1",
+          url: "https://api.example.com/users?token=secret&safe=1",
+          method: "POST",
+          status: 200,
+          requestHeaders: [{ name: "Authorization", value: "Bearer secret" }],
+          responseHeaders: [{ name: "Set-Cookie", value: "sid=secret" }],
+          requestBody: "{\"password\":\"123456\",\"name\":\"张三\"}",
+        },
+      ],
+    });
+    const sendResponse = vi.fn();
+
+    mock.messageListeners[0](
+      { type: "networkContext.getSnapshot", tabId: 7 },
+      {} as chrome.runtime.MessageSender,
+      sendResponse,
+    );
+
+    await vi.waitFor(() => {
+      expect(sendResponse).toHaveBeenCalledWith({
+        ok: true,
+        tabId: 7,
+        requests: [
+          expect.objectContaining({
+            url: "https://api.example.com/users?token=[已脱敏]&safe=1",
+            requestHeaders: [{ name: "Authorization", value: "[已脱敏]" }],
+            responseHeaders: [{ name: "Set-Cookie", value: "[已脱敏]" }],
+            requestBody: "{\"password\":\"[已脱敏]\",\"name\":\"张三\"}",
+          }),
+        ],
+      });
+    });
+  });
+
+  it("DevTools Network 快照结构异常时返回中文错误", async () => {
+    const mock = createChromeMock();
+    vi.stubGlobal("chrome", mock.chrome);
+    await import("../../../src/background/index");
+    const port = createPortMock("network.devtools");
+    mock.connectListeners[0](port);
+    port.emitMessage({
+      type: "networkContext.devtoolsConnected",
+      tabId: 7,
+      requests: "not-array",
+    });
+    const sendResponse = vi.fn();
+
+    mock.messageListeners[0](
+      { type: "networkContext.getSnapshot", tabId: 7 },
+      {} as chrome.runtime.MessageSender,
+      sendResponse,
+    );
+
+    await vi.waitFor(() => {
+      expect(sendResponse).toHaveBeenCalledWith({
+        ok: false,
+        message: "DevTools Network 返回数据无效，请刷新页面后重试",
+      });
+    });
+  });
+
   it("当前标签页刷新导致 DevTools port 短暂断开时保留快照并允许重连覆盖", async () => {
     vi.useFakeTimers();
     const mock = createChromeMock();
@@ -789,9 +861,144 @@ describe("background 入口", () => {
     await vi.waitFor(() => {
       expect(sendResponse).toHaveBeenCalledWith({
         ok: true,
-        details: [{ id: "req-1", url: "https://api.example.com/users", method: "GET", status: 200, truncated: false, redacted: false }],
+        details: [expect.objectContaining({ id: "req-1", url: "https://api.example.com/users", method: "GET", status: 200, truncated: false })],
       });
     });
+  });
+
+  it("Network 详情响应在 background 返回前会先脱敏", async () => {
+    const mock = createChromeMock();
+    vi.stubGlobal("chrome", mock.chrome);
+    await import("../../../src/background/index");
+    const port = createPortMock("network.devtools");
+    mock.connectListeners[0](port);
+    port.emitMessage({
+      type: "networkContext.devtoolsConnected",
+      tabId: 7,
+      requests: [{ id: "req-1", url: "https://api.example.com/users", method: "GET", status: 200 }],
+    });
+    const sendResponse = vi.fn();
+
+    mock.messageListeners[0](
+      { type: "networkContext.getDetails", tabId: 7, requestIds: ["req-1"] },
+      {} as chrome.runtime.MessageSender,
+      sendResponse,
+    );
+    await vi.waitFor(() => expect(port.postMessage).toHaveBeenCalled());
+    const requestMessage = port.postMessage.mock.calls[0][0] as { rpcId: string };
+    port.emitMessage({
+      type: "networkContext.detailsResponse",
+      rpcId: requestMessage.rpcId,
+      response: {
+        ok: true,
+        details: [
+          {
+            id: "req-1",
+            url: "https://api.example.com/users?api_key=secret&xsrf=secret-xsrf",
+            method: "POST",
+            status: 200,
+            requestHeaders: [{ name: "Cookie", value: "sid=secret" }],
+            responseHeaders: [{ name: "X-CSRF-Token", value: "secret-csrf" }],
+            requestBody: "{\"token\":\"secret-token\"}",
+            responseBody: "{\"access_token\":\"secret-token\"}",
+            truncated: false,
+            redacted: false,
+          },
+        ],
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(sendResponse).toHaveBeenCalledWith({
+        ok: true,
+        details: [
+          expect.objectContaining({
+            url: "https://api.example.com/users?api_key=[已脱敏]&xsrf=[已脱敏]",
+            requestHeaders: [{ name: "Cookie", value: "[已脱敏]" }],
+            responseHeaders: [{ name: "X-CSRF-Token", value: "[已脱敏]" }],
+            requestBody: "{\"token\":\"[已脱敏]\"}",
+            responseBody: "{\"access_token\":\"[已脱敏]\"}",
+            redacted: true,
+          }),
+        ],
+      });
+    });
+  });
+
+  it("Network 详情请求 ID 非法时不转发给 DevTools", async () => {
+    const mock = createChromeMock();
+    vi.stubGlobal("chrome", mock.chrome);
+    await import("../../../src/background/index");
+    const port = createPortMock("network.devtools");
+    mock.connectListeners[0](port);
+    port.emitMessage({
+      type: "networkContext.devtoolsConnected",
+      tabId: 7,
+      requests: [{ id: "req-1", url: "https://api.example.com/users", method: "GET", status: 200 }],
+    });
+    const sendResponse = vi.fn();
+
+    mock.messageListeners[0](
+      { type: "networkContext.getDetails", tabId: 7, requestIds: ["req-1"] },
+      {} as chrome.runtime.MessageSender,
+      sendResponse,
+    );
+    await vi.waitFor(() => expect(port.postMessage).toHaveBeenCalled());
+    const requestMessage = port.postMessage.mock.calls[0][0] as { rpcId: string };
+    port.emitMessage({
+      type: "networkContext.detailsResponse",
+      rpcId: requestMessage.rpcId,
+      response: {
+        ok: true,
+        details: "not-array",
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(sendResponse).toHaveBeenCalledWith({
+        ok: false,
+        message: "DevTools Network 返回数据无效，请刷新页面后重试",
+      });
+    });
+  });
+
+  it("DevTools Network 详情请求 ID 非法时不转发给 DevTools", async () => {
+    const invalidRequestIdsCases: unknown[] = [
+      "req-1",
+      ["req-1", ""],
+      ["req-1", 123],
+      ["x".repeat(513)],
+      Array.from({ length: 501 }, (_, index) => `req-${index}`),
+    ];
+
+    for (const requestIds of invalidRequestIdsCases) {
+      vi.resetModules();
+      const mock = createChromeMock();
+      vi.stubGlobal("chrome", mock.chrome);
+      await import("../../../src/background/index");
+      const port = createPortMock("network.devtools");
+      mock.connectListeners[0](port);
+      port.emitMessage({
+        type: "networkContext.devtoolsConnected",
+        tabId: 7,
+        requests: [{ id: "req-1", url: "https://api.example.com/users", method: "GET", status: 200 }],
+      });
+      const sendResponse = vi.fn();
+
+      mock.messageListeners[0](
+        { type: "networkContext.getDetails", tabId: 7, requestIds },
+        {} as chrome.runtime.MessageSender,
+        sendResponse,
+      );
+
+      await vi.waitFor(() => {
+        expect(sendResponse).toHaveBeenCalledWith({
+          ok: false,
+          message: "Network 请求详情参数无效，请重新选择请求后再试",
+        });
+      });
+      expect(port.postMessage).not.toHaveBeenCalled();
+    }
   });
 
   it("Network 详情请求在 DevTools 未响应时会超时返回中文错误", async () => {

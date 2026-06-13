@@ -5,7 +5,7 @@ const REDACTED_VALUE = "[已脱敏]";
 const BODY_LIMIT = 6000;
 const FIELD_LIMIT = 1200;
 
-const SENSITIVE_NAME_PATTERN = /(authorization|cookie|set-cookie|token|access[_-]?token|refresh[_-]?token|api[_-]?key|secret|password|passwd|credential|session|sid)/i;
+const SENSITIVE_NAME_PATTERN = /(authorization|cookie|set-cookie|token|access[_-]?token|refresh[_-]?token|api[_-]?key|secret|password|passwd|credential|session|sid|csrf|xsrf)/i;
 export const DEFAULT_NETWORK_RELEVANCE_PROMPT = [
   "请根据用户需求，从下面 Network 请求元数据中筛选最相关的请求。",
   "只返回 JSON，格式为：{\"requestIds\":[\"请求ID\"]}，不要输出解释。",
@@ -293,8 +293,32 @@ function redactUrl(value: string): string {
     const query = redactedParams.length > 0 ? `?${redactedParams.join("&")}` : "";
     return `${url.origin}${url.pathname}${query}${url.hash}`;
   } catch {
+    return redactNonStandardUrl(value);
+  }
+}
+
+function redactNonStandardUrl(value: string): string {
+  const queryStart = value.indexOf("?");
+  if (queryStart < 0) {
     return value;
   }
+
+  const hashStart = value.indexOf("#", queryStart);
+  const queryEnd = hashStart >= 0 ? hashStart : value.length;
+  const query = value.slice(queryStart + 1, queryEnd);
+  const hash = hashStart >= 0 ? value.slice(hashStart) : "";
+
+  // URL 可能来自浏览器、导入数据或旧快照；即使不是标准绝对 URL，也要尽量脱敏 query，避免敏感参数穿透。
+  const params = new URLSearchParams(query);
+  let changed = false;
+  for (const key of Array.from(params.keys())) {
+    if (isSensitiveName(key)) {
+      params.set(key, REDACTED_VALUE);
+      changed = true;
+    }
+  }
+
+  return changed ? `${value.slice(0, queryStart)}?${params.toString()}${hash}` : value;
 }
 
 function redactBody(value: string | undefined): string | undefined {

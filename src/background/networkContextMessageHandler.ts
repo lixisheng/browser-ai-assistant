@@ -1,4 +1,5 @@
 import type { NetworkRequestDetail, NetworkRequestMeta } from "../shared/types";
+import { redactNetworkRequestDetail, redactNetworkRequestMeta } from "../shared/networkContext";
 
 export interface NetworkContextGetSnapshotMessage {
   type: "networkContext.getSnapshot";
@@ -8,7 +9,7 @@ export interface NetworkContextGetSnapshotMessage {
 export interface NetworkContextGetDetailsMessage {
   type: "networkContext.getDetails";
   tabId?: number;
-  requestIds: string[];
+  requestIds: unknown;
 }
 
 export type NetworkContextMessage = NetworkContextGetSnapshotMessage | NetworkContextGetDetailsMessage;
@@ -34,23 +35,6 @@ type NetworkContextDetailsResponse =
       message: string;
     };
 
-type DevtoolsPortMessage =
-  | {
-      type: "networkContext.devtoolsConnected";
-      tabId: number;
-      requests: NetworkRequestMeta[];
-    }
-  | {
-      type: "networkContext.snapshotUpdated";
-      tabId: number;
-      requests: NetworkRequestMeta[];
-    }
-  | {
-      type: "networkContext.detailsResponse";
-      rpcId: string;
-      response: NetworkContextDetailsResponse;
-    };
-
 interface NetworkTabChangeInfo {
   status?: string;
 }
@@ -58,7 +42,7 @@ interface NetworkTabChangeInfo {
 interface DevtoolsConnection {
   tabId: number;
   port: chrome.runtime.Port;
-  requests: NetworkRequestMeta[];
+  requests: unknown;
   refreshing?: boolean;
   disconnected?: boolean;
   disconnectCleanupTimer?: ReturnType<typeof setTimeout>;
@@ -68,8 +52,12 @@ const DEVTOOLS_UNAVAILABLE_MESSAGE = "请先打开当前标签页 DevTools，并
 const DEVTOOLS_REFRESHING_MESSAGE = "当前标签页正在刷新，请等待页面加载完成并产生 Network 请求后再使用 Network 上下文";
 const DEVTOOLS_DETAIL_TIMEOUT_MESSAGE = "读取 Network 请求详情超时，请确认 DevTools Network 仍处于打开状态";
 const DEVTOOLS_DETAIL_SEND_FAILED_MESSAGE = "读取 Network 请求详情失败，请确认 DevTools Network 仍处于打开状态";
+const DEVTOOLS_DETAIL_INVALID_REQUEST_IDS_MESSAGE = "Network 请求详情参数无效，请重新选择请求后再试";
+const DEVTOOLS_INVALID_RESPONSE_MESSAGE = "DevTools Network 返回数据无效，请刷新页面后重试";
 const DEVTOOLS_DISCONNECT_GRACE_MS = 5000;
 const DEVTOOLS_DETAIL_REQUEST_TIMEOUT_MS = 30000;
+const MAX_DETAIL_REQUEST_IDS = 500;
+const MAX_DETAIL_REQUEST_ID_LENGTH = 512;
 const connectionsByTabId = new Map<number, DevtoolsConnection>();
 const pendingDetailRequests = new Map<
   string,
@@ -95,14 +83,24 @@ export async function handleNetworkContextMessage(message: NetworkContextMessage
       return { ok: false, message: DEVTOOLS_REFRESHING_MESSAGE };
     }
 
-    return { ok: true, tabId: connection.tabId, requests: connection.requests };
+    const requests = sanitizeNetworkSnapshot(connection.requests);
+    if (!requests) {
+      return { ok: false, message: DEVTOOLS_INVALID_RESPONSE_MESSAGE };
+    }
+
+    return { ok: true, tabId: connection.tabId, requests };
   }
 
-  if (message.requestIds.length === 0) {
+  const normalizedRequestIds = normalizeDetailRequestIds(message.requestIds);
+  if (!normalizedRequestIds) {
+    return { ok: false, message: DEVTOOLS_DETAIL_INVALID_REQUEST_IDS_MESSAGE };
+  }
+
+  if (normalizedRequestIds.length === 0) {
     return { ok: true, details: [] };
   }
 
-  return requestDetailsFromDevtools(connection, message.requestIds);
+  return requestDetailsFromDevtools(connection, normalizedRequestIds);
 }
 
 export function handleNetworkDevtoolsPort(port: chrome.runtime.Port): void {
@@ -112,8 +110,16 @@ export function handleNetworkDevtoolsPort(port: chrome.runtime.Port): void {
 
   let registeredTabId: number | undefined;
 
-  port.onMessage.addListener((message: DevtoolsPortMessage) => {
+  port.onMessage.addListener((message: unknown) => {
+    if (!isRecord(message)) {
+      return;
+    }
+
     if (message.type === "networkContext.devtoolsConnected" || message.type === "networkContext.snapshotUpdated") {
+      if (typeof message.tabId !== "number") {
+        return;
+      }
+
       registeredTabId = message.tabId;
       const previousConnection = connectionsByTabId.get(message.tabId);
       if (previousConnection?.disconnectCleanupTimer) {
@@ -128,6 +134,10 @@ export function handleNetworkDevtoolsPort(port: chrome.runtime.Port): void {
       return;
     }
 
+    if (message.type !== "networkContext.detailsResponse" || typeof message.rpcId !== "string") {
+      return;
+    }
+
     const pendingRequest = pendingDetailRequests.get(message.rpcId);
     if (!pendingRequest) {
       return;
@@ -135,7 +145,7 @@ export function handleNetworkDevtoolsPort(port: chrome.runtime.Port): void {
 
     clearTimeout(pendingRequest.timeoutTimer);
     pendingDetailRequests.delete(message.rpcId);
-    pendingRequest.resolve(message.response);
+    pendingRequest.resolve(sanitizeNetworkDetailsResponse(message.response));
   });
 
   port.onDisconnect.addListener(() => {
@@ -230,6 +240,81 @@ function markConnectionDisconnected(tabId: number, port: chrome.runtime.Port): v
       connectionsByTabId.delete(tabId);
     }
   }, DEVTOOLS_DISCONNECT_GRACE_MS);
+}
+
+function sanitizeNetworkSnapshot(requests: unknown): NetworkRequestMeta[] | undefined {
+  if (!Array.isArray(requests) || !requests.every(isNetworkRequestMeta)) {
+    return undefined;
+  }
+
+  return requests.map(redactNetworkRequestMeta);
+}
+
+function sanitizeNetworkDetailsResponse(response: unknown): NetworkContextDetailsResponse {
+  if (!isRecord(response)) {
+    return { ok: false, message: DEVTOOLS_INVALID_RESPONSE_MESSAGE };
+  }
+
+  if (response.ok === false && typeof response.message === "string") {
+    return { ok: false, message: response.message };
+  }
+
+  if (response.ok !== true || !Array.isArray(response.details) || !response.details.every(isNetworkRequestDetail)) {
+    return { ok: false, message: DEVTOOLS_INVALID_RESPONSE_MESSAGE };
+  }
+
+  return {
+    ok: true,
+    details: response.details.map(redactNetworkRequestDetail),
+  };
+}
+
+function normalizeDetailRequestIds(requestIds: unknown): string[] | undefined {
+  if (!Array.isArray(requestIds) || requestIds.length > MAX_DETAIL_REQUEST_IDS) {
+    return undefined;
+  }
+
+  const normalizedIds = requestIds.map((requestId) => (typeof requestId === "string" ? requestId.trim() : ""));
+  if (normalizedIds.some((requestId) => !requestId || requestId.length > MAX_DETAIL_REQUEST_ID_LENGTH)) {
+    return undefined;
+  }
+
+  return normalizedIds;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object";
+}
+
+function isNetworkRequestMeta(value: unknown): value is NetworkRequestMeta {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return (
+    typeof value.id === "string" &&
+    typeof value.url === "string" &&
+    typeof value.method === "string" &&
+    isOptionalHeaderArray(value.requestHeaders) &&
+    isOptionalHeaderArray(value.responseHeaders) &&
+    (value.requestBody === undefined || typeof value.requestBody === "string")
+  );
+}
+
+function isNetworkRequestDetail(value: unknown): value is NetworkRequestDetail {
+  if (!isNetworkRequestMeta(value) || !isRecord(value)) {
+    return false;
+  }
+
+  return (
+    (value.responseBody === undefined || typeof value.responseBody === "string") &&
+    typeof value.truncated === "boolean" &&
+    typeof value.redacted === "boolean"
+  );
+}
+
+function isOptionalHeaderArray(value: unknown): boolean {
+  return value === undefined || (Array.isArray(value) && value.every((header) => isRecord(header) && typeof header.name === "string" && typeof header.value === "string"));
 }
 
 function createDevtoolsUnavailableMessage(requestedTabId: number | undefined): string {

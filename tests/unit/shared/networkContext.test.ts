@@ -208,4 +208,21 @@ describe("Network 上下文", () => {
 
     expect(filterNetworkRequestsByType(requests, ["other"]).map((request) => request.id)).toEqual(["preflight-1", "unknown-1"]);
   });
+
+  it("非标准 URL 的 query 敏感参数也会脱敏", () => {
+    expect(
+      redactNetworkRequestMeta({
+        id: "req-1",
+        url: "/api/login?token=secret&safe=1",
+        method: "POST",
+      }).url,
+    ).toBe("/api/login?token=%5B%E5%B7%B2%E8%84%B1%E6%95%8F%5D&safe=1");
+    expect(
+      redactNetworkRequestMeta({
+        id: "req-2",
+        url: "api.example.com/login?csrf=secret#form",
+        method: "POST",
+      }).url,
+    ).toBe("api.example.com/login?csrf=%5B%E5%B7%B2%E8%84%B1%E6%95%8F%5D#form");
+  });
 });

@@ -7,7 +7,7 @@ test("侧边栏页面可以渲染首次使用提示和设置入口", async ({ pa
   await expect(page.getByText("请先配置 API Key 后再开始对话")).toBeVisible();
   await expect(page.getByRole("button", { name: "发送" })).toBeDisabled();
 
-  await page.getByRole("button", { name: "设置" }).click();
+  await page.getByRole("button", { name: "设置", exact: true }).click();
 
   await expect(page.getByRole("heading", { name: "设置" })).toBeVisible();
   await expect(page.getByRole("tab", { name: "渠道管理" })).toBeVisible();
