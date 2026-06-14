@@ -1,23 +1,14 @@
 import { DEFAULT_MODEL_REQUEST_RETRY_COUNT, normalizeModelRequestRetryCount } from "../../shared/models/modelRequestRetry";
 import { getRegisteredModelTools, isBrowserAutomationToolId, normalizeEnabledToolIds } from "../../shared/models/toolRegistry";
-import {
-  DEFAULT_NETWORK_REQUEST_TYPE_FILTERS,
-  DEFAULT_NETWORK_RELEVANCE_PROMPT,
-  NETWORK_REQUEST_TYPE_FILTER_OPTIONS,
-} from "../../shared/networkContext";
 import type {
   ChatPreferenceValues,
   ChatSessionPreferenceOverrides,
-  NetworkRequestTypeFilter,
   PageContextExtractMode,
   SendShortcut,
 } from "../../shared/types";
 
 export const DEFAULT_CHAT_PREFERENCES: ChatPreferenceValues = {
   systemPrompt: "你是网页助手",
-  networkRelevancePrompt: DEFAULT_NETWORK_RELEVANCE_PROMPT,
-  networkRelevanceBatchSize: 50,
-  networkRequestTypeFilters: DEFAULT_NETWORK_REQUEST_TYPE_FILTERS,
   aiRequestRetryCount: DEFAULT_MODEL_REQUEST_RETRY_COUNT,
   browserAutomationMaxToolIterations: 32,
   toolCallingEnabled: false,
@@ -37,8 +28,6 @@ export type EffectiveChatPreferences = Required<
   Pick<
     ChatSessionPreferenceOverrides,
     | "systemPrompt"
-    | "networkRelevanceBatchSize"
-    | "networkRequestTypeFilters"
     | "aiRequestRetryCount"
     | "browserAutomationMaxToolIterations"
     | "toolCallingEnabled"
@@ -55,12 +44,6 @@ export function normalizeChatPreferences(value?: Partial<ChatPreferenceValues>):
       typeof value?.systemPrompt === "string" && value.systemPrompt.trim()
         ? value.systemPrompt.trim()
         : DEFAULT_CHAT_PREFERENCES.systemPrompt,
-    networkRelevancePrompt:
-      typeof value?.networkRelevancePrompt === "string" && value.networkRelevancePrompt.trim()
-        ? value.networkRelevancePrompt.trim()
-        : DEFAULT_CHAT_PREFERENCES.networkRelevancePrompt,
-    networkRelevanceBatchSize: Math.round(normalizeNumber(value?.networkRelevanceBatchSize, DEFAULT_CHAT_PREFERENCES.networkRelevanceBatchSize, 1, 10_000)),
-    networkRequestTypeFilters: normalizeNetworkRequestTypeFilters(value?.networkRequestTypeFilters),
     aiRequestRetryCount: normalizeModelRequestRetryCount(value?.aiRequestRetryCount, DEFAULT_CHAT_PREFERENCES.aiRequestRetryCount),
     browserAutomationMaxToolIterations: normalizeIntegerWithoutRange(
       value?.browserAutomationMaxToolIterations,
@@ -95,20 +78,6 @@ function normalizeToolCallDisplayMode(value: unknown): ChatPreferenceValues["too
   return value === "compact" || value === "assistant_grouped" ? value : DEFAULT_CHAT_PREFERENCES.toolCallDisplayMode;
 }
 
-function normalizeNetworkRequestTypeFilters(value: unknown): NetworkRequestTypeFilter[] {
-  if (!Array.isArray(value)) {
-    return DEFAULT_NETWORK_REQUEST_TYPE_FILTERS;
-  }
-
-  const validValues = new Set(NETWORK_REQUEST_TYPE_FILTER_OPTIONS.map((option) => option.value));
-  const filters = value.filter((item): item is NetworkRequestTypeFilter => typeof item === "string" && validValues.has(item as NetworkRequestTypeFilter));
-  if (filters.length === 0 || filters.includes("all")) {
-    return DEFAULT_NETWORK_REQUEST_TYPE_FILTERS;
-  }
-
-  return Array.from(new Set(filters));
-}
-
 function isSendShortcutValue(value: unknown): value is SendShortcut {
   return typeof value === "string" && ["enter", "shift_enter", "ctrl_enter", "ctrl_shift_enter", "alt_enter"].includes(value);
 }
@@ -118,14 +87,6 @@ export function normalizeChatPreferenceOverrides(value?: ChatSessionPreferenceOv
 
   if (typeof value?.systemPrompt === "string" && value.systemPrompt.trim()) {
     overrides.systemPrompt = value.systemPrompt.trim();
-  }
-  if (value?.networkRelevanceBatchSize !== undefined) {
-    overrides.networkRelevanceBatchSize = Math.round(
-      normalizeNumber(value.networkRelevanceBatchSize, DEFAULT_CHAT_PREFERENCES.networkRelevanceBatchSize, 1, 10_000),
-    );
-  }
-  if (value?.networkRequestTypeFilters !== undefined) {
-    overrides.networkRequestTypeFilters = normalizeNetworkRequestTypeFilters(value.networkRequestTypeFilters);
   }
   if (value?.aiRequestRetryCount !== undefined) {
     overrides.aiRequestRetryCount = normalizeModelRequestRetryCount(value.aiRequestRetryCount, DEFAULT_CHAT_PREFERENCES.aiRequestRetryCount);
@@ -161,8 +122,6 @@ export function resolveEffectiveChatPreferences(
 ): EffectiveChatPreferences {
   const normalizedOverrides = normalizeChatPreferenceOverrides({
     systemPrompt: overrides?.systemPrompt ?? preferences.systemPrompt,
-    networkRelevanceBatchSize: overrides?.networkRelevanceBatchSize ?? preferences.networkRelevanceBatchSize,
-    networkRequestTypeFilters: overrides?.networkRequestTypeFilters ?? preferences.networkRequestTypeFilters,
     aiRequestRetryCount: overrides?.aiRequestRetryCount ?? preferences.aiRequestRetryCount,
     browserAutomationMaxToolIterations: overrides?.browserAutomationMaxToolIterations ?? preferences.browserAutomationMaxToolIterations,
     toolCallingEnabled: overrides?.toolCallingEnabled ?? preferences.toolCallingEnabled,
@@ -174,8 +133,6 @@ export function resolveEffectiveChatPreferences(
 
   return {
     systemPrompt: normalizedOverrides.systemPrompt ?? preferences.systemPrompt,
-    networkRelevanceBatchSize: normalizedOverrides.networkRelevanceBatchSize ?? preferences.networkRelevanceBatchSize,
-    networkRequestTypeFilters: normalizedOverrides.networkRequestTypeFilters ?? preferences.networkRequestTypeFilters,
     aiRequestRetryCount: normalizedOverrides.aiRequestRetryCount ?? preferences.aiRequestRetryCount,
     browserAutomationMaxToolIterations: normalizedOverrides.browserAutomationMaxToolIterations ?? preferences.browserAutomationMaxToolIterations,
     toolCallingEnabled: normalizedOverrides.toolCallingEnabled ?? preferences.toolCallingEnabled,

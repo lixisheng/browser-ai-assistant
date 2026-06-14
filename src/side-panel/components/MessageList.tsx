@@ -120,6 +120,8 @@ export function MessageList({
         const hideToolTurnContent = shouldHideToolTurnContent(message, toolCallDisplayMode);
         const hasVisibleThinking = message.role === "assistant" && !isToolCallTurn && Boolean(message.thinking) && !hideToolTurnContent;
         const hasVisibleContent = Boolean(message.content.trim()) && !hideToolTurnContent;
+        const hasPromptTokens = message.role === "user" && Boolean(message.promptInvocations?.length);
+        const shouldRenderMessageBubble = hasVisibleContent || hasPromptTokens;
         const hasVisibleArticle =
           message.role !== "assistant" ||
           !isToolCallTurn ||
@@ -215,14 +217,14 @@ export function MessageList({
                   </button>
                 </div>
               </div>
-            ) : (
+            ) : shouldRenderMessageBubble ? (
               <div className={`message-bubble${message.role === "user" && message.promptInvocations?.length ? " message-bubble-with-prompts" : ""}`}>
                 {message.role === "user" && message.promptInvocations?.length ? (
                   <PromptTokenLinks prompts={message.promptInvocations} ariaLabelPrefix="用户消息提示词" />
                 ) : null}
                 {hasVisibleContent ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown> : null}
               </div>
-            )}
+            ) : null}
             {message.role === "assistant" ? <ToolAttachmentList message={message} /> : null}
             {!isToolCallTurn ? (
               <div className={`message-regenerate-action message-regenerate-action-${message.role}`}>

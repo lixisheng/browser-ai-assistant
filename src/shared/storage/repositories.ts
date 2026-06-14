@@ -11,7 +11,6 @@ import type {
   ExtractionRule,
   ModelConfig,
   ModelProvider,
-  NetworkRequestTypeFilter,
   PromptTemplate,
   ProviderModel,
 } from "../types";
@@ -303,20 +302,8 @@ function normalizeChatPreferenceOverrides(value: unknown): ChatSessionPreference
   if (typeof source.systemPrompt === "string" && source.systemPrompt.trim()) {
     overrides.systemPrompt = source.systemPrompt;
   }
-  if (typeof source.networkRelevanceBatchSize === "number" && Number.isFinite(source.networkRelevanceBatchSize)) {
-    overrides.networkRelevanceBatchSize = source.networkRelevanceBatchSize;
-  }
   if (typeof source.browserAutomationMaxToolIterations === "number" && Number.isFinite(source.browserAutomationMaxToolIterations)) {
     overrides.browserAutomationMaxToolIterations = source.browserAutomationMaxToolIterations;
-  }
-  if (Array.isArray(source.networkRequestTypeFilters)) {
-    const validFilters = new Set<NetworkRequestTypeFilter>(["all", "fetch_xhr", "doc", "css", "js", "font", "img", "media", "manifest", "ws", "wasm", "other"]);
-    const filters = source.networkRequestTypeFilters.filter(
-      (item): item is NetworkRequestTypeFilter => typeof item === "string" && validFilters.has(item as NetworkRequestTypeFilter),
-    );
-    if (filters.length > 0) {
-      overrides.networkRequestTypeFilters = Array.from(new Set(filters));
-    }
   }
   if (typeof source.toolCallingEnabled === "boolean") {
     overrides.toolCallingEnabled = source.toolCallingEnabled;

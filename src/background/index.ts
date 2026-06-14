@@ -6,13 +6,6 @@ import {
 } from "./browserControlMessageHandler";
 import { handleChatSendMessage, type ChatSendMessage } from "./modelRequestHandler";
 import {
-  handleNetworkContextMessage,
-  handleNetworkDevtoolsPort,
-  handleNetworkTabUpdated,
-  setPreferredNetworkContextTabId,
-  type NetworkContextMessage,
-} from "./networkContextMessageHandler";
-import {
   handlePageContextListTabsMessage,
   handlePageContextMessage,
   type PageContextExtractMessage,
@@ -55,7 +48,6 @@ async function openSidePanel(tabId?: number) {
     return;
   }
 
-  setPreferredNetworkContextTabId(tabId);
   await chrome.sidePanel.open({ tabId });
 }
 
@@ -79,10 +71,6 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   void openSidePanel(tab?.id);
 });
 
-chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-  handleNetworkTabUpdated(tabId, changeInfo);
-});
-
 chrome.tabs.onRemoved.addListener((tabId) => {
   handleBrowserControlTabRemoved(tabId);
 });
@@ -96,7 +84,6 @@ type RuntimeMessage =
   | ChatSendMessage
   | TabCaptureVisibleMessage
   | SyncBackupMessage
-  | NetworkContextMessage
   | BrowserControlMessage;
 
 interface ChatStreamStartMessage {
@@ -178,11 +165,6 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResp
     return true;
   }
 
-  if (message.type === "networkContext.getSnapshot" || message.type === "networkContext.getDetails") {
-    void handleNetworkContextMessage(message).then(sendResponse);
-    return true;
-  }
-
   if (message.type === "browserControl.setEnabled") {
     void handleBrowserControlMessage(message, _sender).then(sendResponse);
     return true;
@@ -206,8 +188,6 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 });
 
 chrome.runtime.onConnect.addListener((port) => {
-  handleNetworkDevtoolsPort(port);
-
   if (port.name !== "chat.stream") {
     return;
   }

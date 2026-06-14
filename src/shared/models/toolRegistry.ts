@@ -24,6 +24,20 @@ export const BROWSER_SELECT_PAGE_TOOL_ID = "browser.select_page";
 export const BROWSER_SELECT_PAGE_TOOL_NAME = "select_page";
 export const BROWSER_CLOSE_PAGE_TOOL_ID = "browser.close_page";
 export const BROWSER_CLOSE_PAGE_TOOL_NAME = "close_page";
+export const NETWORK_LIST_REQUESTS_TOOL_ID = "network.list_requests";
+export const NETWORK_LIST_REQUESTS_TOOL_NAME = "network_list_requests";
+export const NETWORK_GET_REQUEST_DETAILS_TOOL_ID = "network.get_request_details";
+export const NETWORK_GET_REQUEST_DETAILS_TOOL_NAME = "network_get_request_details";
+export const NETWORK_CLEAR_REQUESTS_TOOL_ID = "network.clear_requests";
+export const NETWORK_CLEAR_REQUESTS_TOOL_NAME = "network_clear_requests";
+export const NETWORK_WAIT_FOR_REQUESTS_TOOL_ID = "network.wait_for_requests";
+export const NETWORK_WAIT_FOR_REQUESTS_TOOL_NAME = "network_wait_for_requests";
+export const NETWORK_COMPARE_REQUESTS_TOOL_ID = "network.compare_requests";
+export const NETWORK_COMPARE_REQUESTS_TOOL_NAME = "network_compare_requests";
+export const NETWORK_FIND_PARAMETER_CANDIDATES_TOOL_ID = "network.find_parameter_candidates";
+export const NETWORK_FIND_PARAMETER_CANDIDATES_TOOL_NAME = "network_find_parameter_candidates";
+export const NETWORK_EXTRACT_JS_CANDIDATES_TOOL_ID = "network.extract_js_candidates";
+export const NETWORK_EXTRACT_JS_CANDIDATES_TOOL_NAME = "network_extract_js_candidates";
 
 export const MODEL_TOOL_GROUP_SYSTEM_ID = "system";
 export const MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID = "browser_automation";
@@ -282,6 +296,99 @@ export const AVAILABLE_MODEL_TOOLS: ModelToolRegistryEntry[] = [
       additionalProperties: false,
     },
   },
+  {
+    id: NETWORK_LIST_REQUESTS_TOOL_ID,
+    name: NETWORK_LIST_REQUESTS_TOOL_NAME,
+    groupId: MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID,
+    displayName: "Network 请求列表",
+    description: "列出当前受控页面后台采集到的 Network 请求元数据，可按 URL、方法、类型、状态码和数量筛选。",
+    parameters: {
+      type: "object",
+      properties: {
+        urlIncludes: { type: "string", description: "URL 中需要包含的文本。" },
+        method: { type: "string", description: "请求方法，例如 GET、POST。" },
+        resourceType: { type: "string", description: "资源类型，例如 XHR、Fetch、Script。" },
+        status: { type: "integer", description: "HTTP 状态码。" },
+        limit: { type: "integer", minimum: 1, maximum: 200, description: "最多返回的请求数量。" },
+      },
+      required: [],
+      additionalProperties: false,
+    },
+  },
+  {
+    id: NETWORK_GET_REQUEST_DETAILS_TOOL_ID,
+    name: NETWORK_GET_REQUEST_DETAILS_TOOL_NAME,
+    groupId: MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID,
+    displayName: "Network 请求详情",
+    description: "按请求 ID 读取脱敏后的请求头、请求体、响应头和响应体。",
+    parameters: createNetworkRequestIdsSchema(),
+  },
+  {
+    id: NETWORK_CLEAR_REQUESTS_TOOL_ID,
+    name: NETWORK_CLEAR_REQUESTS_TOOL_NAME,
+    groupId: MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID,
+    displayName: "清空 Network 请求",
+    description: "清空当前受控页面的 Network 请求缓存，适合在执行页面操作前建立干净观察窗口。",
+    parameters: {
+      type: "object",
+      properties: {},
+      required: [],
+      additionalProperties: false,
+    },
+  },
+  {
+    id: NETWORK_WAIT_FOR_REQUESTS_TOOL_ID,
+    name: NETWORK_WAIT_FOR_REQUESTS_TOOL_NAME,
+    groupId: MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID,
+    displayName: "等待 Network 请求",
+    description: "等待当前受控页面出现匹配条件的 Network 请求，适合点击、提交、翻页后观察新增接口。",
+    parameters: {
+      type: "object",
+      properties: {
+        urlIncludes: { type: "string", description: "URL 中需要包含的文本。" },
+        method: { type: "string", description: "请求方法，例如 GET、POST。" },
+        resourceType: { type: "string", description: "资源类型，例如 XHR、Fetch、Script。" },
+        status: { type: "integer", description: "HTTP 状态码。" },
+        limit: { type: "integer", minimum: 1, maximum: 200, description: "最多返回的请求数量。" },
+        timeoutMs: { type: "integer", minimum: 1, maximum: 30000, description: "等待超时时间，单位毫秒。" },
+      },
+      required: [],
+      additionalProperties: false,
+    },
+  },
+  {
+    id: NETWORK_COMPARE_REQUESTS_TOOL_ID,
+    name: NETWORK_COMPARE_REQUESTS_TOOL_NAME,
+    groupId: MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID,
+    displayName: "对比 Network 请求",
+    description: "对比多条请求的 URL、Header 和 Body 字段，找出稳定字段、变化字段和疑似签名参数。",
+    parameters: createNetworkRequestIdsSchema(),
+  },
+  {
+    id: NETWORK_FIND_PARAMETER_CANDIDATES_TOOL_ID,
+    name: NETWORK_FIND_PARAMETER_CANDIDATES_TOOL_NAME,
+    groupId: MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID,
+    displayName: "查找可疑参数",
+    description: "从请求详情中识别疑似签名、时间戳、随机数、凭据和加密载荷字段。",
+    parameters: createNetworkRequestIdsSchema(),
+  },
+  {
+    id: NETWORK_EXTRACT_JS_CANDIDATES_TOOL_ID,
+    name: NETWORK_EXTRACT_JS_CANDIDATES_TOOL_NAME,
+    groupId: MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID,
+    displayName: "提取 JS 候选片段",
+    description: "从已采集 JS 资源中按接口路径、参数名或加密关键词提取候选源码片段。",
+    parameters: {
+      type: "object",
+      properties: {
+        requestIds: { type: "array", items: { type: "string" }, description: "可选，限定要分析的 JS 请求 ID。" },
+        keywords: { type: "array", items: { type: "string" }, description: "要搜索的关键词，例如 sign、md5、接口路径。" },
+        urlIncludes: { type: "string", description: "要在 JS 内容中搜索的接口路径或 URL 片段。" },
+      },
+      required: [],
+      additionalProperties: false,
+    },
+  },
 ];
 
 const TOOL_ID_PATTERN = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/;
@@ -309,7 +416,24 @@ export function getModelToolGroups(tools: ModelToolRegistryEntry[] = getRegister
 }
 
 export function isBrowserAutomationToolId(toolId: string): boolean {
-  return toolId.startsWith("browser.");
+  return toolId.startsWith("browser.") || toolId.startsWith("network.");
+}
+
+function createNetworkRequestIdsSchema(): Record<string, unknown> {
+  return {
+    type: "object",
+    properties: {
+      requestIds: {
+        type: "array",
+        items: { type: "string" },
+        minItems: 1,
+        maxItems: 100,
+        description: "由 network.list_requests 或 network.wait_for_requests 返回的请求 ID。",
+      },
+    },
+    required: ["requestIds"],
+    additionalProperties: false,
+  };
 }
 
 export function isValidModelToolId(value: unknown): value is string {

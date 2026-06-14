@@ -94,4 +94,11 @@ describe("本地扩展打包脚本", () => {
     expect(packageJson.scripts["publish:chrome-webstore"]).toBeUndefined();
     await expect(stat(join(projectRoot, ".env.chrome-webstore.example"))).rejects.toThrow();
   });
+
+  it("打包脚本不再要求 DevTools 页面产物", async () => {
+    const scriptSource = await readFile(join(projectRoot, "scripts", "package-extension.mjs"), "utf8");
+
+    expect(scriptSource).not.toContain('"devtools.html"');
+    expect(scriptSource).not.toContain("network.devtools");
+  });
 });

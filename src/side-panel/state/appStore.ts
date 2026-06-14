@@ -4,7 +4,6 @@ import { createModelConfig } from "../../shared/chat/modelConfig";
 import { createPageContextPrompt } from "../../shared/chat/pageContextPrompt";
 import type { RemoteModelInfo } from "../../shared/models/modelCatalog";
 import {
-  TAVILY_SEARCH_TOOL_ID,
   getRegisteredModelTools,
   resolveEnabledModelTools,
 } from "../../shared/models/toolRegistry";
@@ -39,7 +38,6 @@ import type {
   ChatFolder,
   ChatImageAttachment,
   ChatMessage,
-  ChatNetworkContextAttachment,
   ChatPromptInvocation,
   ChatPreferenceValues,
   ChatSession,
@@ -49,9 +47,6 @@ import type {
   EndpointType,
   ExtractionRule,
   ModelProvider,
-  NetworkRequestDetail,
-  NetworkRequestMeta,
-  NetworkRequestTypeFilter,
   PageContextExtractMode,
   PromptTemplate,
   ProviderModel,
@@ -59,7 +54,6 @@ import type {
   WebSearchSettings,
 } from "../../shared/types";
 import { BROWSER_CONTROL_SET_ENABLED_MESSAGE_TYPE, type BrowserControlResponse } from "../../shared/browserControl";
-import { createNetworkToolAttachment } from "../../shared/toolArtifacts";
 import {
   createChatFolderAction,
   moveChatSessionToFolderAction,
@@ -79,7 +73,6 @@ import {
   moveRuleAction,
   saveRuleDraftAction,
 } from "./appStoreExtractionRules";
-import { prepareNetworkContextForRequest, type PreparedNetworkContext } from "./appStoreNetworkContext";
 import {
   loadContextTabsAction,
   refreshPageContextAction,
@@ -108,7 +101,7 @@ import {
   resolveRuntimeEnabledToolIds,
 } from "./appStorePreferences";
 import { upsertSession } from "./appStoreSessionUtils";
-import { mergeToolAttachments, sendStreamingChatMessage } from "./appStoreStreaming";
+import { sendStreamingChatMessage } from "./appStoreStreaming";
 import {
   backupNowAction,
   loadRemoteBackupsAction,
@@ -154,10 +147,6 @@ interface PageContextState {
   error?: string;
 }
 
-type NetworkContextSnapshotResponse =
-  | { ok: true; tabId?: number; requests: NetworkRequestMeta[] }
-  | { ok: false; message?: string };
-
 export interface ContextTabCandidate {
   tabId: number;
   title: string;
@@ -199,8 +188,6 @@ export interface AppState {
   composerHasDraft: boolean;
   appendPageContextToSystemPrompt: boolean;
   streamMode: boolean;
-  networkContextEnabled: boolean;
-  networkContextStatus?: string;
   sending: boolean;
   contextMode: PageContextExtractMode;
   syncSettings: SyncSettings;
@@ -255,8 +242,6 @@ export interface AppState {
   setComposerHasDraft: (hasDraft: boolean) => void;
   setAppendPageContextToSystemPrompt: (enabled: boolean) => void;
   setStreamMode: (streamMode: boolean) => void;
-  setNetworkContextEnabled: (enabled: boolean) => void;
-  checkNetworkContextConnection: () => Promise<void>;
   setContextMode: (contextMode: PageContextExtractMode) => void;
   loadSyncSettings: () => Promise<void>;
   updateSyncSettings: (updates: Partial<SyncSettings>) => Promise<void>;
@@ -327,8 +312,6 @@ export const useAppStore = create<AppState>()((set, get) => ({
   composerHasDraft: false,
   appendPageContextToSystemPrompt: true,
   streamMode: true,
-  networkContextEnabled: false,
-  networkContextStatus: undefined,
   sending: false,
   contextMode: "text",
   syncSettings: DEFAULT_SYNC_SETTINGS,
@@ -910,51 +893,6 @@ export const useAppStore = create<AppState>()((set, get) => ({
   setComposerHasDraft: (hasDraft) => set({ composerHasDraft: hasDraft }),
   setAppendPageContextToSystemPrompt: (enabled) => set({ appendPageContextToSystemPrompt: enabled }),
   setStreamMode: (streamMode) => set({ streamMode }),
-  setNetworkContextEnabled: (enabled) => {
-    set({
-      networkContextEnabled: enabled,
-      networkContextStatus: enabled ? get().networkContextStatus : undefined,
-    });
-    if (enabled) {
-      void get().checkNetworkContextConnection();
-    }
-  },
-  checkNetworkContextConnection: async () => {
-    const current = get();
-    if (!current.networkContextEnabled) {
-      set({ networkContextStatus: undefined });
-      return;
-    }
-    if (current.sending) {
-      return;
-    }
-
-    try {
-      const snapshot = await sendRuntimeMessage<NetworkContextSnapshotResponse | undefined>({
-        type: "networkContext.getSnapshot",
-      });
-      if (!get().networkContextEnabled || get().sending) {
-        return;
-      }
-      if (!snapshot?.ok) {
-        set({ networkContextStatus: "未检测到当前标签页 DevTools Network 连接，请关闭 DevTools 后重新打开，再刷新页面" });
-        return;
-      }
-
-      const requestCount = snapshot.requests.length;
-      set({
-        networkContextStatus:
-          requestCount > 0
-            ? `已连接 DevTools Network，已采集 ${requestCount} 个请求`
-            : "已连接 DevTools Network，但暂未采集到请求，请刷新页面或触发接口请求",
-      });
-    } catch {
-      if (!get().networkContextEnabled || get().sending) {
-        return;
-      }
-      set({ networkContextStatus: "未检测到当前标签页 DevTools Network 连接，请关闭 DevTools 后重新打开，再刷新页面" });
-    }
-  },
   setContextMode: (contextMode) => {
     set((state) => ({
       contextMode,
@@ -1009,8 +947,6 @@ export const useAppStore = create<AppState>()((set, get) => ({
       composerHasDraft: false,
       appendPageContextToSystemPrompt: true,
       streamMode: true,
-      networkContextEnabled: false,
-      networkContextStatus: undefined,
       sending: false,
       contextMode: "text",
       syncSettings: DEFAULT_SYNC_SETTINGS,
@@ -1088,7 +1024,6 @@ interface EditAndRegenerateUserMessageInput {
 interface RunChatRequestInput {
   state: AppState;
   privateMode?: boolean;
-  allowNetworkContext?: boolean;
   pageContextPrompt: string;
   session: ChatSession;
   userMessage: ChatMessage;
@@ -1175,7 +1110,6 @@ async function sendChatMessageWithState(input: SendChatMessageWithStateInput): P
     fallbackTitle: session.messages.length === 0 ? createDefaultSessionTitle(createVisibleUserTitleContent(trimmedContent, promptInvocations)) : session.title,
     model,
     provider,
-    allowNetworkContext: true,
     get: input.get,
     set: input.set,
   });
@@ -1233,7 +1167,6 @@ async function regenerateChatMessage(input: RegenerateChatMessageInput): Promise
     fallbackTitle: session.title,
     model,
     provider,
-    allowNetworkContext: true,
     get: input.get,
     set: input.set,
   });
@@ -1292,7 +1225,6 @@ async function editAndRegenerateUserMessage(input: EditAndRegenerateUserMessageI
     fallbackTitle: session.title,
     model,
     provider,
-    allowNetworkContext: true,
     get: input.get,
     set: input.set,
   });
@@ -1334,26 +1266,6 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
       }));
     }
 
-    const preparedNetworkContext =
-      input.allowNetworkContext && input.state.networkContextEnabled
-        ? await prepareNetworkContextForRequest({
-            userMessage: input.userMessage,
-            modelConfig,
-            endpointType: input.provider.endpointType,
-            networkRelevancePrompt: input.state.chatPreferences.networkRelevancePrompt,
-            networkRelevanceBatchSize: effectiveChatPreferences.networkRelevanceBatchSize,
-            networkRequestTypeFilters: effectiveChatPreferences.networkRequestTypeFilters,
-            aiRequestRetryCount: effectiveChatPreferences.aiRequestRetryCount,
-            existingMessages: input.existingMessages,
-            set: input.set,
-          })
-        : ({ ok: true, userMessage: input.userMessage } satisfies PreparedNetworkContext);
-    if (!preparedNetworkContext.ok) {
-      input.set({ failure: { message: preparedNetworkContext.message }, networkContextStatus: undefined });
-      return;
-    }
-    input.set({ networkContextStatus: undefined });
-
     const titleGenerationPromise = !input.privateMode && input.shouldGenerateTitle
       ? generateTitleForSession({
         sessionId: nextSession.id,
@@ -1369,7 +1281,6 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
 
     const enabledTools = effectiveChatPreferences.toolCallingEnabled
       ? resolveEnabledModelTools(getRegisteredModelTools(), resolveRuntimeEnabledToolIds(effectiveChatPreferences.enabledToolIds, input.state.browserControlEnabled))
-          .filter((tool) => !input.state.networkContextEnabled || tool.id !== TAVILY_SEARCH_TOOL_ID)
       : [];
     const enabledToolIds = enabledTools.map((tool) => tool.id);
     const requestStreamMode = input.state.streamMode;
@@ -1380,7 +1291,7 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
         model: modelConfig,
         pageContext: input.pageContextPrompt,
         existingMessages: input.existingMessages,
-        userMessage: preparedNetworkContext.userMessage,
+        userMessage: input.userMessage,
         systemPrompt: effectiveChatPreferences.systemPrompt,
         appendPageContextToSystemPrompt: input.state.appendPageContextToSystemPrompt,
       }),
@@ -1401,7 +1312,6 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
     };
 
     const requestUsesProgressPort = requestStreamMode || enabledTools.length > 0;
-    const initialToolAttachments = preparedNetworkContext.attachment ? [createNetworkToolAttachment(preparedNetworkContext.attachment)] : undefined;
 
     if (requestUsesProgressPort) {
       const streamResult = await sendStreamingChatMessage({
@@ -1414,9 +1324,7 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
         contextMode: input.state.contextMode,
         matchedRuleId: input.state.pageContext.matchedRuleId,
         privateMode: input.privateMode,
-        networkContextAttachment: preparedNetworkContext.attachment,
         streamMode: requestStreamMode,
-        toolAttachments: initialToolAttachments,
         request,
       });
       if (streamResult.completed) {
@@ -1465,8 +1373,7 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
       contextPrompt: input.pageContextPrompt,
       contextMode: input.state.contextMode,
       matchedRuleId: input.state.pageContext.matchedRuleId,
-      networkContextAttachment: preparedNetworkContext.attachment,
-      toolAttachments: mergeToolAttachments(initialToolAttachments, response.toolAttachments),
+      toolAttachments: response.toolAttachments,
     };
     const assistantMessages = [...(response.toolTurnMessages ?? []), assistantMessage];
     if (input.privateMode) {
@@ -1517,7 +1424,7 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
       },
     });
   } finally {
-    input.set({ sending: false, networkContextStatus: undefined });
+    input.set({ sending: false });
   }
 }
 

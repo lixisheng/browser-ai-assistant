@@ -30,6 +30,10 @@ export function shouldExposeTool(tool: ModelToolRegistryEntry): boolean {
     return browserControlManager.canExposeBrowserTool();
   }
 
+  if (tool.id.startsWith("network.")) {
+    return browserControlManager.canExposeNetworkTool();
+  }
+
   return true;
 }
 
@@ -49,6 +53,10 @@ export function createBackgroundToolExecutor(message: BackgroundToolExecutorMess
 
     if (tool.id.startsWith("browser.")) {
       return browserControlManager.executeBrowserTool(toolCall);
+    }
+
+    if (tool.id.startsWith("network.")) {
+      return browserControlManager.executeNetworkTool(toolCall);
     }
 
     if (tool.name === TAVILY_SEARCH_TOOL_NAME) {

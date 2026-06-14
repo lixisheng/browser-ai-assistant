@@ -12,8 +12,10 @@ import type { ModelConfig } from "../../../src/shared/types";
 const browserControlManagerMock = vi.hoisted(() => ({
   canExposeTakeSnapshotTool: vi.fn(),
   canExposeBrowserTool: vi.fn(),
+  canExposeNetworkTool: vi.fn(),
   takeSnapshot: vi.fn(),
   executeBrowserTool: vi.fn(),
+  executeNetworkTool: vi.fn(),
 }));
 
 const executeTavilySearchFromSettingsMock = vi.hoisted(() => vi.fn());
@@ -82,26 +84,32 @@ describe("background 工具运行时封装", () => {
   beforeEach(() => {
     browserControlManagerMock.canExposeTakeSnapshotTool.mockReset();
     browserControlManagerMock.canExposeBrowserTool.mockReset();
+    browserControlManagerMock.canExposeNetworkTool.mockReset();
     browserControlManagerMock.takeSnapshot.mockReset();
     browserControlManagerMock.executeBrowserTool.mockReset();
+    browserControlManagerMock.executeNetworkTool.mockReset();
     executeTavilySearchFromSettingsMock.mockReset();
   });
 
   it("按浏览器控制连接状态过滤可暴露工具", () => {
     browserControlManagerMock.canExposeTakeSnapshotTool.mockReturnValue(false);
     browserControlManagerMock.canExposeBrowserTool.mockReturnValue(true);
+    browserControlManagerMock.canExposeNetworkTool.mockReturnValue(true);
 
     expect(shouldExposeTool({ id: "browser.take_snapshot", name: "take_snapshot", parameters: {} })).toBe(false);
     expect(shouldExposeTool({ id: "browser.click", name: "click", parameters: {} })).toBe(true);
+    expect(shouldExposeTool({ id: "network.list_requests", name: "network_list_requests", parameters: {} })).toBe(true);
     expect(shouldExposeTool({ id: "system.current_time", name: "get_current_time", parameters: {} })).toBe(true);
   });
 
   it("浏览器控制未授权时不暴露浏览器操作工具", () => {
     browserControlManagerMock.canExposeTakeSnapshotTool.mockReturnValue(false);
     browserControlManagerMock.canExposeBrowserTool.mockReturnValue(false);
+    browserControlManagerMock.canExposeNetworkTool.mockReturnValue(false);
 
     expect(shouldExposeTool({ id: "browser.take_snapshot", name: "take_snapshot", parameters: {} })).toBe(false);
     expect(shouldExposeTool({ id: "browser.click", name: "click", parameters: {} })).toBe(false);
+    expect(shouldExposeTool({ id: "network.list_requests", name: "network_list_requests", parameters: {} })).toBe(false);
   });
 
   it("生成模型工具定义时只透传模型需要的 schema 字段", () => {
@@ -184,6 +192,7 @@ describe("background 工具运行时封装", () => {
   it("background 执行器分发浏览器、当前时间、Tavily 和未知工具", async () => {
     browserControlManagerMock.takeSnapshot.mockResolvedValue({ toolCallId: "call-take_snapshot", name: "take_snapshot", content: "快照" });
     browserControlManagerMock.executeBrowserTool.mockResolvedValue({ toolCallId: "call-click", name: "click", content: "已点击" });
+    browserControlManagerMock.executeNetworkTool.mockResolvedValue({ toolCallId: "call-network_list_requests", name: "network_list_requests", content: "Network 列表" });
     executeTavilySearchFromSettingsMock.mockResolvedValue({
       ok: true,
       attachment: {
@@ -206,6 +215,9 @@ describe("background 工具运行时封装", () => {
     });
     await expect(executor(createToolCall("click"), { id: "browser.click", name: "click", parameters: {} })).resolves.toMatchObject({
       content: "已点击",
+    });
+    await expect(executor(createToolCall("network_list_requests"), { id: "network.list_requests", name: "network_list_requests", parameters: {} })).resolves.toMatchObject({
+      content: "Network 列表",
     });
     await expect(executor(createToolCall("get_current_time"), { id: "system.current_time", name: "get_current_time", parameters: {} })).resolves.toMatchObject({
       content: expect.stringContaining("当前系统时间："),

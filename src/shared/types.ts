@@ -3,7 +3,6 @@ export type ChatRole = "system" | "user" | "assistant";
 export type PageContextExtractMode = "text" | "all";
 export type SendShortcut = "enter" | "shift_enter" | "ctrl_enter" | "ctrl_shift_enter" | "alt_enter";
 export type ToolCallDisplayMode = "assistant_grouped" | "compact";
-export type NetworkRequestTypeFilter = "all" | "fetch_xhr" | "doc" | "css" | "js" | "font" | "img" | "media" | "manifest" | "ws" | "wasm" | "other";
 export type WebSearchProviderType = "tavily";
 export type WebSearchApiKeyStrategy = "round_robin" | "random";
 export type TavilyIncludeAnswer = boolean | "basic" | "advanced";
@@ -46,9 +45,6 @@ export interface ModelConfig extends ProviderModel {
 
 export interface ChatPreferenceValues {
   systemPrompt: string;
-  networkRelevancePrompt: string;
-  networkRelevanceBatchSize: number;
-  networkRequestTypeFilters: NetworkRequestTypeFilter[];
   aiRequestRetryCount: number;
   browserAutomationMaxToolIterations: number;
   toolCallingEnabled: boolean;
@@ -66,8 +62,6 @@ export interface ChatPreferenceValues {
 
 export interface ChatSessionPreferenceOverrides {
   systemPrompt?: string;
-  networkRelevanceBatchSize?: number;
-  networkRequestTypeFilters?: NetworkRequestTypeFilter[];
   aiRequestRetryCount?: number;
   browserAutomationMaxToolIterations?: number;
   toolCallingEnabled?: boolean;

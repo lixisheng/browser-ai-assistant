@@ -98,7 +98,7 @@ export function formatToolAttachmentForPrompt(attachment: ChatToolAttachment): s
 
   if (isNetworkToolAttachment(attachment)) {
     const requests = attachment.requests.map(redactNetworkRequestDetail);
-    return ["后续追问需要继续参考以下历史 DevTools Network 请求详情：", formatNetworkAttachmentForExport(requests)].join("\n");
+    return ["后续追问需要继续参考以下历史 Network 请求详情：", formatNetworkAttachmentForExport(requests)].join("\n");
   }
 
   if (attachment.details?.trim()) {

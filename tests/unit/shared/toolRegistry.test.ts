@@ -22,6 +22,13 @@ import {
   BROWSER_CLOSE_PAGE_TOOL_NAME,
   CURRENT_TIME_TOOL_ID,
   CURRENT_TIME_TOOL_NAME,
+  NETWORK_CLEAR_REQUESTS_TOOL_ID,
+  NETWORK_COMPARE_REQUESTS_TOOL_ID,
+  NETWORK_EXTRACT_JS_CANDIDATES_TOOL_ID,
+  NETWORK_FIND_PARAMETER_CANDIDATES_TOOL_ID,
+  NETWORK_GET_REQUEST_DETAILS_TOOL_ID,
+  NETWORK_LIST_REQUESTS_TOOL_ID,
+  NETWORK_WAIT_FOR_REQUESTS_TOOL_ID,
   TAVILY_SEARCH_TOOL_ID,
   TAVILY_SEARCH_TOOL_NAME,
   getRegisteredModelTools,
@@ -242,7 +249,59 @@ describe("模型工具注册表", () => {
       BROWSER_LIST_PAGES_TOOL_ID,
       BROWSER_SELECT_PAGE_TOOL_ID,
       BROWSER_CLOSE_PAGE_TOOL_ID,
+      NETWORK_LIST_REQUESTS_TOOL_ID,
+      NETWORK_GET_REQUEST_DETAILS_TOOL_ID,
+      NETWORK_CLEAR_REQUESTS_TOOL_ID,
+      NETWORK_WAIT_FOR_REQUESTS_TOOL_ID,
+      NETWORK_COMPARE_REQUESTS_TOOL_ID,
+      NETWORK_FIND_PARAMETER_CANDIDATES_TOOL_ID,
+      NETWORK_EXTRACT_JS_CANDIDATES_TOOL_ID,
     ]);
+  });
+
+  it("注册 Network 自动化工具并收紧参数 schema", () => {
+    const tools = getRegisteredModelTools();
+
+    expect(tools.find((tool) => tool.id === NETWORK_LIST_REQUESTS_TOOL_ID)).toMatchObject({
+      name: "network_list_requests",
+      parameters: { type: "object", additionalProperties: false },
+    });
+    expect(tools.find((tool) => tool.id === NETWORK_GET_REQUEST_DETAILS_TOOL_ID)).toMatchObject({
+      name: "network_get_request_details",
+      parameters: { type: "object", required: ["requestIds"], additionalProperties: false },
+    });
+    expect(tools.find((tool) => tool.id === NETWORK_COMPARE_REQUESTS_TOOL_ID)).toMatchObject({
+      name: "network_compare_requests",
+      parameters: { type: "object", required: ["requestIds"], additionalProperties: false },
+    });
+    expect(tools.find((tool) => tool.id === NETWORK_FIND_PARAMETER_CANDIDATES_TOOL_ID)).toMatchObject({
+      name: "network_find_parameter_candidates",
+      parameters: { type: "object", required: ["requestIds"], additionalProperties: false },
+    });
+    expect(tools.find((tool) => tool.id === NETWORK_EXTRACT_JS_CANDIDATES_TOOL_ID)).toMatchObject({
+      name: "network_extract_js_candidates",
+      parameters: { type: "object", additionalProperties: false },
+    });
+    expect(tools.find((tool) => tool.id === NETWORK_WAIT_FOR_REQUESTS_TOOL_ID)?.parameters.properties).toMatchObject({
+      limit: { type: "integer", minimum: 1, maximum: 200 },
+    });
+  });
+
+  it("对外工具函数名兼容 OpenAI-compatible 命名规则", () => {
+    const tools = getRegisteredModelTools();
+
+    expect(tools.map((tool) => tool.name)).toEqual(
+      expect.arrayContaining([
+        "network_list_requests",
+        "network_get_request_details",
+        "network_clear_requests",
+        "network_wait_for_requests",
+        "network_compare_requests",
+        "network_find_parameter_candidates",
+        "network_extract_js_candidates",
+      ]),
+    );
+    expect(tools.every((tool) => /^[a-zA-Z0-9_-]+$/.test(tool.name))).toBe(true);
   });
 
   it("注册工具列表返回稳定引用，避免设置页渲染时重复创建对象", () => {

@@ -11,7 +11,6 @@ const packageDir = path.join(rootDir, "artifacts", "chrome-extension");
 const requiredDistPaths = [
   "manifest.json",
   "index.html",
-  "devtools.html",
   "background/index.js",
   "content/index.js",
 ];
@@ -175,7 +174,7 @@ async function main() {
 
   await writePackagedManifest();
   await removeJunkFiles(packageDir);
-  await ensureHtmlAssetReferences(packageDir, ["index.html", "devtools.html"]);
+  await ensureHtmlAssetReferences(packageDir, ["index.html"]);
 
   const packageJson = JSON.parse(await readFile(path.join(rootDir, "package.json"), "utf8"));
   await writeFile(path.join(packageDir, "build-info.json"), `${JSON.stringify(createBuildInfo(packageJson), null, 2)}\n`, "utf8");

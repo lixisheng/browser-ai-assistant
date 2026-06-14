@@ -409,9 +409,7 @@ describe("存储仓库", () => {
     expect((await getChatSession("session-web-search-overrides"))?.chatPreferenceOverrides).toEqual({
       toolCallingEnabled: true,
       enabledToolIds: ["web_search.tavily"],
-      networkRelevanceBatchSize: 25,
       browserAutomationMaxToolIterations: 77,
-      networkRequestTypeFilters: ["fetch_xhr"],
     });
   });
 

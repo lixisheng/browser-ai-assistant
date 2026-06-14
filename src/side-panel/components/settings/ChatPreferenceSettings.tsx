@@ -1,9 +1,7 @@
 import { useState } from "react";
-import { NETWORK_REQUEST_TYPE_FILTER_OPTIONS } from "../../../shared/networkContext";
 import { MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID, getModelToolGroups, getRegisteredModelTools, isBrowserAutomationToolId } from "../../../shared/models/toolRegistry";
-import type { ChatPreferenceValues, NetworkRequestTypeFilter, SendShortcut } from "../../../shared/types";
+import type { ChatPreferenceValues, SendShortcut } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
-import { resolveNetworkTypeFilterSelection } from "../../utils/networkTypeFilterSelection";
 import { useComposedTextInput } from "../useComposedTextInput";
 import { GlobalPreferenceNumberInput } from "./GlobalPreferenceNumberInput";
 
@@ -24,17 +22,6 @@ export function ChatPreferenceSettings() {
   const systemPromptInput = useComposedTextInput(chatPreferences.systemPrompt, (systemPrompt) => {
     void updateChatPreferences({ systemPrompt });
   });
-  const networkRelevancePromptInput = useComposedTextInput(chatPreferences.networkRelevancePrompt, (networkRelevancePrompt) => {
-    void updateChatPreferences({ networkRelevancePrompt });
-  });
-  const handleNetworkTypeFilterChange = (filter: NetworkRequestTypeFilter, checked: boolean) => {
-    const nextFilters = resolveNetworkTypeFilterSelection(chatPreferences.networkRequestTypeFilters, filter, checked);
-    if (!nextFilters) {
-      return;
-    }
-
-    void updateChatPreferences({ networkRequestTypeFilters: nextFilters });
-  };
   const handleToolToggle = (toolId: string, checked: boolean) => {
     if (isBrowserAutomationToolId(toolId)) {
       return;
@@ -54,24 +41,7 @@ export function ChatPreferenceSettings() {
           {...systemPromptInput}
         />
       </label>
-      <label className="grid gap-1 text-sm">
-        Network 请求相关性筛选 Prompt
-        <textarea
-          className="ui-input min-h-40"
-          aria-label="Network 请求相关性筛选 Prompt"
-          {...networkRelevancePromptInput}
-        />
-        <span className="ui-muted text-xs">可使用 {"{{userDemand}}"} 和 {"{{networkRequests}}"} 占位符；缺失时会自动追加必要上下文。</span>
-      </label>
       <div className="chat-preference-grid">
-        <GlobalPreferenceNumberInput
-          label="Network 筛选每组请求数"
-          value={chatPreferences.networkRelevanceBatchSize}
-          min={1}
-          max={10_000}
-          step={1}
-          onChange={(value) => void updateChatPreferences({ networkRelevanceBatchSize: value })}
-        />
         <GlobalPreferenceNumberInput
           label="AI 请求失败重试次数"
           value={chatPreferences.aiRequestRetryCount}
@@ -109,22 +79,6 @@ export function ChatPreferenceSettings() {
           onChange={(value) => void updateChatPreferences({ topK: value })}
         />
       </div>
-      <fieldset className="chat-preference-network-types">
-        <legend className="text-sm">默认采集 Network 请求类型</legend>
-        <div className="chat-preference-network-type-list">
-          {NETWORK_REQUEST_TYPE_FILTER_OPTIONS.map((option) => (
-            <label key={option.value} className="chat-preference-network-type-chip">
-              <input
-                type="checkbox"
-                aria-label={option.ariaLabel}
-                checked={chatPreferences.networkRequestTypeFilters.includes(option.value)}
-                onChange={(event) => handleNetworkTypeFilterChange(option.value, event.target.checked)}
-              />
-              <span>{option.label}</span>
-            </label>
-          ))}
-        </div>
-      </fieldset>
       <fieldset className="chat-preference-network-types">
         <legend className="text-sm">工具调用</legend>
         <label className="chat-preference-switch">

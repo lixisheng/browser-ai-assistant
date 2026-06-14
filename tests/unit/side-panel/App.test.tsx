@@ -4,7 +4,6 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { App } from "../../../src/side-panel/App";
 import { useAppStore } from "../../../src/side-panel/state/appStore";
-import { DEFAULT_NETWORK_RELEVANCE_PROMPT } from "../../../src/shared/networkContext";
 import type { ModelToolRegistryEntry } from "../../../src/shared/models/types";
 import {
   clearDatabase,
@@ -314,7 +313,7 @@ describe("App", () => {
     expect(screen.getByRole("region", { name: "聊天偏好" })).toBeInTheDocument();
     expect(screen.queryByRole("group", { name: "聊天偏好" })).not.toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "全局系统提示词" })).toBeInTheDocument();
-    expect(screen.getByRole("textbox", { name: "Network 请求相关性筛选 Prompt" })).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Network 请求相关性筛选 Prompt" })).not.toBeInTheDocument();
     expect(screen.getByRole("spinbutton", { name: "全局 temperature" })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "发送快捷键" })).toHaveDisplayValue("Enter");
     expect(screen.getByRole("checkbox", { name: "默认展开左侧历史面板" })).toBeInTheDocument();
@@ -362,36 +361,6 @@ describe("App", () => {
     expect(updateChatPreferences).toHaveBeenCalledWith({ systemPrompt: "你是网页助手，始终" });
   });
 
-  it("Network 请求相关性筛选 Prompt 使用中文输入法组合输入时只保存最终模板", async () => {
-    const updateChatPreferences = vi.fn(async (updates) => {
-      useAppStore.setState((state) => ({
-        chatPreferences: {
-          ...state.chatPreferences,
-          ...updates,
-        },
-      }));
-    });
-    useAppStore.setState({ updateChatPreferences });
-
-    render(<App />);
-
-    await userEvent.click(screen.getByRole("button", { name: "设置" }));
-    await userEvent.click(screen.getByRole("tab", { name: "聊天偏好" }));
-
-    const promptInput = screen.getByRole("textbox", { name: "Network 请求相关性筛选 Prompt" });
-    fireEvent.compositionStart(promptInput);
-    fireEvent.change(promptInput, { target: { value: "筛选 xiangguan 请求：{{userDemand}}\n{{networkRequests}}" } });
-
-    expect(promptInput).toHaveDisplayValue("筛选 xiangguan 请求：{{userDemand}}\n{{networkRequests}}");
-    expect(updateChatPreferences).not.toHaveBeenCalled();
-
-    fireEvent.compositionEnd(promptInput, { target: { value: "筛选相关请求：{{userDemand}}\n{{networkRequests}}" } });
-
-    expect(promptInput).toHaveDisplayValue("筛选相关请求：{{userDemand}}\n{{networkRequests}}");
-    expect(updateChatPreferences).toHaveBeenCalledTimes(1);
-    expect(updateChatPreferences).toHaveBeenCalledWith({ networkRelevancePrompt: "筛选相关请求：{{userDemand}}\n{{networkRequests}}" });
-  });
-
   it("全局系统提示词支持清空并跟随外部偏好同步", async () => {
     const updateChatPreferences = vi.fn(async (updates) => {
       useAppStore.setState((state) => ({
@@ -435,82 +404,6 @@ describe("App", () => {
     expect(screen.getByRole("textbox", { name: "当前聊天系统提示词" })).toBeInTheDocument();
     expect(screen.getByRole("spinbutton", { name: "当前聊天 temperature" })).toHaveClass("chat-preference-number-input");
     expect(screen.getByRole("spinbutton", { name: "当前聊天 top_k" }).closest("label")).toHaveClass("chat-preference-field");
-  });
-
-  it("当前聊天设置可以覆盖 Network 分组大小和请求类型并恢复全局默认", async () => {
-    const user = userEvent.setup();
-    const updateActiveSessionChatPreferences = vi.fn(async (updates) => {
-      useAppStore.setState((state) => {
-        const session = state.chatSessions.find((item) => item.id === state.activeSessionId);
-        if (!session) {
-          return {};
-        }
-
-        return {
-          chatSessions: state.chatSessions.map((item) =>
-            item.id === session.id
-              ? {
-                  ...item,
-                  chatPreferenceOverrides: {
-                    ...item.chatPreferenceOverrides,
-                    ...updates,
-                  },
-                }
-              : item,
-          ),
-        };
-      });
-    });
-    await saveChatSession(
-      createChatSession({
-        id: "session-current-network-settings",
-        title: "当前 Network 设置",
-        chatPreferenceOverrides: {
-          networkRelevanceBatchSize: 20,
-          networkRequestTypeFilters: ["img"],
-          browserAutomationMaxToolIterations: 44,
-        },
-      }),
-    );
-    useAppStore.setState({
-      updateActiveSessionChatPreferences,
-      chatPreferences: {
-        ...useAppStore.getState().chatPreferences,
-        networkRelevanceBatchSize: 50,
-        networkRequestTypeFilters: ["all"],
-        browserAutomationMaxToolIterations: 32,
-      },
-    });
-
-    render(<App />);
-
-    await user.click(screen.getByRole("button", { name: "打开当前聊天设置" }));
-    const batchInput = screen.getByRole("spinbutton", { name: "当前聊天 Network 筛选每组请求数" });
-    expect(batchInput).toHaveDisplayValue("20");
-    expect(batchInput).toHaveAttribute("placeholder", "50");
-    const browserIterationsInput = screen.getByRole("spinbutton", { name: "当前聊天 浏览器自动化最大工具轮次" });
-    expect(browserIterationsInput).toHaveDisplayValue("44");
-    expect(browserIterationsInput).toHaveAttribute("placeholder", "32");
-    expect(browserIterationsInput).not.toHaveAttribute("min");
-    expect(browserIterationsInput).not.toHaveAttribute("max");
-    expect(screen.getByRole("checkbox", { name: "当前聊天采集 Img" })).toBeChecked();
-
-    await user.clear(batchInput);
-    await user.type(batchInput, "12");
-    expect(updateActiveSessionChatPreferences).toHaveBeenLastCalledWith({ networkRelevanceBatchSize: 12 });
-
-    await user.clear(browserIterationsInput);
-    await user.type(browserIterationsInput, "18");
-    expect(updateActiveSessionChatPreferences).toHaveBeenLastCalledWith({ browserAutomationMaxToolIterations: 18 });
-
-    await user.click(screen.getByRole("checkbox", { name: "当前聊天采集 Fetch/XHR" }));
-    expect(updateActiveSessionChatPreferences).toHaveBeenLastCalledWith({ networkRequestTypeFilters: ["img", "fetch_xhr"] });
-
-    await user.click(screen.getByRole("button", { name: "恢复当前聊天 Network 设置为全局默认" }));
-    expect(updateActiveSessionChatPreferences).toHaveBeenLastCalledWith({
-      networkRelevanceBatchSize: undefined,
-      networkRequestTypeFilters: undefined,
-    });
   });
 
   it("导出按钮位于当前聊天设置右侧并提供 Markdown、Word、PDF 格式", async () => {
@@ -865,9 +758,6 @@ describe("App", () => {
     useAppStore.setState({
       chatPreferences: {
         systemPrompt: "你是网页助手",
-        networkRelevancePrompt: DEFAULT_NETWORK_RELEVANCE_PROMPT,
-        networkRelevanceBatchSize: 50,
-        networkRequestTypeFilters: ["all"],
         aiRequestRetryCount: 5,
         browserAutomationMaxToolIterations: 32,
         toolCallingEnabled: false,
@@ -899,9 +789,6 @@ describe("App", () => {
     useAppStore.setState({
       chatPreferences: {
         systemPrompt: "你是网页助手",
-        networkRelevancePrompt: DEFAULT_NETWORK_RELEVANCE_PROMPT,
-        networkRelevanceBatchSize: 50,
-        networkRequestTypeFilters: ["all"],
         aiRequestRetryCount: 5,
         browserAutomationMaxToolIterations: 32,
         toolCallingEnabled: false,
@@ -976,9 +863,6 @@ describe("App", () => {
     useAppStore.setState({
       chatPreferences: {
         systemPrompt: "你是网页助手",
-        networkRelevancePrompt: DEFAULT_NETWORK_RELEVANCE_PROMPT,
-        networkRelevanceBatchSize: 50,
-        networkRequestTypeFilters: ["all"],
         aiRequestRetryCount: 5,
         browserAutomationMaxToolIterations: 32,
         toolCallingEnabled: false,
@@ -1014,9 +898,6 @@ describe("App", () => {
     useAppStore.setState({
       chatPreferences: {
         systemPrompt: "你是网页助手",
-        networkRelevancePrompt: DEFAULT_NETWORK_RELEVANCE_PROMPT,
-        networkRelevanceBatchSize: 50,
-        networkRequestTypeFilters: ["all"],
         aiRequestRetryCount: 5,
         browserAutomationMaxToolIterations: 32,
         toolCallingEnabled: false,
@@ -1048,9 +929,6 @@ describe("App", () => {
     useAppStore.setState({
       chatPreferences: {
         systemPrompt: "你是网页助手",
-        networkRelevancePrompt: DEFAULT_NETWORK_RELEVANCE_PROMPT,
-        networkRelevanceBatchSize: 50,
-        networkRequestTypeFilters: ["all"],
         aiRequestRetryCount: 5,
         browserAutomationMaxToolIterations: 32,
         toolCallingEnabled: false,
@@ -3453,7 +3331,6 @@ describe("App", () => {
 
     const appendContextSwitch = screen.getByRole("switch", { name: "拼接上下文" });
     const streamSwitch = screen.getByRole("switch", { name: "流式响应" });
-    const networkSwitch = screen.getByRole("switch", { name: "Network 上下文" });
     const toolCallingButton = screen.getByRole("button", { name: "工具调用：已关闭" });
     const contextSwitch = screen.getByRole("switch", { name: "提取模式" });
     const contextStrip = document.querySelector(".context-strip");
@@ -3463,7 +3340,6 @@ describe("App", () => {
     expect(contextStrip?.contains(appendContextSwitch)).toBe(false);
     expect(appendContextSwitch.nextElementSibling).toBe(contextSwitch);
     expect(streamSwitch).toHaveAttribute("aria-checked", "true");
-    expect(networkSwitch).toHaveAttribute("aria-checked", "false");
     expect(toolCallingButton).toHaveAttribute("aria-pressed", "false");
     expect(toolCallingButton).not.toBeDisabled();
     expect(contextSwitch).toHaveAttribute("aria-checked", "false");
@@ -3474,12 +3350,10 @@ describe("App", () => {
 
     await user.click(appendContextSwitch);
     await user.click(streamSwitch);
-    await user.click(networkSwitch);
     await user.click(contextSwitch);
 
     expect(screen.getByRole("switch", { name: "拼接上下文" })).toHaveAttribute("aria-checked", "false");
     expect(screen.getByRole("switch", { name: "流式响应" })).toHaveAttribute("aria-checked", "false");
-    expect(screen.getByRole("switch", { name: "Network 上下文" })).toHaveAttribute("aria-checked", "true");
     expect(screen.getByRole("button", { name: "工具调用：已关闭" })).toHaveAttribute("aria-pressed", "false");
     expect(screen.getByRole("switch", { name: "提取模式" })).toHaveAttribute("aria-checked", "true");
     expect(screen.getByRole("switch", { name: "提取模式" })).toHaveAttribute("title", "提取所有");
@@ -3752,31 +3626,6 @@ describe("App", () => {
 
     const menu = screen.getByRole("dialog", { name: "工具调用设置" });
     await waitFor(() => expect(menu).toHaveStyle({ left: "118px" }));
-  });
-
-  it("开启 Network 上下文后在发送前展示 DevTools 未连接提示", async () => {
-    const user = userEvent.setup();
-    vi.stubGlobal("chrome", {
-      runtime: {
-        sendMessage: vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
-          callback(
-            message.type === "networkContext.getSnapshot"
-              ? {
-                  ok: false,
-                  message: "请先打开当前标签页 DevTools，并刷新页面后再使用 Network 上下文",
-                }
-              : { ok: true },
-          );
-          return undefined;
-        }),
-      },
-    });
-
-    render(<App />);
-
-    await user.click(screen.getByRole("switch", { name: "Network 上下文" }));
-
-    expect(await screen.findByText("未检测到当前标签页 DevTools Network 连接，请关闭 DevTools 后重新打开，再刷新页面")).toBeInTheDocument();
   });
 
   it("聊天页展示气泡消息、思考过程和提取模式开关", async () => {
@@ -4570,6 +4419,80 @@ describe("App", () => {
 
     expect(entry?.querySelector("article")).toBeNull();
     expect(entry?.querySelector(".message-avatar")).toBeNull();
+    expect(entry?.querySelector(".message-regenerate-action")).toBeNull();
+    expect(toolButton.closest(".message-tool-call-list")).toHaveClass("message-tool-call-list-panel-centered");
+  });
+
+  it("空正文工具轮带 Network 附件时只展示附件和工具调用过程，不显示空 assistant 气泡", async () => {
+    await saveAppSetting({
+      key: "chatPreferences",
+      value: {
+        ...useAppStore.getState().chatPreferences,
+        toolCallDisplayMode: "assistant_grouped",
+        showToolCallProcessInAssistantMode: true,
+      },
+      updatedAt: 2,
+    });
+    await saveChatSession(
+      createChatSession({
+        id: "session-empty-tool-turn-network-attachment",
+        title: "空工具轮 Network 附件",
+        messages: [
+          createChatMessage({
+            id: "message-empty-tool-turn-network-attachment",
+            role: "assistant",
+            assistantMessageKind: "tool_call_turn",
+            content: "",
+            toolCallRecords: [
+              {
+                id: "call-network-details",
+                toolId: "network.get_request_details",
+                name: "network_get_request_details",
+                displayName: "Network 请求详情",
+                arguments: { requestIds: ["req-1"] },
+                status: "success",
+                startedAt: 1,
+                completedAt: 2,
+                resultSummary: "返回 1 个请求详情",
+                attachmentIds: ["network-attachment-1"],
+              },
+            ],
+            toolAttachments: [
+              {
+                id: "network-attachment-1",
+                kind: "network",
+                title: "Network 请求详情",
+                summary: "已注入 1 个 Network 请求：GET 200 https://api.example.com/hot.json",
+                sourceToolCallId: "call-network-details",
+                createdAt: 2,
+                redacted: true,
+                truncated: false,
+                requests: [
+                  {
+                    id: "req-1",
+                    url: "https://api.example.com/hot.json",
+                    method: "GET",
+                    status: 200,
+                    redacted: true,
+                    truncated: false,
+                  },
+                ],
+              },
+            ],
+          }),
+        ],
+      }),
+    );
+
+    render(<App />);
+
+    const toolButton = await screen.findByRole("button", { name: "已调用 Network 请求详情" });
+    const attachment = await screen.findByText("Network 请求详情");
+    const entry = toolButton.closest(".message-entry");
+
+    expect(attachment.closest(".message-network-attachment")).toBeInTheDocument();
+    expect(entry?.querySelector("article")).not.toBeNull();
+    expect(entry?.querySelector(".message-bubble")).toBeNull();
     expect(entry?.querySelector(".message-regenerate-action")).toBeNull();
     expect(toolButton.closest(".message-tool-call-list")).toHaveClass("message-tool-call-list-panel-centered");
   });

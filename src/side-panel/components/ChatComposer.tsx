@@ -17,7 +17,6 @@ const ACCEPTED_IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gi
 const SWITCH_ICON_PATHS = {
   appendContext: "M7 7h10M12 7v10M6 3h12a3 3 0 0 1 3 3v12a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V6a3 3 0 0 1 3-3Z",
   stream: "M13 2 5 14h6l-1 8 8-12h-6l1-8Z",
-  network: "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Zm0 0c2.4 2.5 3.6 5.5 3.6 9S14.4 18.5 12 21m0-18C9.6 5.5 8.4 8.5 8.4 12s1.2 6.5 3.6 9M3.6 9h16.8M3.6 15h16.8",
   toolCalling: "M14.7 6.3a4 4 0 0 0-5 5L4 17v3h3l5.7-5.7a4 4 0 0 0 5-5l-2.6 2.6-3-3 2.6-2.6Z",
   extractText: "M6 4h12M6 8h12M6 12h8M6 16h12M6 20h8",
   extractAll: "M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3M8 9h8M8 13h8M8 17h5",
@@ -87,8 +86,6 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
   });
   const promptTemplates = useAppStore((state) => state.promptTemplates);
   const streamMode = useAppStore((state) => state.streamMode);
-  const networkContextEnabled = useAppStore((state) => state.networkContextEnabled);
-  const networkContextStatus = useAppStore((state) => state.networkContextStatus);
   const browserControlEnabled = useAppStore((state) => state.browserControlEnabled);
   const contextMode = useAppStore((state) => state.contextMode);
   const appendPageContextToSystemPrompt = useAppStore((state) => state.appendPageContextToSystemPrompt);
@@ -98,8 +95,6 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
   const contextTabsLoading = useAppStore((state) => state.contextTabsLoading);
   const contextTabsError = useAppStore((state) => state.contextTabsError);
   const setStreamMode = useAppStore((state) => state.setStreamMode);
-  const setNetworkContextEnabled = useAppStore((state) => state.setNetworkContextEnabled);
-  const checkNetworkContextConnection = useAppStore((state) => state.checkNetworkContextConnection);
   const setContextMode = useAppStore((state) => state.setContextMode);
   const setComposerHasDraft = useAppStore((state) => state.setComposerHasDraft);
   const setAppendPageContextToSystemPrompt = useAppStore((state) => state.setAppendPageContextToSystemPrompt);
@@ -115,19 +110,6 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
   useEffect(() => {
     setComposerHasDraft(input.trim().length > 0 || attachments.length > 0 || promptInvocations.length > 0);
   }, [attachments.length, input, promptInvocations.length, setComposerHasDraft]);
-
-  useEffect(() => {
-    if (!networkContextEnabled) {
-      return undefined;
-    }
-
-    void checkNetworkContextConnection();
-    const timer = window.setInterval(() => {
-      void checkNetworkContextConnection();
-    }, 3000);
-
-    return () => window.clearInterval(timer);
-  }, [checkNetworkContextConnection, networkContextEnabled]);
 
   useEffect(() => {
     setSlashActiveIndex(0);
@@ -445,7 +427,6 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
         ) : null}
       </div>
       {pageContext.truncated ? <p className="text-sm text-[var(--color-warning)]">内容已截断，请细化 CSS/XPath</p> : null}
-      {networkContextStatus ? <p className="text-sm text-[var(--color-muted)]">{networkContextStatus}</p> : null}
       {pageContext.error ? <p className="text-sm text-[var(--color-error)]">{pageContext.error}</p> : null}
       {attachmentError ? <p className="text-sm text-[var(--color-error)]">{attachmentError}</p> : null}
       <div className="chat-input-shell">
@@ -508,13 +489,6 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
       <div className="composer-actions">
         <div className="composer-switches">
           <ComposerSwitch ariaLabel="流式响应" checked={streamMode} icon="stream" label="流式响应" onToggle={() => setStreamMode(!streamMode)} />
-          <ComposerSwitch
-            ariaLabel="Network 上下文"
-            checked={networkContextEnabled}
-            icon="network"
-            label="Network"
-            onToggle={() => setNetworkContextEnabled(!networkContextEnabled)}
-          />
           <div className="composer-tool-menu-wrap" ref={toolMenuRef}>
             <button
               ref={toolMenuButtonRef}

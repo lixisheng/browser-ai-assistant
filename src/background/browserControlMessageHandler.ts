@@ -13,6 +13,8 @@ import {
   createBrowserActionErrorResult,
   isBrowserControlActionName,
 } from "./browserControl/actions";
+import { BrowserNetworkRecorder } from "./browserControl/networkRecorder";
+import { BrowserNetworkToolExecutor } from "./browserControl/networkToolExecutor";
 
 type Debuggee = chrome.debugger.Debuggee;
 type ChromeApi = typeof chrome;
@@ -81,6 +83,8 @@ const ALLOWED_BROWSER_CONTROL_CDP_METHODS = new Set([
   "Page.enable",
   "DOM.enable",
   "Accessibility.enable",
+  "Network.enable",
+  "Network.getResponseBody",
   "Accessibility.getFullAXTree",
   "DOM.resolveNode",
   "DOM.scrollIntoViewIfNeeded",
@@ -319,6 +323,7 @@ export class BrowserDebuggerConnection {
       await this.sendCommand("Page.enable");
       await this.sendCommand("DOM.enable");
       await this.sendCommand("Accessibility.enable");
+      await this.sendCommand("Network.enable");
       return { ok: true };
     } catch {
       return { ok: false, message: "浏览器调试会话初始化失败，请关闭浏览器控制后重试。" };
@@ -379,6 +384,10 @@ export class BrowserDebuggerConnection {
 
   async getFrameTree(): Promise<unknown> {
     return this.sendCommand("Page.getFrameTree");
+  }
+
+  async getResponseBody(requestId: string): Promise<{ body?: string; base64Encoded?: boolean }> {
+    return this.sendCommand("Network.getResponseBody", { requestId }) as Promise<{ body?: string; base64Encoded?: boolean }>;
   }
 
   private async sendCommand(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
@@ -618,6 +627,8 @@ export class BrowserControlManager {
   private operationVersion = 0;
   private readonly snapshotManager: BrowserControlSnapshotManager;
   private readonly actionExecutor: BrowserControlActionExecutor;
+  private readonly networkRecorder: BrowserNetworkRecorder;
+  private readonly networkToolExecutor: BrowserNetworkToolExecutor;
 
   constructor(
     private readonly connection = new BrowserDebuggerConnection(),
@@ -626,6 +637,8 @@ export class BrowserControlManager {
   ) {
     this.snapshotManager = new BrowserControlSnapshotManager(this.connection, () => this.getTargetTabInfo());
     this.actionExecutor = new BrowserControlActionExecutor(this.connection, this.snapshotManager);
+    this.networkRecorder = new BrowserNetworkRecorder(this.connection);
+    this.networkToolExecutor = new BrowserNetworkToolExecutor(this.networkRecorder);
     this.connection.installDetachListener((tabId, reason) => {
       if (this.suppressNextDetachTabId === tabId) {
         this.suppressNextDetachTabId = undefined;
@@ -636,6 +649,7 @@ export class BrowserControlManager {
       this.desiredEnabled = false;
       this.controlledTabIds.clear();
       this.snapshotManager.clearSnapshotCache();
+      this.networkRecorder.stop();
       this.notifyDetached(tabId, normalizeDetachReason(reason));
     });
     this.connection.installEventListener();
@@ -649,6 +663,7 @@ export class BrowserControlManager {
     this.targetTabId = undefined;
     this.controlledTabIds.delete(tabId);
     this.snapshotManager.clearSnapshotCache();
+    this.networkRecorder.stop();
     this.notifyDetached(tabId, "tab_removed");
     void this.connection.detach(tabId).catch(() => {
       // 标签页关闭期间 detach 只是尽力清理；异常不能冒泡成未处理 Promise。
@@ -665,6 +680,7 @@ export class BrowserControlManager {
       this.targetTabId = undefined;
       this.controlledTabIds.clear();
       this.snapshotManager.clearSnapshotCache();
+      this.networkRecorder.stop();
       this.notifyDetached(detachedTabId, "disabled_by_user");
       return { ok: true, attached: false, message: "浏览器控制已关闭。" };
     }
@@ -695,6 +711,9 @@ export class BrowserControlManager {
     if (!attachResult.ok) {
       this.targetTabId = undefined;
       this.controlledTabIds.clear();
+      this.networkRecorder.stop();
+    } else if (this.connection.attachedTabId) {
+      this.networkRecorder.start(this.connection.attachedTabId);
     }
 
     return attachResult;
@@ -706,6 +725,14 @@ export class BrowserControlManager {
 
   canExposeBrowserTool(): boolean {
     return this.canExposeTakeSnapshotTool();
+  }
+
+  canExposeNetworkTool(): boolean {
+    return this.canExposeBrowserTool() && this.networkRecorder.isEnabled;
+  }
+
+  async executeNetworkTool(toolCall: ModelToolCall): Promise<ModelToolResult> {
+    return this.networkToolExecutor.execute(toolCall);
   }
 
   async takeSnapshot(toolCall: ModelToolCall): Promise<ModelToolResult> {
@@ -895,6 +922,7 @@ export class BrowserControlManager {
       this.targetTabId = undefined;
       this.controlledTabIds.clear();
       this.snapshotManager.clearSnapshotCache();
+      this.networkRecorder.stop();
       this.notifyDetached(detachedTabId, "tab_removed");
       return `已关闭当前受控页面 ${index}，浏览器控制后台受控列表内没有其他可控页面。`;
     }
@@ -911,8 +939,10 @@ export class BrowserControlManager {
     const attachResult = await this.connection.attach(tabId);
     if (!attachResult.ok) {
       this.targetTabId = undefined;
+      this.networkRecorder.stop();
       throw new Error(attachResult.message);
     }
+    this.networkRecorder.start(tabId);
   }
 
   private async waitAfterPageChange(content: string): Promise<string> {

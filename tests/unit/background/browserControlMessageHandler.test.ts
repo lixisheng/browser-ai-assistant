@@ -200,6 +200,7 @@ describe("浏览器控制地基", () => {
     expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith({ tabId: 9 }, "Page.enable", {}, expect.any(Function));
     expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith({ tabId: 9 }, "DOM.enable", {}, expect.any(Function));
     expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith({ tabId: 9 }, "Accessibility.enable", {}, expect.any(Function));
+    expect(chromeMock.debugger.sendCommand).toHaveBeenCalledWith({ tabId: 9 }, "Network.enable", {}, expect.any(Function));
   });
 
   it("底层调试连接运行时拒绝未允许的 CDP 方法", async () => {
@@ -211,6 +212,22 @@ describe("浏览器控制地基", () => {
       "浏览器控制不允许调用该 CDP 方法。",
     );
     expect(chromeMock.debugger.sendCommand).not.toHaveBeenCalledWith({ tabId: 9 }, "Network.getAllCookies", {}, expect.any(Function));
+  });
+
+  it("允许读取单个 Network 响应体但仍拒绝 Cookie 类 CDP 方法", async () => {
+    const chromeMock = createChromeMock({
+      sendCommandResults: {
+        "Network.getResponseBody": { body: "{}", base64Encoded: false },
+      },
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+
+    await connection.attach(9);
+
+    await expect(connection.getResponseBody("req-1")).resolves.toEqual({ body: "{}", base64Encoded: false });
+    await expect((connection as unknown as { sendCommand: (method: string) => Promise<unknown> }).sendCommand("Network.getAllCookies")).rejects.toThrow(
+      "浏览器控制不允许调用该 CDP 方法。",
+    );
   });
 
   it("受限页面不会 attach debugger", async () => {

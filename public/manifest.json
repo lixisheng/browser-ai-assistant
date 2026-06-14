@@ -15,7 +15,6 @@
   "side_panel": {
     "default_path": "index.html"
   },
-  "devtools_page": "devtools.html",
   "commands": {
     "open-side-panel": {
       "suggested_key": {

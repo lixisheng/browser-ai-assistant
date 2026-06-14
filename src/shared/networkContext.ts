@@ -1,4 +1,4 @@
-import type { NetworkHeader, NetworkRequestDetail, NetworkRequestMeta, NetworkRequestTypeFilter } from "./types";
+import type { NetworkHeader, NetworkRequestDetail, NetworkRequestMeta } from "./types";
 import { truncateText } from "./utils/text";
 
 const REDACTED_VALUE = "[已脱敏]";
@@ -6,30 +6,6 @@ const BODY_LIMIT = 6000;
 const FIELD_LIMIT = 1200;
 
 const SENSITIVE_NAME_PATTERN = /(authorization|cookie|set-cookie|token|access[_-]?token|refresh[_-]?token|api[_-]?key|secret|password|passwd|credential|session|sid|csrf|xsrf)/i;
-export const DEFAULT_NETWORK_RELEVANCE_PROMPT = [
-  "请根据用户需求，从下面 Network 请求元数据中筛选最相关的请求。",
-  "只返回 JSON，格式为：{\"requestIds\":[\"请求ID\"]}，不要输出解释。",
-  "",
-  "用户需求：{{userDemand}}",
-  "",
-  "Network 请求元数据：",
-  "{{networkRequests}}",
-].join("\n");
-export const DEFAULT_NETWORK_REQUEST_TYPE_FILTERS: NetworkRequestTypeFilter[] = ["all"];
-export const NETWORK_REQUEST_TYPE_FILTER_OPTIONS: Array<{ value: NetworkRequestTypeFilter; label: string; ariaLabel: string }> = [
-  { value: "all", label: "All", ariaLabel: "采集全部 Network 请求类型" },
-  { value: "fetch_xhr", label: "Fetch/XHR", ariaLabel: "采集 Fetch/XHR 请求" },
-  { value: "doc", label: "Doc", ariaLabel: "采集 Doc 请求" },
-  { value: "css", label: "CSS", ariaLabel: "采集 CSS 请求" },
-  { value: "js", label: "JS", ariaLabel: "采集 JS 请求" },
-  { value: "font", label: "Font", ariaLabel: "采集 Font 请求" },
-  { value: "img", label: "Img", ariaLabel: "采集 Img 请求" },
-  { value: "media", label: "Media", ariaLabel: "采集 Media 请求" },
-  { value: "manifest", label: "Manifest", ariaLabel: "采集 Manifest 请求" },
-  { value: "ws", label: "WS", ariaLabel: "采集 WS 请求" },
-  { value: "wasm", label: "Wasm", ariaLabel: "采集 Wasm 请求" },
-  { value: "other", label: "Other", ariaLabel: "采集 Other 请求" },
-];
 
 export function redactNetworkRequestDetail(detail: NetworkRequestDetail): NetworkRequestDetail {
   return {
@@ -53,14 +29,6 @@ export function redactNetworkRequestMeta(meta: NetworkRequestMeta): NetworkReque
   };
 }
 
-export function filterNetworkRequestsByType<T extends NetworkRequestMeta>(requests: T[], filters: NetworkRequestTypeFilter[]): T[] {
-  if (filters.includes("all")) {
-    return requests;
-  }
-
-  return requests.filter((request) => filters.includes(resolveNetworkRequestTypeFilter(request.resourceType)));
-}
-
 export function parseRelevantNetworkRequestIds(content: string, availableRequests: string[] | NetworkRequestMeta[]): string[] {
   const availableIds = availableRequests.map((request) => (typeof request === "string" ? request : request.id));
   const availableIdSet = new Set(availableIds);
@@ -76,32 +44,6 @@ export function parseRelevantNetworkRequestIds(content: string, availableRequest
     seen.add(id);
     return [id];
   });
-}
-
-export function createNetworkMetadataPrompt(input: { userDemand: string; requests: NetworkRequestMeta[]; promptTemplate?: string }): string {
-  const requestLines = input.requests.map((request, index) =>
-    [
-      `${index + 1}. id=${request.id}`,
-      `method=${request.method || "UNKNOWN"}`,
-      `status=${request.status ?? "unknown"}`,
-      `type=${request.resourceType ?? request.mimeType ?? "unknown"}`,
-      `durationMs=${request.durationMs ?? "unknown"}`,
-      `url=${request.url}`,
-    ].join(" | "),
-  );
-  const networkRequests = requestLines.join("\n");
-  const template = input.promptTemplate?.trim() || DEFAULT_NETWORK_RELEVANCE_PROMPT;
-  const hasUserDemandPlaceholder = /\{\{\s*userDemand\s*\}\}/.test(template);
-  const hasNetworkRequestsPlaceholder = /\{\{\s*networkRequests\s*\}\}/.test(template);
-  const rendered = template
-    .replace(/\{\{\s*userDemand\s*\}\}/g, input.userDemand)
-    .replace(/\{\{\s*networkRequests\s*\}\}/g, networkRequests);
-  const fallbackSections = [
-    hasUserDemandPlaceholder ? "" : `用户需求：${input.userDemand}`,
-    hasNetworkRequestsPlaceholder ? "" : ["Network 请求元数据：", networkRequests].join("\n"),
-  ].filter(Boolean);
-
-  return [rendered, ...fallbackSections].join("\n\n").trim();
 }
 
 export function createNetworkContextPrompt(input: { userDemand: string; details: NetworkRequestDetail[] }): string {
@@ -178,34 +120,6 @@ function parseRequestIdCandidates(content: string): string[] {
   }
 
   return Array.from(trimmed.matchAll(/req-[\w.-]+/g)).map((match) => match[0]);
-}
-
-function resolveNetworkRequestTypeFilter(resourceType: string | undefined): NetworkRequestTypeFilter {
-  switch (resourceType?.toLowerCase()) {
-    case "fetch":
-    case "xhr":
-      return "fetch_xhr";
-    case "document":
-      return "doc";
-    case "stylesheet":
-      return "css";
-    case "script":
-      return "js";
-    case "font":
-      return "font";
-    case "image":
-      return "img";
-    case "media":
-      return "media";
-    case "manifest":
-      return "manifest";
-    case "websocket":
-      return "ws";
-    case "wasm":
-      return "wasm";
-    default:
-      return "other";
-  }
 }
 
 function resolveRequestIdCandidate(candidate: string, availableIds: string[], availableIdSet: Set<string>): string | undefined {

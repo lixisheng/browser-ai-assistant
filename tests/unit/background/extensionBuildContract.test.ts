@@ -15,12 +15,12 @@ describe("扩展构建产物合约", () => {
 
     expect(manifest.background.service_worker).toBe("background/index.js");
     expect(manifest.side_panel.default_path).toBe("index.html");
-    expect(manifest.devtools_page).toBe("devtools.html");
+    expect("devtools_page" in manifest).toBe(false);
     expect(manifest.content_scripts).toHaveLength(1);
     expect(manifest.content_scripts[0].js).toEqual(["content/index.js"]);
 
     expect(viteConfig).toContain('"background/index": resolve(rootDir, "src/background/index.ts")');
-    expect(viteConfig).toContain('devtools: resolve(rootDir, "devtools.html")');
+    expect(viteConfig).not.toContain("devtools.html");
     expect(viteConfig).toContain('sidePanel: resolve(rootDir, "index.html")');
     expect(viteConfig).toContain('outDir: resolve(rootDir, "dist/content")');
     expect(viteConfig).toContain('entry: resolve(rootDir, "src/content/index.ts")');

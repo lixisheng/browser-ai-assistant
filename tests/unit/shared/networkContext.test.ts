@@ -1,10 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  createNetworkMetadataPrompt,
   createNetworkContextPrompt,
-  DEFAULT_NETWORK_RELEVANCE_PROMPT,
-  DEFAULT_NETWORK_REQUEST_TYPE_FILTERS,
-  filterNetworkRequestsByType,
   formatNetworkAttachmentSummary,
   parseRelevantNetworkRequestIds,
   redactNetworkRequestDetail,
@@ -129,44 +125,6 @@ describe("Network 上下文", () => {
     expect(meta.requestBody).toBe("token=%5B%E5%B7%B2%E8%84%B1%E6%95%8F%5D&name=test");
   });
 
-  it("默认 Network 相关性筛选 Prompt 保留当前硬编码结构", () => {
-    const prompt = createNetworkMetadataPrompt({
-      userDemand: "分析登录接口",
-      requests: [{ id: "req-1", url: "https://api.example.com/login", method: "POST", status: 500 }],
-    });
-
-    expect(DEFAULT_NETWORK_RELEVANCE_PROMPT).toContain("{{userDemand}}");
-    expect(DEFAULT_NETWORK_RELEVANCE_PROMPT).toContain("{{networkRequests}}");
-    expect(prompt).toContain("请根据用户需求，从下面 Network 请求元数据中筛选最相关的请求。");
-    expect(prompt).toContain("只返回 JSON");
-    expect(prompt).toContain("用户需求：分析登录接口");
-    expect(prompt).toContain("1. id=req-1 | method=POST | status=500");
-  });
-
-  it("Network 相关性筛选 Prompt 支持用户需求和请求元数据占位符", () => {
-    const prompt = createNetworkMetadataPrompt({
-      userDemand: "分析用户接口",
-      requests: [{ id: "req-2", url: "https://api.example.com/users", method: "GET", status: 200 }],
-      promptTemplate: "自定义筛选：{{ userDemand }}\n候选请求：\n{{ networkRequests }}",
-    });
-
-    expect(prompt).toContain("自定义筛选：分析用户接口");
-    expect(prompt).toContain("1. id=req-2 | method=GET | status=200");
-  });
-
-  it("Network 相关性筛选 Prompt 缺少占位符时会追加必要上下文", () => {
-    const prompt = createNetworkMetadataPrompt({
-      userDemand: "分析订单接口",
-      requests: [{ id: "req-3", url: "https://api.example.com/orders", method: "GET", status: 200 }],
-      promptTemplate: "只返回最相关请求 ID。",
-    });
-
-    expect(prompt).toContain("只返回最相关请求 ID。");
-    expect(prompt).toContain("用户需求：分析订单接口");
-    expect(prompt).toContain("Network 请求元数据：");
-    expect(prompt).toContain("id=req-3");
-  });
-
   it("将筛选后的请求详情格式化为正式模型可读上下文", () => {
     const prompt = createNetworkContextPrompt({
       userDemand: "分析登录接口",
@@ -182,31 +140,6 @@ describe("Network 上下文", () => {
 
   it("生成 AI 消息旁 Network 附件摘要", () => {
     expect(formatNetworkAttachmentSummary([createDetail({ status: 500, method: "GET" })])).toBe("已注入 1 个 Network 请求：GET 500 https://api.example.com/users?token=secret-token&safe=1");
-  });
-
-  it("默认 Network 请求类型过滤保持采集全部类型", () => {
-    expect(DEFAULT_NETWORK_REQUEST_TYPE_FILTERS).toEqual(["all"]);
-  });
-
-  it("按聊天偏好筛选 Fetch/XHR 与图片请求类型", () => {
-    const requests: NetworkRequestMeta[] = [
-      { id: "fetch-1", url: "https://example.com/api", method: "GET", resourceType: "fetch" },
-      { id: "xhr-1", url: "https://example.com/xhr", method: "GET", resourceType: "xhr" },
-      { id: "img-1", url: "https://example.com/logo.png", method: "GET", resourceType: "image" },
-      { id: "doc-1", url: "https://example.com", method: "GET", resourceType: "document" },
-    ];
-
-    expect(filterNetworkRequestsByType(requests, ["fetch_xhr", "img"]).map((request) => request.id)).toEqual(["fetch-1", "xhr-1", "img-1"]);
-  });
-
-  it("未知或未上报的 Network 请求类型归入 Other", () => {
-    const requests: NetworkRequestMeta[] = [
-      { id: "preflight-1", url: "https://example.com/cors", method: "OPTIONS", resourceType: "preflight" },
-      { id: "unknown-1", url: "https://example.com/unknown", method: "GET" },
-      { id: "script-1", url: "https://example.com/app.js", method: "GET", resourceType: "script" },
-    ];
-
-    expect(filterNetworkRequestsByType(requests, ["other"]).map((request) => request.id)).toEqual(["preflight-1", "unknown-1"]);
   });
 
   it("非标准 URL 的 query 敏感参数也会脱敏", () => {
