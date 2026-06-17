@@ -269,7 +269,16 @@
 * JS 源码索引必须跟随受控页面生命周期清理：执行 `network.clear_requests`、关闭浏览器控制、导航、刷新、历史前进后退、切换受控标签页时，都不得继续暴露旧页面的 JS 命中或上下文。
 * JS 资源判定只能基于 URL `pathname` 的 `.js/.mjs` 后缀、`resourceType=Script` 或可信 JavaScript MIME；不得被 query/hash 中的 `.js`、JSON/HTML MIME 或非脚本资源误导。
 * 同源 JS 补位响应必须使用可信 JavaScript MIME 白名单，并在读取正文前基于 `Content-Length` 等可用头信息拦截超大响应；禁止把 JSON、HTML 或未知文本响应当作 JS 源码读入内存。
-* Source map 处理、受控只读 `Runtime.evaluate`、请求重放沙箱、敏感字段解锁等高风险 Web 逆向能力默认关闭；未单独完成权限、确认、沙箱、脱敏、审计和测试设计前不得实现或暗中启用。
+* `sourcemap.list_candidates`、`sourcemap.resolve_location`、`sourcemap.extract_original_context` 属于浏览器自动化工具组，必须与 `network.*`、`js.*` 使用相同暴露条件；发给 OpenAI-compatible 模型的函数名必须使用 `sourcemap_list_candidates` 这类安全名称。
+* Source Map 工具必须复用 `JsSourceIndex` 中已索引的 JS 资源内容、响应头和生命周期，不得维护第三份 JS 源码缓存；执行 `network.clear_requests`、关闭浏览器控制、导航、刷新、历史前进后退、切换受控标签页时，必须同步清理 Source Map 缓存。
+* Source Map 候选发现必须按优先级处理响应头 `SourceMap`、兼容头 `X-SourceMap`、源码尾部 `sourceMappingURL` 和 inline data URL；输入行列对外使用一基行列，调用 `@jridgewell/trace-mapping` 时必须转换为行一基、列零基。
+* 外部 Source Map 只允许读取当前受控页面同源的 `http`/`https` map 或 JSON 文本资源；fetch 必须使用 `credentials: "omit"` 和 `redirect: "manual"`，跨域、跨协议、跨端口、跨域重定向、非法 MIME、超时和超大小响应必须返回固定中文失败。
+* inline Source Map data URL 只接受 JSON、source-map 或可信文本 JSON，解码前后都必须限制大小；非法编码、非法 JSON 或非法 mappings 必须 fail closed，并返回固定中文摘要。
+* Source Map 工具只允许从 `sourcesContent` 提取有限原始源码片段；不得主动拉取 `sources` 指向的原始源码文件，不得保存完整 Source Map 或完整 `sourcesContent` 到 `toolAttachments`、历史、同步快照、导出或后续追问上下文。
+* `source-map` 工具附件必须通过通用 `toolAttachments` 保存、展示、导出和后续上下文注入；历史归一化和聚合必须保留候选来源、映射位置、原始片段、失败摘要、`redacted` 与 `truncated` 标记。
+* `source-map` 原始片段即使未实际替换敏感词，也必须标记为已进入脱敏管道；UI 展示、工具正文、导出和后续追问上下文只能输出 `resourceId`、行列、原始 source、name、ignored、sourcesContent 状态和中文失败摘要，不得直接 `JSON.stringify` 完整对象或暴露完整 `resourceUrl`；候选展示只能显示 inline、外部 Source Map 或无 URL 摘要，不得直接渲染完整 map URL。
+* Source Map 原始源码片段展示、导出和再次注入模型前必须复用敏感赋值脱敏和截断规则，避免泄露 Cookie、Authorization、Token、API Key、Secret、Password、Session、CSRF 等凭据。
+* 受控只读 `Runtime.evaluate`、请求重放沙箱、敏感字段解锁等更高风险 Web 逆向能力默认关闭；未单独完成权限、确认、沙箱、脱敏、审计和测试设计前不得实现或暗中启用。
 * 修改 Network 工具、浏览器控制 debugger allow-list、manifest、background 入口或工具注册时，最小验证必须覆盖相关 vitest、`npm run typecheck` 和 `npm run build:extension`；涉及真实扩展加载路径时还应运行 `npx playwright test --project=chrome-extension`。
 * Network 工具化与完整 Web 逆向路线的主规划文档统一维护在 `docs/Network工具化与Web逆向自动化规划.md`；该文档必须与当前实现保持一致，旧版 DevTools Network 手动连接方案只可作为历史背景，不得作为当前操作说明继续传播。
 

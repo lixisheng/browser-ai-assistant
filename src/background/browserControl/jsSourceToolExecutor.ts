@@ -18,6 +18,7 @@ import type {
 } from "../../shared/types";
 import { truncateText } from "../../shared/utils/text";
 import { JsSourceIndex, isJavaScriptDetail, isJavaScriptMetaLike } from "./jsSourceIndex";
+import type { JsSourceIndex as JsSourceIndexType } from "./jsSourceIndex";
 import { SameOriginJsFetcher, type SameOriginJsFetchResult } from "./sameOriginJsFetcher";
 import type { NetworkRequestFilter } from "./networkRecorder";
 
@@ -71,6 +72,14 @@ export class JsSourceToolExecutor {
 
   clear(): void {
     this.index.clear();
+  }
+
+  getIndex(): JsSourceIndexType {
+    return this.index;
+  }
+
+  async refreshResourcesForAnalysis(): Promise<void> {
+    await this.refreshNetworkResources();
   }
 
   async execute(toolCall: ModelToolCall): Promise<ModelToolResult> {

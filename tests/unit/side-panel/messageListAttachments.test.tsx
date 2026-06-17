@@ -1,6 +1,7 @@
+import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { aggregateDisplayAttachmentsByKind, getJsSourceAttachmentDisplayCount } from "../../../src/side-panel/components/MessageList";
-import type { ChatJsSourceToolAttachment } from "../../../src/shared/types";
+import { aggregateDisplayAttachmentsByKind, getJsSourceAttachmentDisplayCount, MessageList } from "../../../src/side-panel/components/MessageList";
+import type { ChatJsSourceToolAttachment, ChatMessage } from "../../../src/shared/types";
 
 function createJsSourceAttachment(partial: Partial<ChatJsSourceToolAttachment>): ChatJsSourceToolAttachment {
   return {
@@ -229,5 +230,119 @@ describe("MessageList 工具附件展示聚合", () => {
         },
       ],
     }))).toBe(2);
+  });
+
+  it("Source Map 映射详情展示安全摘要，不直接输出完整资源 URL", () => {
+    const message: ChatMessage = {
+      id: "assistant-1",
+      role: "assistant",
+      content: "已解析 Source Map",
+      createdAt: 1,
+      modelId: "model-1",
+      endpointType: "openai_chat",
+      streamMode: false,
+      systemPrompt: "",
+      contextPrompt: "",
+      contextMode: "text",
+      toolAttachments: [
+        {
+          id: "attachment-map",
+          kind: "source-map",
+          title: "Source Map 解析结果",
+          summary: "Source Map 候选 0 个，映射 1 个，原始片段 0 个，失败 0 个。",
+          createdAt: 1,
+          redacted: true,
+          truncated: false,
+          candidates: [],
+          resolvedLocations: [
+            {
+              resourceId: "script-1",
+              resourceUrl: "https://example.com/internal/admin-panel.js?token=secret",
+              generatedLine: 10,
+              generatedColumn: 20,
+              source: "src/app.ts",
+              originalLine: 2,
+              originalColumn: 5,
+              name: "renderAdmin",
+              ignored: false,
+              hasSourceContent: true,
+            },
+          ],
+          originalContexts: [],
+          failures: [],
+        },
+      ],
+    };
+
+    render(
+      <MessageList
+        messages={[message]}
+        retryProgressByMessageId={{}}
+        toolCallDisplayMode="assistant_grouped"
+        showToolCallProcessInAssistantMode
+        onRegenerateMessage={() => undefined}
+        onEditAndRegenerateUserMessage={() => undefined}
+        regenerating={false}
+      />,
+    );
+
+    expect(screen.getByText("resourceId: script-1", { exact: false })).toBeInTheDocument();
+    expect(screen.getByText("name: renderAdmin", { exact: false })).toBeInTheDocument();
+    expect(screen.queryByText(/admin-panel\.js\?token=secret/)).not.toBeInTheDocument();
+  });
+
+  it("Source Map 候选展示只显示安全位置摘要，不直接输出完整 map URL", () => {
+    const message: ChatMessage = {
+      id: "assistant-2",
+      role: "assistant",
+      content: "已发现 Source Map 候选",
+      createdAt: 2,
+      modelId: "model-1",
+      endpointType: "openai_chat",
+      streamMode: false,
+      systemPrompt: "",
+      contextPrompt: "",
+      contextMode: "text",
+      toolAttachments: [
+        {
+          id: "attachment-map-2",
+          kind: "source-map",
+          title: "Source Map 解析结果",
+          summary: "Source Map 候选 1 个，映射 0 个，原始片段 0 个，失败 0 个。",
+          createdAt: 2,
+          redacted: true,
+          truncated: false,
+          candidates: [
+            {
+              resourceId: "script-2",
+              resourceUrl: "https://example.com/assets/app.js",
+              source: "source-mapping-url",
+              url: "https://example.com/assets/app.js.map?token=secret",
+              inline: false,
+              status: "fetchable",
+              parsed: false,
+            },
+          ],
+          resolvedLocations: [],
+          originalContexts: [],
+          failures: [],
+        },
+      ],
+    };
+
+    render(
+      <MessageList
+        messages={[message]}
+        retryProgressByMessageId={{}}
+        toolCallDisplayMode="assistant_grouped"
+        showToolCallProcessInAssistantMode
+        onRegenerateMessage={() => undefined}
+        onEditAndRegenerateUserMessage={() => undefined}
+        regenerating={false}
+      />,
+    );
+
+    expect(screen.getByText("script-2 | source-mapping-url | fetchable | 外部 Source Map")).toBeInTheDocument();
+    expect(screen.queryByText(/app\.js\.map\?token=secret/)).not.toBeInTheDocument();
   });
 });

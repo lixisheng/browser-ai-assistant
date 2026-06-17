@@ -9,6 +9,7 @@ import {
   collectRawMessageToolAttachments,
   isJsSourceToolAttachment,
   isNetworkToolAttachment,
+  isSourceMapToolAttachment,
   isWebSearchToolAttachment,
 } from "../../shared/toolArtifacts";
 import { createChatMessageMarkdown } from "../utils/chatMarkdownExport";
@@ -561,6 +562,17 @@ function aggregateDisplayAttachmentKindGroup(kind: string, attachments: ChatTool
     };
   }
 
+  if (kind === "source-map") {
+    const aggregated = aggregateToolAttachmentGroupByKind(attachments.filter(isSourceMapToolAttachment));
+    if (!aggregated) {
+      return attachments[0];
+    }
+    return {
+      ...aggregated,
+      id: `message-display-source-map-${attachments.map((attachment) => attachment.id).join("-")}`,
+    };
+  }
+
   return aggregateGenericDisplayAttachments(kind, attachments);
 }
 
@@ -632,6 +644,10 @@ function ToolAttachmentView({ attachment }: { attachment: ChatToolAttachment }) 
 
   if (isJsSourceToolAttachment(attachment)) {
     return <JsSourceToolAttachmentView attachment={attachment} />;
+  }
+
+  if (isSourceMapToolAttachment(attachment)) {
+    return <SourceMapToolAttachmentView attachment={attachment} />;
   }
 
   return (
@@ -755,6 +771,87 @@ function JsSourceToolAttachmentView({ attachment }: { attachment: ChatToolAttach
       {attachment.failedFetches.length ? <pre>{attachment.failedFetches.map((failure) => `${failure.url}: ${failure.message}`).join("\n")}</pre> : null}
     </details>
   );
+}
+
+function SourceMapToolAttachmentView({ attachment }: { attachment: ChatToolAttachment }) {
+  if (!isSourceMapToolAttachment(attachment)) {
+    return null;
+  }
+
+  return (
+    <details className="message-tool-attachment message-source-map-attachment">
+      <summary>
+        <span>Source Map 解析结果</span>
+        <span className="message-js-source-count">{getSourceMapAttachmentDisplayCount(attachment)}</span>
+      </summary>
+      <p className="message-tool-attachment-summary">{attachment.summary}</p>
+      {attachment.candidates.length ? (
+        <ul className="message-js-source-resource-list">
+          {attachment.candidates.map((candidate, index) => (
+            <li key={`${candidate.resourceId}-${candidate.source}-${candidate.url ?? "inline"}-${index}`}>
+              {candidate.resourceId} | {candidate.source} | {candidate.status} | {formatSourceMapCandidateLocation(candidate)}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {attachment.resolvedLocations.map((location, index) => (
+        <details key={`${location.resourceId}-${location.generatedLine}-${location.generatedColumn}-${index}`}>
+          <summary>
+            <span>
+              {location.resourceId}:{location.generatedLine}:{location.generatedColumn} -&gt; {location.source ?? "未映射"}:{location.originalLine ?? "-"}:{location.originalColumn ?? "-"}
+            </span>
+          </summary>
+          <pre>{formatSourceMapResolvedLocationForDisplay(location)}</pre>
+        </details>
+      ))}
+      {attachment.originalContexts.map((context, index) => (
+        <details key={`${context.resourceId}-${context.generatedLine}-${context.generatedColumn}-${context.source ?? ""}-${index}`}>
+          <summary>
+            <span>
+              {context.source ?? "未映射"}:{context.originalLine ?? "-"}:{context.originalColumn ?? "-"} 原始上下文
+            </span>
+          </summary>
+          <pre>{context.snippet ?? context.message ?? ""}</pre>
+        </details>
+      ))}
+      {attachment.failures.length ? <pre>{attachment.failures.map((failure) => `${failure.resourceId ?? failure.url ?? "unknown"}: ${failure.message}`).join("\n")}</pre> : null}
+    </details>
+  );
+}
+
+function formatSourceMapCandidateLocation(candidate: Extract<ChatToolAttachment, { kind: "source-map" }>["candidates"][number]): string {
+  if (candidate.inline) {
+    return "inline";
+  }
+  return candidate.url ? "外部 Source Map" : "无 URL";
+}
+
+function formatSourceMapResolvedLocationForDisplay(location: Extract<ChatToolAttachment, { kind: "source-map" }>["resolvedLocations"][number]): string {
+  return [
+    `resourceId: ${location.resourceId}`,
+    `generated: ${location.generatedLine}:${location.generatedColumn}`,
+    `source: ${location.source ?? "未映射"}`,
+    `original: ${location.originalLine ?? "-"}:${location.originalColumn ?? "-"}`,
+    `name: ${location.name ?? "-"}`,
+    `ignored: ${location.ignored ? "是" : "否"}`,
+    `hasSourceContent: ${location.hasSourceContent ? "是" : "否"}`,
+    location.message ? `message: ${location.message}` : undefined,
+  ]
+    .filter((line): line is string => Boolean(line))
+    .join("\n");
+}
+
+export function getSourceMapAttachmentDisplayCount(attachment: ChatToolAttachment): number {
+  if (!isSourceMapToolAttachment(attachment)) {
+    return 0;
+  }
+
+  const resultCount = attachment.resolvedLocations.length + attachment.originalContexts.length;
+  if (resultCount > 0) {
+    return resultCount;
+  }
+
+  return attachment.candidates.length || attachment.failures.length;
 }
 
 export function getJsSourceAttachmentDisplayCount(attachment: ChatToolAttachment): number {

@@ -84,7 +84,10 @@ const NETWORK_TOOL_NAMES = new Set<string>([
 export class BrowserNetworkToolExecutor {
   private jsSourceExecutor: JsSourceToolExecutor | undefined;
 
-  constructor(private readonly recorder: NetworkRecorderLike | BrowserNetworkRecorder) {}
+  constructor(
+    private readonly recorder: NetworkRecorderLike | BrowserNetworkRecorder,
+    private readonly onClear?: () => void,
+  ) {}
 
   async execute(toolCall: ModelToolCall): Promise<ModelToolResult> {
     if (!this.isEnabled()) {
@@ -106,6 +109,7 @@ export class BrowserNetworkToolExecutor {
     if (isToolCallName(toolCall.name, NETWORK_CLEAR_REQUESTS_TOOL_ID, NETWORK_CLEAR_REQUESTS_TOOL_NAME)) {
       this.recorder.clear();
       this.getJsSourceExecutor().clear();
+      this.onClear?.();
       return { toolCallId: toolCall.id, name: toolCall.name, content: "已清空当前受控页面的 Network 请求缓存。" };
     }
 

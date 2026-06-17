@@ -627,4 +627,114 @@ describe("通用工具附件聚合", () => {
       failedFetches: [],
     });
   });
+
+  it("归一化并聚合 Source Map 附件，导出和后续追问保留有限原始片段", () => {
+    const message = createAssistantMessage({
+      toolCallRecords: [
+        {
+          id: "call-map-1",
+          toolId: "sourcemap.extract_original_context",
+          name: "sourcemap_extract_original_context",
+          displayName: "提取原始源码上下文",
+          arguments: { resourceId: "script-1", line: 1, column: 20 },
+          status: "success",
+          startedAt: 1,
+          completedAt: 2,
+        },
+        {
+          id: "call-map-2",
+          toolId: "sourcemap.extract_original_context",
+          name: "sourcemap_extract_original_context",
+          displayName: "提取原始源码上下文",
+          arguments: {},
+          status: "success",
+          startedAt: 3,
+          completedAt: 4,
+        },
+      ],
+      toolAttachments: [
+        {
+          id: "attachment-map-1",
+          kind: "source-map",
+          title: "Source Map 解析结果",
+          summary: "Source Map 候选 1 个",
+          sourceToolCallId: "call-map-1",
+          createdAt: 2,
+          redacted: true,
+          truncated: true,
+          candidates: [
+            {
+              resourceId: "script-1",
+              resourceUrl: "https://example.com/app.js",
+              source: "source-mapping-url",
+              url: "https://example.com/app.js.map?token=secret",
+              inline: false,
+              status: "available",
+              parsed: true,
+            },
+          ],
+          resolvedLocations: [
+            {
+              resourceId: "script-1",
+              resourceUrl: "https://example.com/app.js",
+              generatedLine: 1,
+              generatedColumn: 20,
+              source: "src/app.ts",
+              originalLine: 2,
+              originalColumn: 5,
+              ignored: false,
+              hasSourceContent: true,
+            },
+          ],
+          originalContexts: [
+            {
+              resourceId: "script-1",
+              resourceUrl: "https://example.com/app.js",
+              generatedLine: 1,
+              generatedColumn: 20,
+              source: "src/app.ts",
+              originalLine: 2,
+              originalColumn: 5,
+              ignored: false,
+              hasSourceContent: true,
+              snippet: "export function sign(){ return token = \"[已脱敏]\"; }",
+              redacted: true,
+              truncated: true,
+            },
+          ],
+          failures: [],
+        },
+        {
+          id: "attachment-map-2",
+          kind: "source-map",
+          title: "Source Map 解析结果",
+          summary: "失败 1 个",
+          sourceToolCallId: "call-map-2",
+          createdAt: 4,
+          redacted: true,
+          truncated: false,
+          candidates: [],
+          resolvedLocations: [],
+          originalContexts: [],
+          failures: [{ resourceId: "script-2", message: "未发现 Source Map 候选。" }],
+        },
+      ],
+    });
+
+    const [attachment] = collectMessageToolAttachments(message);
+
+    expect(attachment).toMatchObject({
+      kind: "source-map",
+      title: "Source Map 解析结果",
+      truncated: true,
+      candidates: [expect.objectContaining({ resourceId: "script-1" })],
+      failures: [expect.objectContaining({ resourceId: "script-2" })],
+    });
+    expect(formatToolAttachmentForPrompt(attachment)).toContain("后续追问需要继续参考以下历史 Source Map 解析结果");
+    expect(formatToolAttachmentForPrompt(attachment)).toContain("外部 Source Map");
+    expect(formatToolAttachmentForPrompt(attachment)).not.toContain("app.js.map?token=secret");
+    expect(formatToolAttachmentForExport(attachment)).toContain("src/app.ts");
+    expect(formatToolAttachmentForExport(attachment)).toContain("[已脱敏]");
+    expect(formatToolAttachmentForExport(attachment)).not.toContain("app.js.map?token=secret");
+  });
 });

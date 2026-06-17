@@ -4,6 +4,7 @@ import type {
   ChatMessage,
   ChatNetworkContextAttachment,
   ChatNetworkToolAttachment,
+  ChatSourceMapToolAttachment,
   ChatToolCallRecord,
   ChatToolAttachment,
   ChatWebSearchResult,
@@ -13,6 +14,9 @@ import type {
   JsSourceFetchFailure,
   JsSourceMatch,
   JsSourceResource,
+  SourceMapCandidate,
+  SourceMapOriginalContext,
+  SourceMapResolvedLocation,
 } from "./types";
 import { formatNetworkAttachmentForExport, formatNetworkAttachmentSummary, redactNetworkRequestDetail } from "./networkContext";
 import { createTavilySearchContextPrompt, formatTavilySearchAttachmentSummary } from "./webSearch/tavily";
@@ -110,6 +114,10 @@ export function formatToolAttachmentForPrompt(attachment: ChatToolAttachment): s
     return ["后续追问需要继续参考以下历史 JS 源码片段：", formatJsSourceAttachmentForText(attachment)].join("\n");
   }
 
+  if (isSourceMapToolAttachment(attachment)) {
+    return ["后续追问需要继续参考以下历史 Source Map 解析结果：", formatSourceMapAttachmentForText(attachment)].join("\n");
+  }
+
   if (attachment.details?.trim()) {
     return [`后续追问需要继续参考以下历史工具附件：${attachment.title}`, attachment.details.trim()].join("\n");
   }
@@ -129,6 +137,10 @@ export function formatToolAttachmentForExport(attachment: ChatToolAttachment): s
 
   if (isJsSourceToolAttachment(attachment)) {
     return ["# JS 源码片段附件", "", formatJsSourceAttachmentSummary(attachment), "", formatJsSourceAttachmentForText(attachment)].join("\n");
+  }
+
+  if (isSourceMapToolAttachment(attachment)) {
+    return ["# Source Map 解析附件", "", formatSourceMapAttachmentSummary(attachment), "", formatSourceMapAttachmentForText(attachment)].join("\n");
   }
 
   return ["# 工具结果附件", "", attachment.summary, "", attachment.details ?? ""].join("\n").trim();
@@ -157,6 +169,10 @@ export function normalizeToolAttachment(value: unknown): ChatToolAttachment | un
     return normalizeJsSourceToolAttachment(source);
   }
 
+  if (kind === "source-map") {
+    return normalizeSourceMapToolAttachment(source);
+  }
+
   return normalizeGenericToolAttachment(source, kind);
 }
 
@@ -170,6 +186,10 @@ export function isNetworkToolAttachment(attachment: ChatToolAttachment): attachm
 
 export function isJsSourceToolAttachment(attachment: ChatToolAttachment): attachment is ChatJsSourceToolAttachment {
   return attachment.kind === "js-source" && "resources" in attachment && "jsMatches" in attachment && "contexts" in attachment;
+}
+
+export function isSourceMapToolAttachment(attachment: ChatToolAttachment): attachment is ChatSourceMapToolAttachment {
+  return attachment.kind === "source-map" && "candidates" in attachment && "resolvedLocations" in attachment && "originalContexts" in attachment;
 }
 
 export function uniqueToolAttachmentsById(attachments: ChatToolAttachment[]): ChatToolAttachment[] {
@@ -220,6 +240,15 @@ function createToolAttachmentContentKey(attachment: ChatToolAttachment): string 
       ...attachment.resources.map((resource) => [resource.id, resource.source, normalizeComparableText(resource.url)].join("\u0001")),
       ...attachment.jsMatches.map((match) => [match.resourceId, String(match.position), normalizeComparableText(match.term)].join("\u0001")),
       ...attachment.contexts.map((context) => [context.resourceId, String(context.position)].join("\u0001")),
+    ].join("\u0000");
+  }
+
+  if (isSourceMapToolAttachment(attachment)) {
+    return [
+      attachment.kind,
+      ...attachment.candidates.map((candidate) => [candidate.resourceId, candidate.source, normalizeComparableText(candidate.url ?? ""), candidate.status].join("\u0001")),
+      ...attachment.resolvedLocations.map((location) => [location.resourceId, String(location.generatedLine), String(location.generatedColumn), normalizeComparableText(location.source ?? "")].join("\u0001")),
+      ...attachment.originalContexts.map((context) => [context.resourceId, String(context.generatedLine), String(context.generatedColumn), normalizeComparableText(context.source ?? "")].join("\u0001")),
     ].join("\u0000");
   }
 
@@ -290,6 +319,10 @@ function aggregateToolAttachmentGroup(group: ToolAttachmentAggregateGroup): Chat
 
   if (kind === "js-source") {
     return aggregateJsSourceToolAttachments(attachments.filter(isJsSourceToolAttachment));
+  }
+
+  if (kind === "source-map") {
+    return aggregateSourceMapToolAttachments(attachments.filter(isSourceMapToolAttachment));
   }
 
   return aggregateGenericToolAttachments(kind, attachments);
@@ -386,6 +419,43 @@ function aggregateJsSourceToolAttachments(attachments: ChatJsSourceToolAttachmen
   return {
     ...aggregated,
     summary: formatJsSourceAttachmentSummary(aggregated),
+  };
+}
+
+function aggregateSourceMapToolAttachments(attachments: ChatSourceMapToolAttachment[]): ChatSourceMapToolAttachment | undefined {
+  if (attachments.length === 0) {
+    return undefined;
+  }
+
+  const candidates = uniqueBy(attachments.flatMap((attachment) => attachment.candidates), (candidate) =>
+    `${candidate.resourceId}\u0000${candidate.source}\u0000${candidate.url ?? ""}\u0000${candidate.status}`,
+  );
+  const resolvedLocations = uniqueBy(attachments.flatMap((attachment) => attachment.resolvedLocations), (location) =>
+    `${location.resourceId}\u0000${location.generatedLine}\u0000${location.generatedColumn}\u0000${location.source ?? ""}`,
+  );
+  const originalContexts = uniqueBy(attachments.flatMap((attachment) => attachment.originalContexts), (context) =>
+    `${context.resourceId}\u0000${context.generatedLine}\u0000${context.generatedColumn}\u0000${context.source ?? ""}`,
+  );
+  const failures = uniqueBy(attachments.flatMap((attachment) => attachment.failures), (failure) =>
+    `${failure.resourceId ?? ""}\u0000${failure.url ?? ""}\u0000${failure.message}`,
+  );
+  const createdAt = Math.max(...attachments.map((attachment) => attachment.createdAt));
+  const aggregated: ChatSourceMapToolAttachment = {
+    id: `tool-attachment-source-map-aggregated-${attachments.map((attachment) => attachment.id).join("-")}`,
+    kind: "source-map",
+    title: "Source Map 解析结果",
+    summary: "",
+    createdAt,
+    redacted: true,
+    truncated: attachments.some((attachment) => attachment.truncated),
+    candidates,
+    resolvedLocations,
+    originalContexts,
+    failures,
+  };
+  return {
+    ...aggregated,
+    summary: formatSourceMapAttachmentSummary(aggregated),
   };
 }
 
@@ -557,6 +627,51 @@ function normalizeJsSourceToolAttachment(source: Partial<ChatToolAttachment>): C
   };
 }
 
+function normalizeSourceMapToolAttachment(source: Partial<ChatToolAttachment>): ChatSourceMapToolAttachment | undefined {
+  const candidates = "candidates" in source && Array.isArray(source.candidates)
+    ? source.candidates.map(normalizeSourceMapCandidate).filter((item): item is SourceMapCandidate => Boolean(item))
+    : [];
+  const resolvedLocations = "resolvedLocations" in source && Array.isArray(source.resolvedLocations)
+    ? source.resolvedLocations.map(normalizeSourceMapResolvedLocation).filter((item): item is SourceMapResolvedLocation => Boolean(item))
+    : [];
+  const originalContexts = "originalContexts" in source && Array.isArray(source.originalContexts)
+    ? source.originalContexts.map(normalizeSourceMapOriginalContext).filter((item): item is SourceMapOriginalContext => Boolean(item))
+    : [];
+  const failures = "failures" in source && Array.isArray(source.failures)
+    ? source.failures.map(normalizeSourceMapFailure).filter((item): item is ChatSourceMapToolAttachment["failures"][number] => Boolean(item))
+    : [];
+  if (
+    !candidates.length &&
+    !resolvedLocations.length &&
+    !originalContexts.length &&
+    !failures.length &&
+    !normalizeOptionalString(source.title) &&
+    !normalizeOptionalString(source.summary) &&
+    !normalizeOptionalString(source.sourceToolCallId)
+  ) {
+    return undefined;
+  }
+
+  const attachment: ChatSourceMapToolAttachment = {
+    id: normalizeId(source.id, `tool-attachment-source-map-${normalizeTimestamp(source.createdAt)}`),
+    kind: "source-map",
+    title: "Source Map 解析结果",
+    summary: "",
+    sourceToolCallId: normalizeOptionalString(source.sourceToolCallId),
+    createdAt: normalizeTimestamp(source.createdAt),
+    redacted: true,
+    truncated: source.truncated === true || originalContexts.some((context) => context.truncated),
+    candidates,
+    resolvedLocations,
+    originalContexts,
+    failures,
+  };
+  return {
+    ...attachment,
+    summary: normalizeOptionalString(source.summary) ?? formatSourceMapAttachmentSummary(attachment),
+  };
+}
+
 function normalizeGenericToolAttachment(source: Partial<ChatToolAttachment>, kind: string): ChatGenericToolAttachment | undefined {
   const title = normalizeOptionalString(source.title);
   const summary = normalizeOptionalString(source.summary);
@@ -666,6 +781,10 @@ export function formatJsSourceAttachmentSummary(attachment: ChatJsSourceToolAtta
   return `JS 资源 ${attachment.resources.length} 个，命中 ${attachment.jsMatches.length} 个，上下文 ${attachment.contexts.length} 个，补位失败 ${attachment.failedFetches.length} 个。`;
 }
 
+export function formatSourceMapAttachmentSummary(attachment: ChatSourceMapToolAttachment): string {
+  return `Source Map 候选 ${attachment.candidates.length} 个，映射 ${attachment.resolvedLocations.length} 个，原始片段 ${attachment.originalContexts.length} 个，失败 ${attachment.failures.length} 个。`;
+}
+
 function formatJsSourceAttachmentForText(attachment: ChatJsSourceToolAttachment): string {
   const sections: string[] = [];
   if (attachment.query?.length) {
@@ -684,6 +803,121 @@ function formatJsSourceAttachmentForText(attachment: ChatJsSourceToolAttachment)
     sections.push(["同源补位失败：", ...attachment.failedFetches.map((failure) => `- ${failure.url}: ${failure.message}`)].join("\n"));
   }
   return sections.join("\n\n").trim();
+}
+
+function formatSourceMapAttachmentForText(attachment: ChatSourceMapToolAttachment): string {
+  const sections: string[] = [];
+  if (attachment.candidates.length) {
+    sections.push(["候选：", ...attachment.candidates.map((candidate) =>
+      `- ${candidate.resourceId} | ${candidate.source} | ${candidate.status} | ${formatSourceMapCandidateLocation(candidate)}${candidate.message ? ` | ${candidate.message}` : ""}`,
+    )].join("\n"));
+  }
+  if (attachment.resolvedLocations.length) {
+    sections.push(["映射：", ...attachment.resolvedLocations.map((location) =>
+      `- ${location.resourceId}:${location.generatedLine}:${location.generatedColumn} -> ${location.source ?? "未映射"}:${location.originalLine ?? "-"}:${location.originalColumn ?? "-"}${location.message ? ` | ${location.message}` : ""}`,
+    )].join("\n"));
+  }
+  if (attachment.originalContexts.length) {
+    sections.push(["原始源码片段：", ...attachment.originalContexts.map((context) =>
+      `- ${context.resourceId}:${context.generatedLine}:${context.generatedColumn} -> ${context.source ?? "未映射"}:${context.originalLine ?? "-"}:${context.originalColumn ?? "-"}\n${context.snippet ?? context.message ?? ""}`,
+    )].join("\n"));
+  }
+  if (attachment.failures.length) {
+    sections.push(["失败：", ...attachment.failures.map((failure) => `- ${failure.resourceId ?? failure.url ?? "unknown"}: ${failure.message}`)].join("\n"));
+  }
+  return sections.join("\n\n").trim();
+}
+
+function formatSourceMapCandidateLocation(candidate: SourceMapCandidate): string {
+  if (candidate.inline) {
+    return "inline";
+  }
+  return candidate.url ? "外部 Source Map" : "无 URL";
+}
+
+function normalizeSourceMapCandidate(value: unknown): SourceMapCandidate | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const source = value as Partial<SourceMapCandidate>;
+  const resourceId = normalizeOptionalString(source.resourceId);
+  const resourceUrl = normalizeOptionalString(source.resourceUrl);
+  if (!resourceId || !resourceUrl || !isSourceMapCandidateSource(source.source) || !isSourceMapCandidateStatus(source.status)) {
+    return undefined;
+  }
+  return {
+    resourceId,
+    resourceUrl,
+    source: source.source,
+    url: normalizeOptionalString(source.url),
+    inline: source.inline === true,
+    status: source.status,
+    parsed: source.parsed === true,
+    message: normalizeOptionalString(source.message),
+  };
+}
+
+function normalizeSourceMapResolvedLocation(value: unknown): SourceMapResolvedLocation | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const source = value as Partial<SourceMapResolvedLocation>;
+  const resourceId = normalizeOptionalString(source.resourceId);
+  const resourceUrl = normalizeOptionalString(source.resourceUrl);
+  if (!resourceId || !resourceUrl) {
+    return undefined;
+  }
+  return {
+    resourceId,
+    resourceUrl,
+    generatedLine: normalizePositiveNumber(source.generatedLine),
+    generatedColumn: normalizePositiveNumber(source.generatedColumn),
+    source: normalizeOptionalString(source.source),
+    originalLine: source.originalLine === undefined ? undefined : normalizePositiveNumber(source.originalLine),
+    originalColumn: source.originalColumn === undefined ? undefined : normalizePositiveNumber(source.originalColumn),
+    name: normalizeOptionalString(source.name),
+    ignored: source.ignored === true,
+    hasSourceContent: source.hasSourceContent === true,
+    message: normalizeOptionalString(source.message),
+  };
+}
+
+function normalizeSourceMapOriginalContext(value: unknown): SourceMapOriginalContext | undefined {
+  const location = normalizeSourceMapResolvedLocation(value);
+  if (!location || !value || typeof value !== "object") {
+    return undefined;
+  }
+  const source = value as Partial<SourceMapOriginalContext>;
+  return {
+    ...location,
+    snippet: normalizeOptionalString(source.snippet),
+    redacted: true,
+    truncated: source.truncated === true,
+  };
+}
+
+function normalizeSourceMapFailure(value: unknown): ChatSourceMapToolAttachment["failures"][number] | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const source = value as { resourceId?: unknown; url?: unknown; message?: unknown };
+  const message = normalizeOptionalString(source.message);
+  if (!message) {
+    return undefined;
+  }
+  return {
+    resourceId: normalizeOptionalString(source.resourceId),
+    url: normalizeOptionalString(source.url),
+    message,
+  };
+}
+
+function isSourceMapCandidateSource(value: unknown): value is SourceMapCandidate["source"] {
+  return value === "response-header" || value === "x-source-map-header" || value === "source-mapping-url" || value === "inline";
+}
+
+function isSourceMapCandidateStatus(value: unknown): value is SourceMapCandidate["status"] {
+  return value === "available" || value === "fetchable" || value === "blocked" || value === "failed";
 }
 
 function normalizeNonNegativeNumber(value: unknown): number {

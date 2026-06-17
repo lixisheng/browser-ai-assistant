@@ -1,4 +1,4 @@
-import type { JsSourceContext, JsSourceMatch, JsSourceResource, NetworkRequestDetail } from "../../shared/types";
+import type { JsSourceContext, JsSourceMatch, JsSourceResource, NetworkHeader, NetworkRequestDetail } from "../../shared/types";
 import { truncateText } from "../../shared/utils/text";
 
 export interface JsSourceFetchedResourceInput {
@@ -19,9 +19,15 @@ export interface JsSourceContextOptions {
   radius?: number;
 }
 
+export interface IndexedJsSourceSnapshot extends JsSourceResource {
+  content: string;
+  responseHeaders?: NetworkHeader[];
+}
+
 interface IndexedJsSourceResource extends JsSourceResource {
   content: string;
   lineStarts: number[];
+  responseHeaders?: NetworkHeader[];
 }
 
 const DEFAULT_MAX_MATCHES = 50;
@@ -52,6 +58,7 @@ export class JsSourceIndex {
         url: detail.url,
         mimeType: detail.mimeType,
         content: detail.responseBody,
+        responseHeaders: detail.responseHeaders,
         truncated: detail.truncated,
       });
     }
@@ -70,7 +77,29 @@ export class JsSourceIndex {
   }
 
   listResources(): JsSourceResource[] {
-    return Array.from(this.resourcesById.values()).map(({ content: _content, lineStarts: _lineStarts, ...resource }) => resource);
+    return Array.from(this.resourcesById.values()).map(({ content: _content, lineStarts: _lineStarts, responseHeaders: _responseHeaders, ...resource }) => resource);
+  }
+
+  getResourceSnapshot(resourceId: string): IndexedJsSourceSnapshot | undefined {
+    const resource = this.resourcesById.get(resourceId);
+    if (!resource) {
+      return undefined;
+    }
+    const { lineStarts: _lineStarts, ...snapshot } = resource;
+    return { ...snapshot };
+  }
+
+  listResourceSnapshots(): IndexedJsSourceSnapshot[] {
+    return Array.from(this.resourcesById.values()).map(({ lineStarts: _lineStarts, ...resource }) => ({ ...resource }));
+  }
+
+  calculateLineColumn(resourceId: string, position: number): { line: number; column: number } | undefined {
+    const resource = this.resourcesById.get(resourceId);
+    if (!resource || !Number.isFinite(position)) {
+      return undefined;
+    }
+    const normalizedPosition = Math.min(Math.max(Math.floor(position), 0), resource.content.length);
+    return calculateLineColumn(resource.lineStarts, normalizedPosition);
   }
 
   search(keywords: string[], options: JsSourceSearchOptions = {}): { matches: JsSourceMatch[]; truncated: boolean } {
@@ -131,6 +160,7 @@ export class JsSourceIndex {
     url: string;
     mimeType?: string;
     content: string;
+    responseHeaders?: NetworkHeader[];
     fetchedAt?: number;
     truncated: boolean;
   }): void {
@@ -146,6 +176,7 @@ export class JsSourceIndex {
       // redacted 表示内容已经过脱敏管道处理，不代表原始源码一定包含敏感字段。
       redacted: true,
       truncated: input.truncated || truncatedContent.truncated,
+      responseHeaders: input.responseHeaders,
       content: truncatedContent.text,
       lineStarts: createLineStarts(truncatedContent.text),
     });

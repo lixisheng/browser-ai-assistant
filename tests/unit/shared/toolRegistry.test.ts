@@ -32,6 +32,9 @@ import {
   JS_EXTRACT_CONTEXT_TOOL_ID,
   JS_LIST_RESOURCES_TOOL_ID,
   JS_SEARCH_SOURCES_TOOL_ID,
+  SOURCEMAP_EXTRACT_ORIGINAL_CONTEXT_TOOL_ID,
+  SOURCEMAP_LIST_CANDIDATES_TOOL_ID,
+  SOURCEMAP_RESOLVE_LOCATION_TOOL_ID,
   TAVILY_SEARCH_TOOL_ID,
   TAVILY_SEARCH_TOOL_NAME,
   getRegisteredModelTools,
@@ -262,6 +265,9 @@ describe("模型工具注册表", () => {
       JS_LIST_RESOURCES_TOOL_ID,
       JS_SEARCH_SOURCES_TOOL_ID,
       JS_EXTRACT_CONTEXT_TOOL_ID,
+      SOURCEMAP_LIST_CANDIDATES_TOOL_ID,
+      SOURCEMAP_RESOLVE_LOCATION_TOOL_ID,
+      SOURCEMAP_EXTRACT_ORIGINAL_CONTEXT_TOOL_ID,
     ]);
   });
 
@@ -315,6 +321,30 @@ describe("模型工具注册表", () => {
     });
   });
 
+  it("注册 Source Map 工具并收紧参数 schema", () => {
+    const tools = getRegisteredModelTools();
+
+    expect(tools.find((tool) => tool.id === SOURCEMAP_LIST_CANDIDATES_TOOL_ID)).toMatchObject({
+      name: "sourcemap_list_candidates",
+      parameters: { type: "object", additionalProperties: false },
+    });
+    expect(tools.find((tool) => tool.id === SOURCEMAP_RESOLVE_LOCATION_TOOL_ID)).toMatchObject({
+      name: "sourcemap_resolve_location",
+      parameters: { type: "object", required: ["resourceId", "line", "column"], additionalProperties: false },
+    });
+    expect(tools.find((tool) => tool.id === SOURCEMAP_EXTRACT_ORIGINAL_CONTEXT_TOOL_ID)).toMatchObject({
+      name: "sourcemap_extract_original_context",
+      parameters: { type: "object", required: ["resourceId", "line", "column"], additionalProperties: false },
+    });
+    expect(tools.find((tool) => tool.id === SOURCEMAP_EXTRACT_ORIGINAL_CONTEXT_TOOL_ID)?.parameters.properties).toMatchObject({
+      resourceId: { type: "string" },
+      line: { type: "integer", minimum: 1 },
+      column: { type: "integer", minimum: 1 },
+      allowSameOriginFetch: { type: "boolean" },
+      radius: { type: "integer", minimum: 80, maximum: 3000 },
+    });
+  });
+
   it("对外工具函数名兼容 OpenAI-compatible 命名规则", () => {
     const tools = getRegisteredModelTools();
 
@@ -330,6 +360,9 @@ describe("模型工具注册表", () => {
         "js_list_resources",
         "js_search_sources",
         "js_extract_context",
+        "sourcemap_list_candidates",
+        "sourcemap_resolve_location",
+        "sourcemap_extract_original_context",
       ]),
     );
     expect(tools.every((tool) => /^[a-zA-Z0-9_-]+$/.test(tool.name))).toBe(true);

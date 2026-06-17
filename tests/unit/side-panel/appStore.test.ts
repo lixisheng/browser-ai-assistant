@@ -250,6 +250,9 @@ describe("appStore 网络搜索", () => {
       "js.list_resources",
       "js.search_sources",
       "js.extract_context",
+      "sourcemap.list_candidates",
+      "sourcemap.resolve_location",
+      "sourcemap.extract_original_context",
     ]);
   });
 });

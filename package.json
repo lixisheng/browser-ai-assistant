@@ -21,6 +21,7 @@
   "license": "GPL-3.0-only",
   "description": "基于当前网页内容进行 AI 对话的浏览器侧边栏助手。",
   "dependencies": {
+    "@jridgewell/trace-mapping": "^0.3.31",
     "@radix-ui/react-dialog": "^1.1.15",
     "@radix-ui/react-select": "^2.2.6",
     "@radix-ui/react-tabs": "^1.1.13",

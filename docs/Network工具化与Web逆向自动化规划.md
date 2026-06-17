@@ -6,7 +6,7 @@ Network 分析已从“发送前自动注入上下文”的旧流程，重构为
 
 模型现在可以在工具循环中主动决定何时清空请求、等待新增请求、筛选请求、读取详情、对比请求、定位 JS 资源和分析参数。第一阶段已经落地基于 `chrome.debugger` 的后台 Network 采集，以及 `network.compare_requests`、`network.find_parameter_candidates`、`network.extract_js_candidates` 三个逆向辅助工具。
 
-完整 Web 逆向能力继续按阶段推进。Source map、受控只读 `Runtime.evaluate`、请求重放沙箱、敏感字段解锁等高风险能力默认关闭，必须经过单独权限设计、用户确认、脱敏、审计和测试后才能启用。
+完整 Web 逆向能力继续按阶段推进。Source map 已作为独立 `sourcemap.*` 工具组落地；受控只读 `Runtime.evaluate`、请求重放沙箱、敏感字段解锁等更高风险能力仍默认关闭，必须经过单独权限设计、用户确认、脱敏、审计和测试后才能启用。
 
 ## 2. 当前状态
 
@@ -32,6 +32,12 @@ Network 分析已从“发送前自动注入上下文”的旧流程，重构为
 | `network.compare_requests` | 对比多条请求的 query、header、body、path 差异，输出稳定字段、变化字段和疑似签名字段。 |
 | `network.find_parameter_candidates` | 从请求详情中识别疑似签名、时间戳、nonce、token、加密载荷和长编码字符串。 |
 | `network.extract_js_candidates` | 从已采集 JS 响应中按接口路径、参数名或加密关键词提取候选资源与片段。 |
+| `js.list_resources` | 列出已采集和已同源补位的 JS 资源，供源码检索和 Source Map 解析使用。 |
+| `js.search_sources` | 按接口路径、参数名或关键词搜索 JS 源码，必要时按严格同源规则补位读取 JS 静态文本资源。 |
+| `js.extract_context` | 按 JS 资源 ID 和字符位置提取更大的源码上下文。 |
+| `sourcemap.list_candidates` | 列出 JS 资源关联的 Source Map 候选，支持响应头、`sourceMappingURL` 和 inline data URL。 |
+| `sourcemap.resolve_location` | 将 JS bundle 的一基行列位置映射到原始源码位置。 |
+| `sourcemap.extract_original_context` | 从 Source Map `sourcesContent` 中提取有限原始源码片段。 |
 
 ## 3. 工具接入原则
 
@@ -95,7 +101,6 @@ Network 分析已从“发送前自动注入上下文”的旧流程，重构为
 
 以下能力默认关闭，未完成单独设计前不得实现或暗中启用：
 
-- Source map 原始源码映射。
 - 受控只读 `Runtime.evaluate`。
 - 请求重放沙箱。
 - 敏感字段解锁。
@@ -154,9 +159,11 @@ Network 分析已从“发送前自动注入上下文”的旧流程，重构为
 
 ### 5.3 阶段三：Source map 处理
 
+状态：已完成。
+
 目标：
 
-- 识别 `sourceMappingURL`。
+- 识别响应头 `SourceMap`、兼容头 `X-SourceMap`、源码尾部 `sourceMappingURL` 和 inline data URL。
 - 读取同源或 Network 已采集的 source map。
 - 将压缩 bundle 位置映射到原始源码文件、函数附近片段和调用上下文。
 
@@ -168,9 +175,12 @@ Network 分析已从“发送前自动注入上下文”的旧流程，重构为
 
 安全限制：
 
-- 跨域 source map 默认不主动拉取。
-- 未采集、不可访问或过大的 source map 返回明确失败。
-- 返回片段必须限制大小并避免泄露敏感凭据。
+- `sourcemap.*` 属于浏览器自动化工具组，只在工具调用总开关开启、浏览器控制开启、当前 tab 已 attach 且 Network recorder 已启用时暴露。
+- 外部 source map 只允许 `http` 或 `https`，且协议、hostname、port 必须与当前受控页面一致；跨域、跨协议、跨端口和跨域重定向必须拒绝。
+- Source Map fetch 必须使用 `credentials: "omit"` 和 `redirect: "manual"`，不得携带 Cookie、Authorization 或浏览器存储凭据。
+- inline data URL 只接受 JSON、source-map 或可信文本 JSON，并在解码前后限制大小。
+- 只从 `sourcesContent` 提取有限片段；不得保存完整 source map 或完整 `sourcesContent` 到工具附件、历史、同步快照、导出或后续追问上下文。
+- 返回片段必须脱敏、截断并标记 `redacted` / `truncated`，避免泄露敏感凭据。
 
 ### 5.4 阶段四：受控只读 Runtime.evaluate
 
@@ -264,7 +274,9 @@ Network 分析已从“发送前自动注入上下文”的旧流程，重构为
 6. `network.compare_requests` 对比多条请求差异。
 7. `network.find_parameter_candidates` 识别签名、时间戳、nonce、token、加密载荷等字段。
 8. `network.extract_js_candidates` 按接口路径、参数名和关键词定位 JS 候选片段。
-9. 输出分析结论、请求结构、参数解释、疑似加密逻辑入口和下一步建议。
+9. 必要时调用 `js.search_sources` / `js.extract_context` 定位 bundle 命中位置。
+10. 必要时调用 `sourcemap.list_candidates`、`sourcemap.resolve_location` 和 `sourcemap.extract_original_context` 映射原始源码片段。
+11. 输出分析结论、请求结构、参数解释、疑似加密逻辑入口和下一步建议。
 
 模型不得承诺绕过站点安全机制，不得自动破解、爆破、绕过验证码或规避风控。
 
@@ -279,6 +291,7 @@ Network 分析已从“发送前自动注入上下文”的旧流程，重构为
 - `compare_requests`：query、header、body JSON、form body、path 差异。
 - `find_parameter_candidates`：签名、时间戳、nonce、长 base64、hex、嵌套 JSON、误报控制。
 - `extract_js_candidates`：JS 类型识别、关键词命中、接口路径命中、片段截断、空结果。
+- `sourcemap.*`：工具注册、暴露条件、响应头优先级、`sourceMappingURL`、inline data URL、同源读取、普通 v3 map、section map、无 `sourcesContent`、非法 JSON、行列转换、`ignoreList` / `x_google_ignoreList`、脱敏截断和缓存清理。
 - 普通发送消息不再自动执行旧 Network 筛选流程。
 
 ### 7.2 集成测试
@@ -286,6 +299,7 @@ Network 分析已从“发送前自动注入上下文”的旧流程，重构为
 - 工具循环中模型调用 `network.*` 后能生成工具记录和 Network 附件。
 - 流式模式下工具执行过程、最终回答和失败收尾保持现有行为。
 - 空正文工具轮附件能在 UI 中正确展示、聚合和导出。
+- `source-map` 工具附件能在 UI 中正确展示、聚合、导出并作为后续追问上下文注入。
 - 历史 `networkContextAttachment` 能兼容读取，但不会生成新旧格式数据。
 
 ### 7.3 构建与扩展验证

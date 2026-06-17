@@ -16,6 +16,7 @@ import {
 import { BrowserNetworkRecorder } from "./browserControl/networkRecorder";
 import { BrowserNetworkToolExecutor } from "./browserControl/networkToolExecutor";
 import { JsSourceToolExecutor } from "./browserControl/jsSourceToolExecutor";
+import { SourceMapToolExecutor } from "./browserControl/sourceMapToolExecutor";
 
 type Debuggee = chrome.debugger.Debuggee;
 type ChromeApi = typeof chrome;
@@ -631,6 +632,7 @@ export class BrowserControlManager {
   private readonly networkRecorder: BrowserNetworkRecorder;
   private readonly networkToolExecutor: BrowserNetworkToolExecutor;
   private readonly jsSourceToolExecutor: JsSourceToolExecutor;
+  private readonly sourceMapToolExecutor: SourceMapToolExecutor;
 
   constructor(
     private readonly connection = new BrowserDebuggerConnection(),
@@ -640,10 +642,18 @@ export class BrowserControlManager {
     this.snapshotManager = new BrowserControlSnapshotManager(this.connection, () => this.getTargetTabInfo());
     this.actionExecutor = new BrowserControlActionExecutor(this.connection, this.snapshotManager);
     this.networkRecorder = new BrowserNetworkRecorder(this.connection);
-    this.networkToolExecutor = new BrowserNetworkToolExecutor(this.networkRecorder);
     this.jsSourceToolExecutor = new JsSourceToolExecutor({
       recorder: this.networkRecorder,
       getCurrentPageUrl: async () => (await this.getTargetTabInfo()).url,
+    });
+    this.sourceMapToolExecutor = new SourceMapToolExecutor({
+      recorder: this.networkRecorder,
+      jsSourceIndex: this.jsSourceToolExecutor.getIndex(),
+      getCurrentPageUrl: async () => (await this.getTargetTabInfo()).url,
+    });
+    this.networkToolExecutor = new BrowserNetworkToolExecutor(this.networkRecorder, () => {
+      this.jsSourceToolExecutor.clear();
+      this.sourceMapToolExecutor.clear();
     });
     this.connection.installDetachListener((tabId, reason) => {
       if (this.suppressNextDetachTabId === tabId) {
@@ -745,6 +755,11 @@ export class BrowserControlManager {
     return this.jsSourceToolExecutor.execute(toolCall);
   }
 
+  async executeSourceMapTool(toolCall: ModelToolCall): Promise<ModelToolResult> {
+    await this.jsSourceToolExecutor.refreshResourcesForAnalysis();
+    return this.sourceMapToolExecutor.execute(toolCall);
+  }
+
   async takeSnapshot(toolCall: ModelToolCall): Promise<ModelToolResult> {
     const extraKeys = Object.keys(toolCall.arguments);
     if (extraKeys.length > 0) {
@@ -840,11 +855,13 @@ export class BrowserControlManager {
       await this.connection.navigate(urlResult.url);
       this.snapshotManager.clearSnapshotCache();
       this.jsSourceToolExecutor.clear();
+      this.sourceMapToolExecutor.clear();
       content = `已导航到 ${urlResult.url}。`;
     } else if (action === "reload") {
       await this.connection.reload();
       this.snapshotManager.clearSnapshotCache();
       this.jsSourceToolExecutor.clear();
+      this.sourceMapToolExecutor.clear();
       content = "已刷新当前页面。";
     } else {
       const history = normalizeNavigationHistory(await this.connection.getNavigationHistory());
@@ -856,6 +873,7 @@ export class BrowserControlManager {
       await this.connection.navigateToHistoryEntry(target.id);
       this.snapshotManager.clearSnapshotCache();
       this.jsSourceToolExecutor.clear();
+      this.sourceMapToolExecutor.clear();
       content = action === "back" ? "已后退到上一页。" : "已前进到下一页。";
     }
 
@@ -948,6 +966,7 @@ export class BrowserControlManager {
     await this.chromeApi?.tabs.update?.(tabId, { active: true });
     this.snapshotManager.clearSnapshotCache();
     this.jsSourceToolExecutor.clear();
+    this.sourceMapToolExecutor.clear();
     this.targetTabId = tabId;
     this.controlledTabIds.add(tabId);
     const attachResult = await this.connection.attach(tabId);
@@ -961,11 +980,13 @@ export class BrowserControlManager {
 
   private startNetworkAnalysis(tabId: number): void {
     this.jsSourceToolExecutor.clear();
+    this.sourceMapToolExecutor.clear();
     this.networkRecorder.start(tabId);
   }
 
   private stopNetworkAnalysis(): void {
     this.jsSourceToolExecutor.clear();
+    this.sourceMapToolExecutor.clear();
     this.networkRecorder.stop();
   }
 

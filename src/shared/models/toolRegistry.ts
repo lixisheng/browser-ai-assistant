@@ -44,6 +44,12 @@ export const JS_SEARCH_SOURCES_TOOL_ID = "js.search_sources";
 export const JS_SEARCH_SOURCES_TOOL_NAME = "js_search_sources";
 export const JS_EXTRACT_CONTEXT_TOOL_ID = "js.extract_context";
 export const JS_EXTRACT_CONTEXT_TOOL_NAME = "js_extract_context";
+export const SOURCEMAP_LIST_CANDIDATES_TOOL_ID = "sourcemap.list_candidates";
+export const SOURCEMAP_LIST_CANDIDATES_TOOL_NAME = "sourcemap_list_candidates";
+export const SOURCEMAP_RESOLVE_LOCATION_TOOL_ID = "sourcemap.resolve_location";
+export const SOURCEMAP_RESOLVE_LOCATION_TOOL_NAME = "sourcemap_resolve_location";
+export const SOURCEMAP_EXTRACT_ORIGINAL_CONTEXT_TOOL_ID = "sourcemap.extract_original_context";
+export const SOURCEMAP_EXTRACT_ORIGINAL_CONTEXT_TOOL_NAME = "sourcemap_extract_original_context";
 
 export const MODEL_TOOL_GROUP_SYSTEM_ID = "system";
 export const MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID = "browser_automation";
@@ -468,6 +474,65 @@ export const AVAILABLE_MODEL_TOOLS: ModelToolRegistryEntry[] = [
       additionalProperties: false,
     },
   },
+  {
+    id: SOURCEMAP_LIST_CANDIDATES_TOOL_ID,
+    name: SOURCEMAP_LIST_CANDIDATES_TOOL_NAME,
+    groupId: MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID,
+    displayName: "列出 Source Map 候选",
+    description: "列出当前已索引 JS 资源关联的 Source Map 候选，必要时可按严格同源规则读取外部 map。",
+    parameters: {
+      type: "object",
+      properties: {
+        resourceIds: {
+          type: "array",
+          items: { type: "string" },
+          maxItems: 100,
+          description: "可选，限定要检查的 JS 资源 ID。",
+        },
+        allowSameOriginFetch: {
+          type: "boolean",
+          description: "是否允许本次工具调用读取同源外部 Source Map。",
+        },
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 100,
+          description: "最多返回的候选数量。",
+        },
+      },
+      required: [],
+      additionalProperties: false,
+    },
+  },
+  {
+    id: SOURCEMAP_RESOLVE_LOCATION_TOOL_ID,
+    name: SOURCEMAP_RESOLVE_LOCATION_TOOL_NAME,
+    groupId: MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID,
+    displayName: "解析 Source Map 位置",
+    description: "把 JS bundle 中的一基行列位置映射到 Source Map 原始源码位置。",
+    parameters: createSourceMapLocationSchema(),
+  },
+  {
+    id: SOURCEMAP_EXTRACT_ORIGINAL_CONTEXT_TOOL_ID,
+    name: SOURCEMAP_EXTRACT_ORIGINAL_CONTEXT_TOOL_NAME,
+    groupId: MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID,
+    displayName: "提取原始源码上下文",
+    description: "按 JS bundle 的一基行列位置解析 Source Map，并从 sourcesContent 提取有限原始源码片段。",
+    parameters: {
+      type: "object",
+      properties: {
+        ...createSourceMapLocationProperties(),
+        radius: {
+          type: "integer",
+          minimum: 80,
+          maximum: 3000,
+          description: "原始源码上下文半径。",
+        },
+      },
+      required: ["resourceId", "line", "column"],
+      additionalProperties: false,
+    },
+  },
 ];
 
 const TOOL_ID_PATTERN = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/;
@@ -495,7 +560,7 @@ export function getModelToolGroups(tools: ModelToolRegistryEntry[] = getRegister
 }
 
 export function isBrowserAutomationToolId(toolId: string): boolean {
-  return toolId.startsWith("browser.") || toolId.startsWith("network.") || toolId.startsWith("js.");
+  return toolId.startsWith("browser.") || toolId.startsWith("network.") || toolId.startsWith("js.") || toolId.startsWith("sourcemap.");
 }
 
 function createNetworkRequestIdsSchema(): Record<string, unknown> {
@@ -511,6 +576,38 @@ function createNetworkRequestIdsSchema(): Record<string, unknown> {
       },
     },
     required: ["requestIds"],
+    additionalProperties: false,
+  };
+}
+
+function createSourceMapLocationProperties(): Record<string, unknown> {
+  return {
+    resourceId: {
+      type: "string",
+      description: "由 js.list_resources、js.search_sources 或 sourcemap.list_candidates 返回的 JS 资源 ID。",
+    },
+    line: {
+      type: "integer",
+      minimum: 1,
+      description: "JS bundle 中的一基行号。",
+    },
+    column: {
+      type: "integer",
+      minimum: 1,
+      description: "JS bundle 中的一基列号。",
+    },
+    allowSameOriginFetch: {
+      type: "boolean",
+      description: "是否允许本次工具调用读取同源外部 Source Map。",
+    },
+  };
+}
+
+function createSourceMapLocationSchema(): Record<string, unknown> {
+  return {
+    type: "object",
+    properties: createSourceMapLocationProperties(),
+    required: ["resourceId", "line", "column"],
     additionalProperties: false,
   };
 }

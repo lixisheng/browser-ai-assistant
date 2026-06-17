@@ -38,6 +38,10 @@ export function shouldExposeTool(tool: ModelToolRegistryEntry): boolean {
     return browserControlManager.canExposeNetworkTool();
   }
 
+  if (tool.id.startsWith("sourcemap.")) {
+    return browserControlManager.canExposeNetworkTool();
+  }
+
   return true;
 }
 
@@ -65,6 +69,10 @@ export function createBackgroundToolExecutor(message: BackgroundToolExecutorMess
 
     if (tool.id.startsWith("js.")) {
       return browserControlManager.executeJsSourceTool(toolCall);
+    }
+
+    if (tool.id.startsWith("sourcemap.")) {
+      return browserControlManager.executeSourceMapTool(toolCall);
     }
 
     if (tool.name === TAVILY_SEARCH_TOOL_NAME) {

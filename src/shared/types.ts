@@ -242,12 +242,54 @@ export interface ChatJsSourceToolAttachment extends ChatToolAttachmentBase {
   failedFetches: JsSourceFetchFailure[];
 }
 
+export type SourceMapCandidateSource = "response-header" | "x-source-map-header" | "source-mapping-url" | "inline";
+export type SourceMapCandidateStatus = "available" | "fetchable" | "blocked" | "failed";
+
+export interface SourceMapCandidate {
+  resourceId: string;
+  resourceUrl: string;
+  source: SourceMapCandidateSource;
+  url?: string;
+  inline: boolean;
+  status: SourceMapCandidateStatus;
+  parsed: boolean;
+  message?: string;
+}
+
+export interface SourceMapResolvedLocation {
+  resourceId: string;
+  resourceUrl: string;
+  generatedLine: number;
+  generatedColumn: number;
+  source?: string;
+  originalLine?: number;
+  originalColumn?: number;
+  name?: string;
+  ignored: boolean;
+  hasSourceContent: boolean;
+  message?: string;
+}
+
+export interface SourceMapOriginalContext extends SourceMapResolvedLocation {
+  snippet?: string;
+  redacted: boolean;
+  truncated: boolean;
+}
+
+export interface ChatSourceMapToolAttachment extends ChatToolAttachmentBase {
+  kind: "source-map";
+  candidates: SourceMapCandidate[];
+  resolvedLocations: SourceMapResolvedLocation[];
+  originalContexts: SourceMapOriginalContext[];
+  failures: Array<{ resourceId?: string; url?: string; message: string }>;
+}
+
 export interface ChatGenericToolAttachment extends ChatToolAttachmentBase {
   kind: string;
   details?: string;
 }
 
-export type ChatToolAttachment = ChatWebSearchToolAttachment | ChatNetworkToolAttachment | ChatJsSourceToolAttachment | ChatGenericToolAttachment;
+export type ChatToolAttachment = ChatWebSearchToolAttachment | ChatNetworkToolAttachment | ChatJsSourceToolAttachment | ChatSourceMapToolAttachment | ChatGenericToolAttachment;
 
 export interface PromptTemplate {
   id: string;
