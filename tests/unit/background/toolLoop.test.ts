@@ -290,13 +290,13 @@ describe("通用模型工具循环", () => {
       toolTurnMessages: [
         expect.objectContaining({ toolCallRecords: [expect.objectContaining({ id: "call-1" })] }),
         expect.objectContaining({ toolCallRecords: [expect.objectContaining({ id: "call-2" })] }),
-        expect.objectContaining({
-          assistantMessageKind: "tool_call_turn",
-          content: "工具决策完成",
-          toolCallRecords: [],
-        }),
       ],
     });
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error("工具循环应返回成功结果");
+    }
+    expect(result.toolTurnMessages).toHaveLength(2);
     expect(requestModel).toHaveBeenCalledTimes(3);
     expect(requestFinalModel).toHaveBeenCalledWith(
       expect.arrayContaining([
@@ -332,13 +332,13 @@ describe("通用模型工具循环", () => {
       content: "测试总结：工具链路正常。",
       toolTurnMessages: [
         expect.objectContaining({ toolCallRecords: [expect.objectContaining({ id: "call-1" })] }),
-        expect.objectContaining({
-          assistantMessageKind: "tool_call_turn",
-          content: "让我也快速测试 network_compare_requests。",
-          toolCallRecords: [],
-        }),
       ],
     });
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error("工具循环应返回成功结果");
+    }
+    expect(result.toolTurnMessages).toHaveLength(1);
     expect(requestFinalModel).toHaveBeenCalledWith(
       expect.arrayContaining([
         expect.objectContaining({

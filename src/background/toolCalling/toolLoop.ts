@@ -53,17 +53,6 @@ export async function runModelToolLoop(input: RunModelToolLoopInput): Promise<Mo
     }
 
     if (!response.toolCalls?.length) {
-      if (input.requestFinalModel && hasToolTurnContent(response)) {
-        const toolTurnMessage = createToolTurnMessage({
-          id: createToolDecisionMessageId(iteration),
-          initialMessages: input.initialMessages,
-          response,
-          toolCallRecords: [],
-          toolAttachments: [],
-        });
-        toolTurnMessages.push(toolTurnMessage);
-        input.onToolTurnMessage?.(toolTurnMessage);
-      }
       lastResponse = {
         ok: true,
         content: response.content,
@@ -212,14 +201,6 @@ function createToolTurnMessage(input: {
 
 function createToolTurnMessageId(firstToolCallId: string | undefined): string {
   return `message-${Date.now()}-tool-turn-${firstToolCallId ?? "unknown"}`;
-}
-
-function createToolDecisionMessageId(iteration: number): string {
-  return `message-${Date.now()}-tool-turn-decision-${iteration}`;
-}
-
-function hasToolTurnContent(response: Extract<ModelToolLoopResponse, { ok: true }>): boolean {
-  return Boolean(response.content.trim() || response.thinking?.trim() || response.reasoningContent?.trim());
 }
 
 async function executeAllowedTool(

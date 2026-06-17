@@ -1089,6 +1089,15 @@ describe("background 入口", () => {
         }),
       );
       expect(port.postMessage).toHaveBeenCalledWith({ type: "assistant:final-start" });
+      expect(port.postMessage).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "assistant:tool-turn",
+          message: expect.objectContaining({
+            content: "工具决策完成",
+            toolCallRecords: [],
+          }),
+        }),
+      );
       expect(port.postMessage).toHaveBeenCalledWith(
         expect.objectContaining({
           type: "complete",

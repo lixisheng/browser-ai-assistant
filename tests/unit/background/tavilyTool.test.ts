@@ -141,13 +141,13 @@ describe("Tavily 工具调用", () => {
             }),
           ],
         }),
-        expect.objectContaining({
-          assistantMessageKind: "tool_call_turn",
-          content: "已结合搜索结果回答。",
-          toolCallRecords: [],
-        }),
       ],
     });
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error("Tavily 工具调用应返回成功结果");
+    }
+    expect(result.toolTurnMessages).toHaveLength(1);
     expect(result).not.toHaveProperty("toolAttachments");
     expect(fetcher.mock.calls[1][0]).toBe("https://api.tavily.com/search");
     expect(JSON.parse(String(fetcher.mock.calls[1][1]?.body))).toMatchObject({
@@ -268,13 +268,13 @@ describe("Tavily 工具调用", () => {
             }),
           ],
         }),
-        expect.objectContaining({
-          assistantMessageKind: "tool_call_turn",
-          content: "工具决策完成",
-          toolCallRecords: [],
-        }),
       ],
     });
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error("Tavily 流式工具调用应返回成功结果");
+    }
+    expect(result.toolTurnMessages).toHaveLength(1);
     expect(result).not.toHaveProperty("toolAttachments");
     expect(onContentChunk).toHaveBeenNthCalledWith(1, "结合");
     expect(onContentChunk).toHaveBeenNthCalledWith(2, "搜索回答");
@@ -355,13 +355,6 @@ describe("Tavily 工具调用", () => {
       ok: true,
       content: "无需搜索",
       thinking: undefined,
-      toolTurnMessages: [
-        expect.objectContaining({
-          assistantMessageKind: "tool_call_turn",
-          content: "工具决策阶段回答",
-          toolCallRecords: [],
-        }),
-      ],
     });
     expect(fetcher).toHaveBeenCalledTimes(2);
     const toolDecisionBody = JSON.parse(String(fetcher.mock.calls[0][1]?.body)) as { stream: boolean; tool_choice?: string };

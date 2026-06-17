@@ -113,13 +113,13 @@ describe("当前系统时间工具调用", () => {
             }),
           ],
         }),
-        expect.objectContaining({
-          assistantMessageKind: "tool_call_turn",
-          content: "现在是 2026 年 6 月 11 日。",
-          toolCallRecords: [],
-        }),
       ],
     });
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error("当前时间工具调用应返回成功结果");
+    }
+    expect(result.toolTurnMessages).toHaveLength(1);
     expect(result).not.toHaveProperty("toolCallRecords");
     expect(result).not.toHaveProperty("toolAttachments");
     const toolDecisionBody = JSON.parse(String(fetcher.mock.calls[1][1]?.body)) as { messages: Array<{ role: string; content?: string }> };
