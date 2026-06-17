@@ -113,6 +113,11 @@ describe("当前系统时间工具调用", () => {
             }),
           ],
         }),
+        expect.objectContaining({
+          assistantMessageKind: "tool_call_turn",
+          content: "现在是 2026 年 6 月 11 日。",
+          toolCallRecords: [],
+        }),
       ],
     });
     expect(result).not.toHaveProperty("toolCallRecords");

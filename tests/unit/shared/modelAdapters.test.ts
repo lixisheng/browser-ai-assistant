@@ -135,6 +135,14 @@ const toolMessages: ModelRequestMessage[] = [
   },
 ];
 
+const finalToolMessages: ModelRequestMessage[] = [
+  ...toolMessages,
+  {
+    role: "user",
+    content: "tool phase finished",
+  },
+];
+
 describe("模型适配器", () => {
   it("构造 OpenAI-compatible Chat Completions 请求", () => {
     const payload = createOpenAIChatPayload(createModel(), messages, true);
@@ -429,6 +437,21 @@ describe("模型适配器", () => {
     });
   });
 
+  it("OpenAI-compatible 最终工具请求保留收束 user 消息且不携带工具定义", () => {
+    const payload = createOpenAIChatPayload(createModel(), finalToolMessages, false);
+
+    expect(payload.body).toMatchObject({
+      messages: [
+        { role: "user", content: "读取页面" },
+        expect.objectContaining({ role: "assistant", tool_calls: expect.any(Array) }),
+        expect.objectContaining({ role: "tool", tool_call_id: "call-1" }),
+        { role: "user", content: "tool phase finished" },
+      ],
+    });
+    expect(payload.body).not.toHaveProperty("tools");
+    expect(payload.body).not.toHaveProperty("tool_choice");
+  });
+
   it("OpenAI-compatible 渠道只保存基础端点时自动补全 Chat Completions 路径", () => {
     const payload = createOpenAIChatPayload(
       createModel({
@@ -602,6 +625,37 @@ describe("模型适配器", () => {
         },
       ],
     });
+  });
+
+  it("Anthropic 最终工具请求保留收束 user 消息且不携带工具定义", () => {
+    const payload = createAnthropicMessagesPayload(
+      createModel({
+        endpointType: "anthropic_messages",
+        endpointUrl: "https://api.anthropic.com/v1/messages",
+        modelId: "claude-test",
+      }),
+      finalToolMessages,
+      false,
+    );
+
+    expect(payload.body).toMatchObject({
+      messages: [
+        { role: "user", content: "读取页面" },
+        expect.objectContaining({ role: "assistant", content: expect.arrayContaining([expect.objectContaining({ type: "tool_use" })]) }),
+        expect.objectContaining({
+          role: "user",
+          content: [
+            expect.objectContaining({
+              type: "tool_result",
+              tool_use_id: "call-1",
+            }),
+          ],
+        }),
+        { role: "user", content: "tool phase finished" },
+      ],
+    });
+    expect(payload.body).not.toHaveProperty("tools");
+    expect(payload.body).not.toHaveProperty("tool_choice");
   });
 
   it("创建聊天模型配置时允许用聊天偏好覆盖采样参数", () => {

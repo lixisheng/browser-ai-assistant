@@ -21,6 +21,7 @@ import type { IndexedJsSourceSnapshot, JsSourceIndex } from "./jsSourceIndex";
 import { isJavaScriptDetail, isJavaScriptMetaLike, redactJsSourceSnippet } from "./jsSourceIndex";
 import type { NetworkRequestFilter } from "./networkRecorder";
 import { SameOriginSourceMapFetcher } from "./sameOriginSourceMapFetcher";
+import { MAX_SOURCE_MAP_FETCH_BYTES, isTrustedSourceMapMime, normalizeSameOriginSourceMapUrl } from "./sourceMapFetchGuards";
 
 type SourceMapToolName =
   | typeof SOURCEMAP_LIST_CANDIDATES_TOOL_ID
@@ -78,6 +79,7 @@ const SOURCE_MAP_TOOL_NAMES = new Set<string>([
 export class SourceMapToolExecutor {
   private readonly parsedMapsByResourceId = new Map<string, ParsedSourceMap>();
   private readonly fetcher: Pick<SameOriginSourceMapFetcher, "fetch">;
+  private lastListedRequests: NetworkRequestMeta[] = [];
 
   constructor(private readonly options: SourceMapToolExecutorOptions) {
     this.fetcher = options.fetcher ?? new SameOriginSourceMapFetcher();
@@ -85,6 +87,7 @@ export class SourceMapToolExecutor {
 
   clear(): void {
     this.parsedMapsByResourceId.clear();
+    this.lastListedRequests = [];
   }
 
   async execute(toolCall: ModelToolCall): Promise<ModelToolResult> {
@@ -111,7 +114,8 @@ export class SourceMapToolExecutor {
 
   private async refreshNetworkResources(): Promise<void> {
     const listedRequests = this.options.recorder.listRequests({ limit: MAX_CANDIDATES });
-    const metas = Array.isArray(listedRequests) ? listedRequests.filter(isJavaScriptMetaLike) : [];
+    this.lastListedRequests = Array.isArray(listedRequests) ? listedRequests : [];
+    const metas = this.lastListedRequests.filter(isJavaScriptMetaLike);
     if (metas.length === 0) {
       await this.options.recorder.getDetails([]);
       return;
@@ -231,12 +235,48 @@ export class SourceMapToolExecutor {
     const pageUrl = await this.options.getCurrentPageUrl();
     const fetched = await this.fetcher.fetch(candidate.url, pageUrl);
     if (!fetched.ok) {
+      const cached = await this.loadCachedSourceMapCandidate(candidate, pageUrl);
+      if (cached.ok) {
+        return {
+          candidate: {
+            ...candidate,
+            url: cached.url,
+            status: "available",
+            mapUrl: cached.url,
+            message: `主动读取失败：${fetched.message} 已复用 Network 已采集的同源 Source Map 响应。`,
+          },
+          content: cached.content,
+        };
+      }
       return {
         candidate: { ...candidate, status: "failed", message: fetched.message },
         failure: { resourceId: resource.id, url: fetched.url, message: fetched.message },
       };
     }
     return { candidate: { ...candidate, url: fetched.url, status: "available", mapUrl: fetched.url }, content: fetched.content };
+  }
+
+  private async loadCachedSourceMapCandidate(
+    candidate: SourceMapCandidateInternal,
+    pageUrl: string,
+  ): Promise<{ ok: true; url: string; content: string } | { ok: false }> {
+    if (!candidate.url) {
+      return { ok: false };
+    }
+    const candidateUrl = candidate.url;
+    const matchingIds = this.lastListedRequests.filter((meta) => isSameSourceMapUrl(meta.url, candidateUrl, pageUrl)).map((meta) => meta.id);
+    if (matchingIds.length === 0) {
+      return { ok: false };
+    }
+
+    const details = await this.options.recorder.getDetails(matchingIds.slice(0, MAX_RESOURCE_IDS));
+    for (const detail of details) {
+      const content = validateCachedSourceMapDetail(detail, candidateUrl, pageUrl);
+      if (content) {
+        return { ok: true, url: detail.url, content };
+      }
+    }
+    return { ok: false };
   }
 
   private selectResources(resourceIds: string[]): IndexedJsSourceSnapshot[] {
@@ -301,6 +341,38 @@ function createExternalCandidate(resource: IndexedJsSourceSnapshot, source: Sour
       message: "Source Map URL 格式无效。",
     };
   }
+}
+
+function validateCachedSourceMapDetail(detail: NetworkRequestDetail, candidateUrl: string, pageUrl: string): string | undefined {
+  if (!isSameSourceMapUrl(detail.url, candidateUrl, pageUrl)) {
+    return undefined;
+  }
+  if (detail.failed === true || typeof detail.status !== "number" || detail.status < 200 || detail.status >= 300) {
+    return undefined;
+  }
+  if (detail.truncated || typeof detail.responseBody !== "string" || getUtf8ByteLength(detail.responseBody) > MAX_SOURCE_MAP_FETCH_BYTES) {
+    return undefined;
+  }
+  const mimeType = findHeader(detail.responseHeaders, "content-type") ?? detail.mimeType;
+  if (!isTrustedSourceMapMime(mimeType, detail.url)) {
+    return undefined;
+  }
+  try {
+    JSON.parse(detail.responseBody);
+  } catch {
+    return undefined;
+  }
+  return detail.responseBody;
+}
+
+function getUtf8ByteLength(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
+}
+
+function isSameSourceMapUrl(left: string, right: string, pageUrl: string): boolean {
+  const leftResult = normalizeSameOriginSourceMapUrl(left, pageUrl);
+  const rightResult = normalizeSameOriginSourceMapUrl(right, pageUrl);
+  return leftResult.ok && rightResult.ok && leftResult.url === rightResult.url;
 }
 
 function decodeInlineSourceMapCandidate(resource: IndexedJsSourceSnapshot, dataUrl: string, message?: string): SourceMapCandidateInternal {

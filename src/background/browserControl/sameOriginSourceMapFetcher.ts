@@ -1,16 +1,16 @@
 import { truncateText } from "../../shared/utils/text";
+import {
+  MAX_SOURCE_MAP_FETCH_BYTES,
+  isSameOrigin,
+  isTrustedSourceMapMime,
+  normalizeSameOriginSourceMapUrl,
+} from "./sourceMapFetchGuards";
 
 export type SameOriginSourceMapFetchResult =
   | { ok: true; url: string; content: string; mimeType?: string; fetchedAt: number }
   | { ok: false; url: string; message: string };
 
-const MAX_SOURCE_MAP_FETCH_BYTES = 1_000_000;
 const DEFAULT_TIMEOUT_MS = 8000;
-const TRUSTED_SOURCE_MAP_MIME_TYPES = new Set([
-  "application/json",
-  "application/source-map",
-]);
-const TEXT_MIME_TYPES = new Set(["text/plain", "text/json"]);
 
 export class SameOriginSourceMapFetcher {
   constructor(private readonly fetcher: typeof fetch = fetch) {}
@@ -36,7 +36,7 @@ export class SameOriginSourceMapFetcher {
         return { ok: false, url: urlResult.url, message: "Source Map 读取拒绝跨域重定向。" };
       }
       if (!response.ok) {
-        return { ok: false, url: urlResult.url, message: "Source Map 读取失败。" };
+        return { ok: false, url: urlResult.url, message: `Source Map 读取失败，HTTP 状态码 ${response.status}。` };
       }
       const mimeType = response.headers.get("content-type") ?? undefined;
       if (!isTrustedSourceMapMime(mimeType, urlResult.url)) {
@@ -46,14 +46,14 @@ export class SameOriginSourceMapFetcher {
         return { ok: false, url: urlResult.url, message: "Source Map 响应超过大小上限。" };
       }
 
-      const content = await readTextWithLimit(response, MAX_SOURCE_MAP_FETCH_BYTES);
+      const content = await readResponseText(response, MAX_SOURCE_MAP_FETCH_BYTES);
       if (content.truncated) {
         return { ok: false, url: urlResult.url, message: "Source Map 响应超过大小上限。" };
       }
 
       return { ok: true, url: finalUrl, content: content.text, mimeType, fetchedAt: Date.now() };
-    } catch {
-      return { ok: false, url: urlResult.url, message: "Source Map 读取失败。" };
+    } catch (error) {
+      return { ok: false, url: urlResult.url, message: normalizeFetchFailureMessage(error) };
     } finally {
       if (timer) {
         clearTimeout(timer);
@@ -62,53 +62,44 @@ export class SameOriginSourceMapFetcher {
   }
 }
 
-function normalizeSameOriginSourceMapUrl(url: string, pageUrl: string): { ok: true; url: string } | { ok: false; message: string } {
-  let parsed: URL;
+async function readResponseText(response: Response, maxBytes: number): Promise<{ text: string; truncated: boolean }> {
   try {
-    parsed = new URL(url, pageUrl);
-  } catch {
-    return { ok: false, message: "Source Map URL 格式无效。" };
-  }
-
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    return { ok: false, message: "Source Map 只允许 http 或 https URL。" };
-  }
-
-  if (!isSameOrigin(parsed.toString(), pageUrl)) {
-    return { ok: false, message: "Source Map 只允许读取当前页面同源资源。" };
-  }
-
-  return { ok: true, url: parsed.toString() };
-}
-
-function isSameOrigin(left: string, right: string): boolean {
-  try {
-    const leftUrl = new URL(left);
-    const rightUrl = new URL(right);
-    return leftUrl.protocol === rightUrl.protocol && leftUrl.hostname === rightUrl.hostname && leftUrl.port === rightUrl.port;
-  } catch {
-    return false;
+    return await readTextWithLimit(response, maxBytes);
+  } catch (error) {
+    if (isAbortError(error)) {
+      throw error;
+    }
+    throw new SourceMapBodyReadError();
   }
 }
 
-function isTrustedSourceMapMime(mimeType: string | undefined, url: string): boolean {
-  const normalized = mimeType?.split(";", 1)[0]?.trim().toLowerCase() ?? "";
-  if (TRUSTED_SOURCE_MAP_MIME_TYPES.has(normalized)) {
-    return true;
+class SourceMapBodyReadError extends Error {
+  constructor() {
+    super("Source Map response body read failed");
+    this.name = "SourceMapBodyReadError";
   }
-  // 只把明确 .map 路径上的文本响应视为可信，避免把任意二进制或脚本文本误当成 Source Map。
-  if (TEXT_MIME_TYPES.has(normalized) || !normalized) {
-    return /\.map$/i.test(getUrlPathname(url));
-  }
-  return false;
 }
 
-function getUrlPathname(url: string): string {
-  try {
-    return new URL(url).pathname;
-  } catch {
-    return url.split(/[?#]/, 1)[0] ?? "";
+function normalizeFetchFailureMessage(error: unknown): string {
+  if (isAbortError(error)) {
+    return "Source Map 读取超时。";
   }
+  const name = getErrorName(error);
+  if (name === "SourceMapBodyReadError") {
+    return "Source Map 响应体读取失败。";
+  }
+  if (error instanceof TypeError) {
+    return "Source Map 请求被浏览器拒绝。";
+  }
+  return "Source Map 读取失败。";
+}
+
+function isAbortError(error: unknown): boolean {
+  return getErrorName(error) === "AbortError";
+}
+
+function getErrorName(error: unknown): string {
+  return typeof error === "object" && error !== null && "name" in error ? String((error as { name?: unknown }).name) : "";
 }
 
 function isRedirectResponse(response: Response): boolean {
@@ -127,7 +118,7 @@ async function readTextWithLimit(response: Response, maxBytes: number): Promise<
   const body = response.body;
   if (!body?.getReader) {
     const text = await response.text();
-    return { text: truncateText(text, maxBytes).text, truncated: text.length > maxBytes };
+    return { text: truncateText(text, maxBytes).text, truncated: getUtf8ByteLength(text) > maxBytes };
   }
 
   const reader = body.getReader();
@@ -153,4 +144,8 @@ async function readTextWithLimit(response: Response, maxBytes: number): Promise<
   } finally {
     reader.releaseLock();
   }
+}
+
+function getUtf8ByteLength(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
 }

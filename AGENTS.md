@@ -152,6 +152,8 @@
 * 流式连接必须以最终 `complete` 事件作为成功收尾信号；端口在 `complete` 前断开时，不论是否已收到工具进度或正文增量，都必须将占位 AI 消息收尾为非 streaming 的固定中文失败提示，不得回退为非流式请求或留下永久占位。
 * AI 请求重试进度需要通过 background 端口事件传递到侧边栏，仅作为当前 AI 占位消息的临时 UI 状态展示；`正在重试 m/n` 不得写入 `ChatMessage` 持久化字段、同步快照或导出内容，且在收到正文增量、完成、失败、取消或断开时必须立即清除。
 * 工具调用链路中，工具决策请求可以强制非流式以稳定收集 `tool_calls`；但工具完成后的最终回答请求必须继承用户当前流式偏好，且不得携带 `tools/tool_choice`。浏览器自动化工具只允许影响最大工具轮次和工具暴露条件，不能让最终总结请求退回非流式。
+* 工具决策阶段产生的自然语言正文属于过程消息，只能作为 `assistantMessageKind: "tool_call_turn"` 展示或回传；最终普通 assistant 消息必须只使用最终回答请求的结果。
+* 工具链路进入最终回答请求时，必须明确告诉模型工具调用阶段已经结束、不会再执行工具，并要求直接给出用户可见中文总结；上一轮工具决策阶段自然语言正文只能作为过程参考，不得把“我将继续调用/测试/等待工具”这类工具决策阶段过渡话术当作最终回复交付。
 * OpenAI-compatible 工具决策响应除标准 `message.tool_calls` 外，还必须兼容模型把工具调用写进正文里的 DSML `<｜tool_calls｜><｜invoke name="..."｜>...` 块；解析后必须转成 `ModelToolCall` 并从 assistant 正文移除，禁止把协议文本展示给用户或写入后续上下文。疑似 DSML 工具调用但格式不完整时，也必须转成带 `parseError` 的错误工具结果回灌给模型，由模型决定继续调用工具或输出最终总结，而不是在本地直接中断工具循环或固定总结。
 * DSML 工具调用解析必须同时兼容 `<｜tool_calls｜>`、`<|tool_calls|>` 和 `< | | DSML | | tool_calls>` 这类命名空间格式；带 `< | | DSML | | parameter name="..." string="...">` 的参数块必须在 background 转成结构化工具参数，不能只依赖 Side Panel 展示层剥离。当前命名空间兼容范围固定为 `DSML` 前后各两个半角或全角竖线，不为未知三竖线等变体静默扩宽协议。
 * 流式响应增量写入 UI 前也必须同时过滤正文和 `reasoning_content`/思考过程里的 DSML 工具块，不能只依赖最终 `complete` 消息覆盖；过滤器必须保持普通文本、`<think>` 块和正常 reasoning 增量的原有分段回调行为，避免为隐藏协议文本牺牲正常流式体验。
@@ -274,6 +276,9 @@
 * Source Map 工具必须复用 `JsSourceIndex` 中已索引的 JS 资源内容、响应头和生命周期，不得维护第三份 JS 源码缓存；执行 `network.clear_requests`、关闭浏览器控制、导航、刷新、历史前进后退、切换受控标签页时，必须同步清理 Source Map 缓存。
 * Source Map 候选发现必须按优先级处理响应头 `SourceMap`、兼容头 `X-SourceMap`、源码尾部 `sourceMappingURL` 和 inline data URL；输入行列对外使用一基行列，调用 `@jridgewell/trace-mapping` 时必须转换为行一基、列零基。
 * 外部 Source Map 只允许读取当前受控页面同源的 `http`/`https` map 或 JSON 文本资源；fetch 必须使用 `credentials: "omit"` 和 `redirect: "manual"`，跨域、跨协议、跨端口、跨域重定向、非法 MIME、超时和超大小响应必须返回固定中文失败。
+* 外部 Source Map 读取失败必须优先区分浏览器拒绝请求、超时、HTTP 状态码失败、响应体读取失败以及 JSON/mappings 解析失败；相关改动必须覆盖压缩响应读取和 Network 已采集同源 `.map` 回退测试。
+* 外部 Source Map 的同源 URL 归一化、同源判断、MIME 白名单和大小上限必须集中复用 `sourceMapFetchGuards`，不要在 fetcher、executor 或 UI 层各自维护分叉规则。
+* Source Map 复用 Network 已采集 `.map` 详情作为回退时，必须同时校验 `status` 为 2xx、`failed !== true`、未截断、同源、MIME 合法、UTF-8 字节数未超限且 JSON 可解析；回退成功也要在候选摘要中保留主动读取失败原因和已复用 Network 响应的说明，便于诊断。
 * inline Source Map data URL 只接受 JSON、source-map 或可信文本 JSON，解码前后都必须限制大小；非法编码、非法 JSON 或非法 mappings 必须 fail closed，并返回固定中文摘要。
 * Source Map 工具只允许从 `sourcesContent` 提取有限原始源码片段；不得主动拉取 `sources` 指向的原始源码文件，不得保存完整 Source Map 或完整 `sourcesContent` 到 `toolAttachments`、历史、同步快照、导出或后续追问上下文。
 * `source-map` 工具附件必须通过通用 `toolAttachments` 保存、展示、导出和后续上下文注入；历史归一化和聚合必须保留候选来源、映射位置、原始片段、失败摘要、`redacted` 与 `truncated` 标记。

@@ -45,6 +45,11 @@ export interface ModelSystemMessage {
   content: string;
 }
 
+export interface ModelUserMessage {
+  role: "user";
+  content: string;
+}
+
 export interface ModelAssistantToolMessage {
   role: "assistant";
   content: string;
@@ -56,7 +61,7 @@ export interface ModelToolResultMessage extends ModelToolResult {
   role: "tool";
 }
 
-export type ModelRequestMessage = ChatMessage | ModelSystemMessage | ModelAssistantToolMessage | ModelToolResultMessage;
+export type ModelRequestMessage = ChatMessage | ModelSystemMessage | ModelUserMessage | ModelAssistantToolMessage | ModelToolResultMessage;
 
 export interface ModelToolExecutionContext {
   signal?: AbortSignal;

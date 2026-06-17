@@ -36,12 +36,18 @@ function createSimpleSourceMap(sourceContent = "const token = 'secret-token';\ne
   });
 }
 
-function createExecutor(detail: NetworkRequestDetail, fetchResult?: SameOriginSourceMapFetchResult) {
+function createExecutor(
+  detail: NetworkRequestDetail,
+  fetchResult?: SameOriginSourceMapFetchResult,
+  extraDetails: NetworkRequestDetail[] = [],
+  pageUrl = "https://example.com/page",
+) {
   const index = new JsSourceIndex();
+  const details = [detail, ...extraDetails];
   const recorder = {
     isEnabled: true,
-    listRequests: vi.fn(() => [detail]),
-    getDetails: vi.fn(async () => [detail]),
+    listRequests: vi.fn(() => details),
+    getDetails: vi.fn(async (requestIds: string[]) => requestIds.length === 0 ? details : details.filter((item) => requestIds.includes(item.id))),
   };
   const fetch = vi.fn(async () => fetchResult ?? {
     ok: true as const,
@@ -53,7 +59,7 @@ function createExecutor(detail: NetworkRequestDetail, fetchResult?: SameOriginSo
   const executor = new SourceMapToolExecutor({
     recorder,
     jsSourceIndex: index,
-    getCurrentPageUrl: vi.fn(async () => "https://example.com/page"),
+    getCurrentPageUrl: vi.fn(async () => pageUrl),
     fetcher: { fetch },
   });
   return { executor, recorder, fetch };
@@ -176,6 +182,155 @@ describe("Source Map 工具执行器", () => {
     expect(result.content).toContain("Source Map 不包含 sourcesContent");
     expect(result.toolAttachments?.[0]).toMatchObject({
       originalContexts: [expect.objectContaining({ hasSourceContent: false })],
+    });
+  });
+
+  it("外部读取失败时复用已采集的同源 Source Map 响应体", async () => {
+    const mapDetail = createJsDetail({
+      id: "map-1",
+      url: "https://example.com/assets/app.js.map",
+      mimeType: "application/json",
+      resourceType: "Other",
+      responseBody: createSimpleSourceMap("export const fallbackOk = true;\n"),
+      responseHeaders: [{ name: "Content-Type", value: "application/json" }],
+    });
+    const { executor, recorder, fetch } = createExecutor(createJsDetail(), {
+      ok: false,
+      url: "https://example.com/assets/app.js.map",
+      message: "Source Map 请求被浏览器拒绝。",
+    }, [mapDetail]);
+
+    const result = await executor.execute(createToolCall("sourcemap_resolve_location", {
+      resourceId: "script-1",
+      line: 1,
+      column: 1,
+      allowSameOriginFetch: true,
+    }));
+
+    expect(fetch).toHaveBeenCalled();
+    expect(recorder.listRequests).toHaveBeenCalledTimes(1);
+    expect(result.toolAttachments?.[0]).toMatchObject({
+      kind: "source-map",
+      candidates: [expect.objectContaining({
+        status: "available",
+        parsed: true,
+        message: expect.stringContaining("已复用 Network 已采集的同源 Source Map 响应"),
+      })],
+      resolvedLocations: [expect.objectContaining({ source: expect.stringContaining("src/app.ts") })],
+      failures: [],
+    });
+  });
+
+  it("Source Map 回退详情仍拒绝非法状态、失败请求、非法 MIME、截断、超大和无效 JSON", async () => {
+    const invalidDetails: NetworkRequestDetail[] = [
+      createJsDetail({
+        id: "map-404",
+        url: "https://example.com/assets/app.js.map",
+        status: 404,
+        mimeType: "application/json",
+        resourceType: "Other",
+        responseBody: createSimpleSourceMap(),
+        responseHeaders: [{ name: "Content-Type", value: "application/json" }],
+      }),
+      createJsDetail({
+        id: "map-500",
+        url: "https://example.com/assets/app.js.map",
+        status: 500,
+        mimeType: "application/json",
+        resourceType: "Other",
+        responseBody: createSimpleSourceMap(),
+        responseHeaders: [{ name: "Content-Type", value: "application/json" }],
+      }),
+      createJsDetail({
+        id: "map-failed",
+        url: "https://example.com/assets/app.js.map",
+        failed: true,
+        mimeType: "application/json",
+        resourceType: "Other",
+        responseBody: createSimpleSourceMap(),
+        responseHeaders: [{ name: "Content-Type", value: "application/json" }],
+      }),
+      createJsDetail({
+        id: "map-invalid-mime",
+        url: "https://example.com/assets/app.js.map",
+        mimeType: "image/png",
+        resourceType: "Other",
+        responseBody: createSimpleSourceMap(),
+        responseHeaders: [{ name: "Content-Type", value: "image/png" }],
+      }),
+      createJsDetail({
+        id: "map-truncated",
+        url: "https://example.com/assets/app.js.map",
+        mimeType: "application/json",
+        resourceType: "Other",
+        responseBody: createSimpleSourceMap(),
+        responseHeaders: [{ name: "Content-Type", value: "application/json" }],
+        truncated: true,
+      }),
+      createJsDetail({
+        id: "map-too-large",
+        url: "https://example.com/assets/app.js.map",
+        mimeType: "application/json",
+        resourceType: "Other",
+        responseBody: "x".repeat(1_000_001),
+        responseHeaders: [{ name: "Content-Type", value: "application/json" }],
+      }),
+      createJsDetail({
+        id: "map-invalid-json",
+        url: "https://example.com/assets/app.js.map",
+        mimeType: "application/json",
+        resourceType: "Other",
+        responseBody: "{",
+        responseHeaders: [{ name: "Content-Type", value: "application/json" }],
+      }),
+    ];
+    const { executor } = createExecutor(createJsDetail(), {
+      ok: false,
+      url: "https://example.com/assets/app.js.map",
+      message: "Source Map 请求被浏览器拒绝。",
+    }, invalidDetails);
+
+    const result = await executor.execute(createToolCall("sourcemap_resolve_location", {
+      resourceId: "script-1",
+      line: 1,
+      column: 1,
+      allowSameOriginFetch: true,
+    }));
+
+    expect(result.content).toContain("Source Map 请求被浏览器拒绝。");
+    expect(result.toolAttachments?.[0]).toMatchObject({
+      kind: "source-map",
+      candidates: [expect.objectContaining({ status: "failed" })],
+      resolvedLocations: [expect.objectContaining({ message: "Source Map 请求被浏览器拒绝。" })],
+    });
+  });
+
+  it("Source Map 回退详情仍拒绝与当前页面不同源的同 URL 缓存", async () => {
+    const mapDetail = createJsDetail({
+      id: "map-cross-origin-page",
+      url: "https://example.com/assets/app.js.map",
+      mimeType: "application/json",
+      resourceType: "Other",
+      responseBody: createSimpleSourceMap(),
+      responseHeaders: [{ name: "Content-Type", value: "application/json" }],
+    });
+    const { executor } = createExecutor(createJsDetail(), {
+      ok: false,
+      url: "https://example.com/assets/app.js.map",
+      message: "Source Map 请求被浏览器拒绝。",
+    }, [mapDetail], "https://other.example/page");
+
+    const result = await executor.execute(createToolCall("sourcemap_resolve_location", {
+      resourceId: "script-1",
+      line: 1,
+      column: 1,
+      allowSameOriginFetch: true,
+    }));
+
+    expect(result.toolAttachments?.[0]).toMatchObject({
+      kind: "source-map",
+      candidates: [expect.objectContaining({ status: "failed" })],
+      resolvedLocations: [expect.objectContaining({ message: "Source Map 请求被浏览器拒绝。" })],
     });
   });
 

@@ -2716,7 +2716,18 @@ describe("appStore", () => {
     portMessageListener?.({ type: "complete", content: "最终回答" });
     await sendPromise;
 
-    expect(useAppStore.getState().chatSessions[0]?.messages.map((message) => message.content)).toEqual(["需要搜索", "需要先调用工具", "最终回答"]);
+    const messages = useAppStore.getState().chatSessions[0]?.messages ?? [];
+    expect(messages.map((message) => message.content)).toEqual(["需要搜索", "需要先调用工具", "最终回答"]);
+    expect(messages[1]).toMatchObject({
+      role: "assistant",
+      assistantMessageKind: "tool_call_turn",
+      content: "需要先调用工具",
+    });
+    expect(messages[2]).toMatchObject({
+      role: "assistant",
+      content: "最终回答",
+    });
+    expect(messages[2]?.assistantMessageKind).toBeUndefined();
   });
 
   it("后台会话流式失败不会污染当前会话错误提示", async () => {

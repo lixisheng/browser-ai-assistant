@@ -290,6 +290,11 @@ describe("通用模型工具循环", () => {
       toolTurnMessages: [
         expect.objectContaining({ toolCallRecords: [expect.objectContaining({ id: "call-1" })] }),
         expect.objectContaining({ toolCallRecords: [expect.objectContaining({ id: "call-2" })] }),
+        expect.objectContaining({
+          assistantMessageKind: "tool_call_turn",
+          content: "工具决策完成",
+          toolCallRecords: [],
+        }),
       ],
     });
     expect(requestModel).toHaveBeenCalledTimes(3);
@@ -299,6 +304,58 @@ describe("通用模型工具循环", () => {
         expect.objectContaining({ role: "tool", toolCallId: "call-2", content: "工具结果：call-2" }),
       ]),
     );
+  });
+
+  it("最终模型请求会明确要求停止工具阶段并直接总结", async () => {
+    const requestModel = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, content: "", toolCalls: [{ id: "call-1", name: tool.name, arguments: { mode: "text" } }] })
+      .mockResolvedValueOnce({ ok: true, content: "让我也快速测试 network_compare_requests。" });
+    const requestFinalModel = vi.fn().mockResolvedValue({ ok: true, content: "测试总结：工具链路正常。" });
+    const executeTool: ModelToolExecutor = vi.fn(async (call) => ({
+      toolCallId: call.id,
+      name: call.name,
+      content: "network_extract_js_candidates 返回 50 个结果",
+    }));
+
+    const result = await runModelToolLoop({
+      initialMessages: baseMessages,
+      tools: [tool],
+      enabledToolIds: [tool.id],
+      requestModel,
+      requestFinalModel,
+      executeTool,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      content: "测试总结：工具链路正常。",
+      toolTurnMessages: [
+        expect.objectContaining({ toolCallRecords: [expect.objectContaining({ id: "call-1" })] }),
+        expect.objectContaining({
+          assistantMessageKind: "tool_call_turn",
+          content: "让我也快速测试 network_compare_requests。",
+          toolCallRecords: [],
+        }),
+      ],
+    });
+    expect(requestFinalModel).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "user",
+          content: expect.stringContaining("工具调用阶段已经结束"),
+        }),
+      ]),
+    );
+    const finalMessages = requestFinalModel.mock.calls[0]?.[0] ?? [];
+    expect(finalMessages.at(-1)).toMatchObject({
+      role: "user",
+      content: expect.stringContaining("不要再声称将继续调用、测试或等待工具"),
+    });
+    expect(finalMessages.at(-1)).toMatchObject({
+      role: "user",
+      content: expect.stringContaining("上一轮工具决策阶段的自然语言正文只作为过程参考"),
+    });
   });
 
   it("工具未启用时不执行并把错误记录和中文错误回灌给模型", async () => {

@@ -3,6 +3,12 @@ import type { ModelRequestMessage, ModelResponseData, ModelToolCall, ModelToolEx
 import { truncateText } from "../../shared/utils/text";
 
 const DEFAULT_MAX_TOOL_ITERATIONS = 8;
+const FINAL_RESPONSE_INSTRUCTION = [
+  "工具调用阶段已经结束，当前请求不会再执行任何工具。",
+  "请只基于上文用户问题和已经返回的工具结果，直接给出面向用户的最终中文答复。",
+  "上一轮工具决策阶段的自然语言正文只作为过程参考，不要把其中的待办话术当作还会继续执行的计划。",
+  "不要再声称将继续调用、测试或等待工具；如果信息不足，请明确说明已完成的部分和无法继续验证的原因。",
+].join("\n");
 
 export interface RunModelToolLoopInput {
   initialMessages: ModelRequestMessage[];
@@ -47,6 +53,17 @@ export async function runModelToolLoop(input: RunModelToolLoopInput): Promise<Mo
     }
 
     if (!response.toolCalls?.length) {
+      if (input.requestFinalModel && hasToolTurnContent(response)) {
+        const toolTurnMessage = createToolTurnMessage({
+          id: createToolDecisionMessageId(iteration),
+          initialMessages: input.initialMessages,
+          response,
+          toolCallRecords: [],
+          toolAttachments: [],
+        });
+        toolTurnMessages.push(toolTurnMessage);
+        input.onToolTurnMessage?.(toolTurnMessage);
+      }
       lastResponse = {
         ok: true,
         content: response.content,
@@ -106,12 +123,12 @@ export async function runModelToolLoop(input: RunModelToolLoopInput): Promise<Mo
       appendUniqueToolAttachments(currentTurnAttachments, toolResultMessage.toolAttachments ?? []);
     }
     const toolTurnMessage = createToolTurnMessage({
-        id: toolTurnMessageId,
-        initialMessages: input.initialMessages,
-        response,
-        toolCallRecords: currentTurnRecords,
-        toolAttachments: currentTurnAttachments,
-      });
+      id: toolTurnMessageId,
+      initialMessages: input.initialMessages,
+      response,
+      toolCallRecords: currentTurnRecords,
+      toolAttachments: currentTurnAttachments,
+    });
     toolTurnMessages.push(toolTurnMessage);
 
     messages = [
@@ -130,7 +147,7 @@ export async function runModelToolLoop(input: RunModelToolLoopInput): Promise<Mo
     if (input.signal?.aborted) {
       return createAbortResponse();
     }
-    const finalResponse = await input.requestFinalModel(messages);
+    const finalResponse = await input.requestFinalModel(createFinalRequestMessages(messages));
     if (input.signal?.aborted) {
       return createAbortResponse();
     }
@@ -148,6 +165,16 @@ export async function runModelToolLoop(input: RunModelToolLoopInput): Promise<Mo
   }
 
   return lastResponse ?? { ok: false, message: "工具调用超过最大轮次，已停止本次请求。" };
+}
+
+function createFinalRequestMessages(messages: ModelRequestMessage[]): ModelRequestMessage[] {
+  return [
+    ...messages,
+    {
+      role: "user",
+      content: FINAL_RESPONSE_INSTRUCTION,
+    },
+  ];
 }
 
 function createAbortResponse(): ModelToolLoopResponse {
@@ -185,6 +212,14 @@ function createToolTurnMessage(input: {
 
 function createToolTurnMessageId(firstToolCallId: string | undefined): string {
   return `message-${Date.now()}-tool-turn-${firstToolCallId ?? "unknown"}`;
+}
+
+function createToolDecisionMessageId(iteration: number): string {
+  return `message-${Date.now()}-tool-turn-decision-${iteration}`;
+}
+
+function hasToolTurnContent(response: Extract<ModelToolLoopResponse, { ok: true }>): boolean {
+  return Boolean(response.content.trim() || response.thinking?.trim() || response.reasoningContent?.trim());
 }
 
 async function executeAllowedTool(

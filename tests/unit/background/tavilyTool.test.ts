@@ -141,6 +141,11 @@ describe("Tavily 工具调用", () => {
             }),
           ],
         }),
+        expect.objectContaining({
+          assistantMessageKind: "tool_call_turn",
+          content: "已结合搜索结果回答。",
+          toolCallRecords: [],
+        }),
       ],
     });
     expect(result).not.toHaveProperty("toolAttachments");
@@ -263,6 +268,11 @@ describe("Tavily 工具调用", () => {
             }),
           ],
         }),
+        expect.objectContaining({
+          assistantMessageKind: "tool_call_turn",
+          content: "工具决策完成",
+          toolCallRecords: [],
+        }),
       ],
     });
     expect(result).not.toHaveProperty("toolAttachments");
@@ -345,6 +355,13 @@ describe("Tavily 工具调用", () => {
       ok: true,
       content: "无需搜索",
       thinking: undefined,
+      toolTurnMessages: [
+        expect.objectContaining({
+          assistantMessageKind: "tool_call_turn",
+          content: "工具决策阶段回答",
+          toolCallRecords: [],
+        }),
+      ],
     });
     expect(fetcher).toHaveBeenCalledTimes(2);
     const toolDecisionBody = JSON.parse(String(fetcher.mock.calls[0][1]?.body)) as { stream: boolean; tool_choice?: string };
