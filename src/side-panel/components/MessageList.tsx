@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { formatNetworkAttachmentSummary, redactNetworkRequestDetail } from "../../shared/networkContext";
@@ -18,6 +18,8 @@ import type { ChatImageAttachment, ChatMessage, ChatPromptInvocation, ChatToolAt
 import { MarkdownCodeBlock, MarkdownCodePre } from "./MarkdownCodeBlock";
 import { PromptInlineEditor, PromptTokenContent } from "./PromptInlineEditor";
 import type { ChatRetryProgress } from "../state/appStore";
+
+const MESSAGE_LIST_BOTTOM_THRESHOLD = 8;
 
 interface MessageListProps {
   messages: ChatMessage[];
@@ -45,12 +47,33 @@ export function MessageList({
   const [editingPromptInvocations, setEditingPromptInvocations] = useState<ChatPromptInvocation[]>([]);
   const [messageActionFeedback, setMessageActionFeedback] = useState<{ messageId: string; text: string; tone: "success" | "error" } | undefined>();
   const [activeToolCallId, setActiveToolCallId] = useState<string | undefined>();
+  const messageListRef = useRef<HTMLElement>(null);
+  // 初次进入会话时默认贴底；一旦用户主动上滚，滚动事件会把它改为 false，避免后续更新抢回底部。
+  const shouldStickToBottomRef = useRef(true);
   const regeneratePopoverRef = useRef<HTMLDivElement>(null);
   const toolCallPopoverRef = useRef<HTMLDivElement>(null);
   const displayAttachmentGroups = useMemo(
     () => createDisplayAttachmentGroups(messages, toolCallDisplayMode),
     [messages, toolCallDisplayMode],
   );
+
+  const handleMessageListScroll = () => {
+    const messageList = messageListRef.current;
+    if (!messageList) {
+      return;
+    }
+
+    shouldStickToBottomRef.current = isMessageListAtBottom(messageList);
+  };
+
+  useLayoutEffect(() => {
+    const messageList = messageListRef.current;
+    if (!messageList || !shouldStickToBottomRef.current) {
+      return;
+    }
+
+    messageList.scrollTop = messageList.scrollHeight;
+  }, [displayAttachmentGroups, messages, retryProgressByMessageId, showToolCallProcessInAssistantMode, toolCallDisplayMode]);
 
   useEffect(() => {
     if (!pendingRegenerateMessageId) {
@@ -122,14 +145,14 @@ export function MessageList({
 
   if (messages.length === 0) {
     return (
-      <section aria-label="消息列表" className="message-list">
+      <section aria-label="消息列表" className="message-list" ref={messageListRef} onScroll={handleMessageListScroll}>
         <p className="ui-muted text-sm">暂无消息</p>
       </section>
     );
   }
 
   return (
-    <section aria-label="消息列表" className="message-list">
+    <section aria-label="消息列表" className="message-list" ref={messageListRef} onScroll={handleMessageListScroll}>
       {messages.map((message) => {
         const isToolCallTurn = message.role === "assistant" && message.assistantMessageKind === "tool_call_turn";
         const shouldShowToolCallTimeline = shouldShowToolCallTimelineForMessage(message, toolCallDisplayMode, showToolCallProcessInAssistantMode);
@@ -358,6 +381,10 @@ export function MessageList({
       ) : null}
     </section>
   );
+}
+
+function isMessageListAtBottom(messageList: HTMLElement): boolean {
+  return messageList.scrollHeight - messageList.scrollTop - messageList.clientHeight <= MESSAGE_LIST_BOTTOM_THRESHOLD;
 }
 
 function MessageRetryProgress({ progress }: { progress: ChatRetryProgress }) {
