@@ -63,7 +63,7 @@ export class RuntimeReadToolExecutor {
     if (isUnsupportedReservedAuthorization(authorization)) {
       return createRuntimeReadErrorResult(toolCall, RUNTIME_FULL_ACCESS_RESERVED_MESSAGE);
     }
-    if (authorization.mode !== "runtime_readonly") {
+    if (authorization.mode !== "runtime_readonly" && authorization.mode !== "controlled_enhanced") {
       return createRuntimeReadErrorResult(toolCall, RUNTIME_READ_DISABLED_MESSAGE);
     }
 

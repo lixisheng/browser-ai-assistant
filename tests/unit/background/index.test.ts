@@ -255,7 +255,7 @@ describe("background 入口", () => {
 
     expect(keepChannel).toBe(true);
     await vi.waitFor(() => {
-      expect(sendResponse).toHaveBeenCalledWith(expect.objectContaining({ ok: true, attached: true, tabId: 7, message: "运行时只读分析已临时开启。" }));
+      expect(sendResponse).toHaveBeenCalledWith(expect.objectContaining({ ok: true, attached: true, tabId: 7, message: "已切换到普通模式（受限）。" }));
     });
   });
 

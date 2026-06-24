@@ -374,6 +374,133 @@ describe("App", () => {
     expect(result.css).toContain(".composer-abort-button");
   });
 
+  it("边界确认弹窗使用实体背景并在选择选项后允许提交", async () => {
+    const user = userEvent.setup();
+    const sendMessage = vi.fn((_message: unknown, callback: (response: unknown) => void) => {
+      callback({ ok: true, attached: true, message: "已提交边界确认。" });
+      return undefined;
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage,
+        onMessage: {
+          addListener: vi.fn(),
+          removeListener: vi.fn(),
+        },
+      },
+    });
+    const styles = readFileSync(resolve(process.cwd(), "src/side-panel/styles.css"), "utf8");
+    const dialogStyle = styles.match(/\.boundary-choice-dialog\s*{[^}]+}/)?.[0] ?? "";
+    const activeChoiceStyle = styles.match(/\.boundary-choice-item-active\s*{[^}]+}/)?.[0] ?? "";
+    useAppStore.setState({
+      browserControlEnabled: true,
+      browserAutomationMode: "controlled_enhanced",
+      pendingBoundaryChoice: {
+        type: "browserControl.boundaryChoiceRequest",
+        requestId: "boundary-1",
+        question: "是否允许本轮发送一个无凭据请求？",
+        reason: "需要验证脱敏重放草案的响应结构。",
+        choices: [
+          {
+            id: "send_once",
+            title: "发送一次无凭据重放",
+            description: "只允许发送当前草案一次。",
+            risk: "medium",
+            grants: ["send_single_confirmed_replay_request_without_credentials"],
+          },
+          {
+            id: "summary_only",
+            title: "只保留脱敏草案",
+            description: "不发送网络请求，只继续分析草案。",
+            risk: "low",
+            grants: [],
+          },
+        ],
+        allowMultiple: false,
+        expiresAt: Date.now() + 60_000,
+      },
+    });
+
+    render(<App />);
+
+    const submitButton = screen.getByRole("button", { name: "提交选择" });
+    expect(dialogStyle).toContain("background: color-mix");
+    expect(dialogStyle).not.toContain("var(--color-surface)");
+    expect(activeChoiceStyle).not.toContain("var(--color-surface)");
+    expect(submitButton).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: /发送一次无凭据重放/ }));
+
+    expect(screen.getAllByText("授权：1 项").length).toBeGreaterThan(0);
+    expect(screen.queryByText("send_single_confirmed_replay_request_without_credentials")).not.toBeInTheDocument();
+    expect(submitButton).toBeEnabled();
+    await user.click(submitButton);
+
+    await waitFor(() => expect(useAppStore.getState().pendingBoundaryChoice).toBeUndefined());
+    expect(sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "browserControl.boundaryChoiceRespond",
+        requestId: "boundary-1",
+        selectedChoiceIds: ["send_once"],
+      }),
+      expect.any(Function),
+    );
+  });
+
+  it("边界确认提交后会立即禁用按钮避免重复提交", async () => {
+    const user = userEvent.setup();
+    const sendMessage = vi.fn((_message: unknown, _callback?: (response: unknown) => void) => undefined);
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage,
+        onMessage: {
+          addListener: vi.fn(),
+          removeListener: vi.fn(),
+        },
+      },
+    });
+    useAppStore.setState({
+      browserControlEnabled: true,
+      browserAutomationMode: "controlled_enhanced",
+      pendingBoundaryChoice: {
+        type: "browserControl.boundaryChoiceRequest",
+        requestId: "boundary-slow",
+        question: "是否允许本轮发送一个无凭据请求？",
+        reason: "需要验证草案响应结构。",
+        choices: [
+          {
+            id: "send_once",
+            title: "发送一次",
+            description: "只允许发送当前草案一次。",
+            risk: "medium",
+            grants: ["send_single_confirmed_replay_request_without_credentials"],
+          },
+          {
+            id: "summary_only",
+            title: "只看草案",
+            description: "不发送网络请求。",
+            risk: "low",
+            grants: [],
+          },
+        ],
+        allowMultiple: false,
+        expiresAt: Date.now() + 60_000,
+      },
+    });
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: /发送一次/ }));
+    const submitButton = screen.getByRole("button", { name: "提交选择" });
+    await user.click(submitButton);
+    await user.click(submitButton);
+
+    expect(submitButton).toBeDisabled();
+    const boundaryRespondCalls = sendMessage.mock.calls.filter(([message]) =>
+      (message as { type?: string }).type === "browserControl.boundaryChoiceRespond");
+    expect(boundaryRespondCalls).toHaveLength(1);
+  });
+
   it("发送后切换到新会话时原会话会显示运行中并在完成后显示完成态", async () => {
     const user = userEvent.setup();
     const provider: ModelProvider = {
@@ -1796,7 +1923,7 @@ describe("App", () => {
     await screen.findByText("需要重新生成的问题");
     const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>(".message-regenerate-button"));
     await user.click(buttons[1]);
-    await user.click(screen.getByRole("button", { name: "取消" }));
+    await user.click(within(screen.getByRole("dialog", { name: "确认重新生成" })).getByRole("button", { name: "取消" }));
 
     expect(screen.queryByRole("dialog", { name: "确认重新生成" })).not.toBeInTheDocument();
     expect(regenerateMessage).not.toHaveBeenCalled();
@@ -3704,58 +3831,44 @@ describe("App", () => {
     const setBrowserControlEnabled = vi.fn(async (enabled: boolean) => {
       useAppStore.setState({ browserControlEnabled: enabled });
     });
-    const setRuntimeReadonlyEnabled = vi.fn(async (enabled: boolean) => {
-      useAppStore.setState({ runtimeReadonlyEnabled: enabled });
-    });
     useAppStore.setState({
       browserControlEnabled: false,
-      runtimeReadonlyEnabled: false,
+      browserAutomationMode: "normal_restricted",
       setBrowserControlEnabled,
-      setRuntimeReadonlyEnabled,
     });
 
     render(<App />);
 
     const browserControlButton = screen.getByRole("button", { name: "浏览器控制" });
-    const runtimeReadonlyButton = screen.getByRole("button", { name: "运行时只读分析" });
     const settingsButton = screen.getByRole("button", { name: "设置" });
-    expect(browserControlButton.nextElementSibling).toBe(runtimeReadonlyButton);
-    expect(runtimeReadonlyButton.nextElementSibling).toBe(settingsButton);
+    expect(browserControlButton.nextElementSibling).toBe(settingsButton);
     expect(browserControlButton).toHaveClass("ui-button-secondary", "app-header-icon-button");
-    expect(runtimeReadonlyButton).toHaveClass("ui-button-secondary", "app-header-icon-button");
     expect(settingsButton).toHaveClass("ui-button-secondary", "app-header-icon-button");
     expect(browserControlButton).toHaveTextContent("");
-    expect(runtimeReadonlyButton).toHaveTextContent("");
     expect(settingsButton).toHaveTextContent("");
     expect(browserControlButton).not.toHaveClass("browser-control-global-button-active");
-    expect(runtimeReadonlyButton).not.toHaveClass("runtime-readonly-global-button-active");
     expect(browserControlButton).toHaveAttribute("aria-pressed", "false");
-    expect(runtimeReadonlyButton).toHaveAttribute("aria-pressed", "false");
-    expect(runtimeReadonlyButton).toBeDisabled();
     expect(browserControlButton).toHaveAttribute("title", expect.stringContaining("Chrome 调试协议"));
-    expect(runtimeReadonlyButton).toHaveAttribute("title", expect.stringContaining("不会开放任意脚本"));
     expect(settingsButton).toHaveAttribute("title", "设置");
     expect(browserControlButton.querySelector(".app-header-icon")).not.toBeNull();
     expect([...browserControlButton.querySelectorAll(".app-header-icon path")].map((path) => path.getAttribute("d")).join(" ")).not.toContain("l-2 3");
     expect(settingsButton.querySelector(".app-header-icon")).not.toBeNull();
     expect(screen.queryByRole("checkbox", { name: "启用浏览器自动化控制" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "运行时只读分析" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "浏览器自动化模式" })).toBeDisabled();
 
     await user.click(browserControlButton);
 
     expect(setBrowserControlEnabled).toHaveBeenCalledWith(true);
     await waitFor(() => expect(screen.getByRole("button", { name: "浏览器控制" })).toHaveAttribute("aria-pressed", "true"));
     expect(screen.getByRole("button", { name: "浏览器控制" })).toHaveClass("browser-control-global-button-active");
-    expect(screen.getByRole("button", { name: "运行时只读分析" })).not.toBeDisabled();
-
-    await user.click(screen.getByRole("button", { name: "运行时只读分析" }));
-    expect(setRuntimeReadonlyEnabled).toHaveBeenCalledWith(true);
-    await waitFor(() => expect(screen.getByRole("button", { name: "运行时只读分析" })).toHaveAttribute("aria-pressed", "true"));
-    expect(screen.getByRole("button", { name: "运行时只读分析" })).toHaveClass("runtime-readonly-global-button-active");
+    expect(screen.getByRole("button", { name: "浏览器自动化模式" })).not.toBeDisabled();
 
     const styles = readFileSync(resolve(process.cwd(), "src/side-panel/styles.css"), "utf8");
     expect(styles).toContain(".app-header-icon-button");
     expect(styles.indexOf(".ui-button-secondary.browser-control-global-button-active")).toBeGreaterThan(styles.indexOf(".ui-button-secondary"));
-    expect(styles).toContain(".ui-button-secondary.runtime-readonly-global-button-active");
+    expect(styles).toContain(".composer-mode-trigger");
+    expect(styles).toContain(".composer-mode-menu-header");
   });
 
   it("用户点击 Chrome 调试提示栏取消后回滚全局浏览器控制按钮状态", async () => {
@@ -3794,7 +3907,7 @@ describe("App", () => {
     expect(removeListener).toHaveBeenCalledWith(runtimeListener);
   });
 
-  it("运行时只读授权被 background 清理或过期后回滚按钮状态", async () => {
+  it("自动化模式只跟随用户或 background 明确模式事件切换", async () => {
     let runtimeListener: ((message: unknown) => void) | undefined;
     const addListener = vi.fn((listener: (message: unknown) => void) => {
       runtimeListener = listener;
@@ -3808,52 +3921,79 @@ describe("App", () => {
         },
       },
     });
-    useAppStore.setState({ browserControlEnabled: true, runtimeReadonlyEnabled: false });
+    useAppStore.setState({ browserControlEnabled: true, browserAutomationMode: "normal_restricted" });
 
     const { unmount } = render(<App />);
 
     act(() => {
       runtimeListener?.({
-        type: "browserControl.runtimeReadonlyChanged",
-        enabled: true,
+        type: "browserControl.automationModeChanged",
+        mode: "controlled_enhanced",
         tabId: 9,
         expiresAt: Date.now() + 60_000,
       });
     });
 
-    await waitFor(() => expect(screen.getByRole("button", { name: "运行时只读分析" })).toHaveAttribute("aria-pressed", "true"));
+    await waitFor(() => expect(screen.getByRole("button", { name: "浏览器自动化模式" })).toHaveTextContent("受控增强"));
+    expect(screen.getByRole("button", { name: "浏览器自动化模式" })).toHaveClass("composer-mode-trigger-controlled_enhanced");
 
     act(() => {
       runtimeListener?.({
-        type: "browserControl.runtimeReadonlyChanged",
-        enabled: true,
+        type: "browserControl.automationModeChanged",
+        mode: "controlled_enhanced",
         tabId: 9,
         expiresAt: Date.now(),
       });
     });
 
-    await waitFor(() => expect(screen.getByRole("button", { name: "运行时只读分析" })).toHaveAttribute("aria-pressed", "false"));
+    await waitFor(() => expect(screen.getByRole("button", { name: "浏览器自动化模式" })).toHaveTextContent("受控增强"));
 
     act(() => {
       runtimeListener?.({
-        type: "browserControl.runtimeReadonlyChanged",
-        enabled: true,
-        tabId: 9,
-        expiresAt: Date.now() + 1000,
-      });
-      runtimeListener?.({
-        type: "browserControl.runtimeReadonlyChanged",
-        enabled: false,
+        type: "browserControl.automationModeChanged",
+        mode: "normal_restricted",
         tabId: 9,
       });
     });
 
-    await waitFor(() => expect(screen.getByRole("button", { name: "运行时只读分析" })).toHaveAttribute("aria-pressed", "false"));
-    expect(useAppStore.getState().runtimeReadonlyEnabled).toBe(false);
+    await waitFor(() => expect(screen.getByRole("button", { name: "浏览器自动化模式" })).toHaveTextContent("普通模式"));
+    expect(useAppStore.getState().browserAutomationMode).toBe("normal_restricted");
 
     unmount();
 
     expect(removeListener).toHaveBeenCalledWith(runtimeListener);
+  });
+
+  it("浏览器自动化模式菜单使用说明型弹窗并按风险着色", async () => {
+    const user = userEvent.setup();
+    const confirmSpy = vi.spyOn(window, "confirm");
+    const setBrowserAutomationMode = vi.fn(async (mode) => {
+      useAppStore.setState({ browserAutomationMode: mode });
+    });
+    useAppStore.setState({
+      browserControlEnabled: true,
+      browserAutomationMode: "normal_restricted",
+      setBrowserAutomationMode,
+    });
+
+    render(<App />);
+
+    const modeButton = screen.getByRole("button", { name: "浏览器自动化模式" });
+    await user.click(modeButton);
+
+    expect(screen.getByRole("listbox", { name: "浏览器自动化模式" })).toBeInTheDocument();
+    expect(screen.getByText("选择浏览器自动化模式")).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /受控增强/ })).toHaveTextContent("允许 AI 请求一次性边界授权");
+    expect(screen.getByRole("option", { name: /完全访问/ })).toHaveTextContent("最高风险占位");
+
+    await user.click(screen.getByRole("option", { name: /完全访问/ }));
+
+    expect(setBrowserAutomationMode).toHaveBeenCalledWith("full_access");
+    expect(confirmSpy).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.getByRole("button", { name: "浏览器自动化模式" })).toHaveTextContent("完全访问"));
+    expect(screen.getByRole("button", { name: "浏览器自动化模式" })).toHaveClass("composer-mode-trigger-full_access");
+
+    confirmSpy.mockRestore();
   });
 
   it("聊天输入区的工具调用图标按钮打开菜单并控制当前会话工具设置", async () => {

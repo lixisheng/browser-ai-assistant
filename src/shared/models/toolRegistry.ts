@@ -56,6 +56,14 @@ export const RUNTIME_SEARCH_MODULES_TOOL_ID = "runtime.search_modules";
 export const RUNTIME_SEARCH_MODULES_TOOL_NAME = "runtime_search_modules";
 export const RUNTIME_DESCRIBE_FUNCTION_TOOL_ID = "runtime.describe_function";
 export const RUNTIME_DESCRIBE_FUNCTION_TOOL_NAME = "runtime_describe_function";
+export const BOUNDARY_REQUEST_USER_CHOICE_TOOL_ID = "boundary.request_user_choice";
+export const BOUNDARY_REQUEST_USER_CHOICE_TOOL_NAME = "boundary_request_user_choice";
+export const REPLAY_PREPARE_REQUEST_TOOL_ID = "replay.prepare_request";
+export const REPLAY_PREPARE_REQUEST_TOOL_NAME = "replay_prepare_request";
+export const REPLAY_SEND_REQUEST_TOOL_ID = "replay.send_request";
+export const REPLAY_SEND_REQUEST_TOOL_NAME = "replay_send_request";
+export const REPLAY_COMPARE_RESPONSES_TOOL_ID = "replay.compare_responses";
+export const REPLAY_COMPARE_RESPONSES_TOOL_NAME = "replay_compare_responses";
 
 export const MODEL_TOOL_GROUP_SYSTEM_ID = "system";
 export const MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID = "browser_automation";
@@ -350,7 +358,7 @@ export const AVAILABLE_MODEL_TOOLS: ModelToolRegistryEntry[] = [
     groupId: MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID,
     requiredCapabilities: ["browser_control", "network_read"],
     displayName: "Network 请求详情",
-    description: "按请求 ID 读取脱敏后的请求头、请求体、响应头和响应体。",
+    description: "按请求 ID 读取脱敏后的请求头、请求体、响应头和响应体。若结果提示存在已脱敏字段且当前处于受控增强模式，必须先调用 boundary_request_user_choice 询问用户是否允许加载该边界，不能自行推断或还原敏感原文。",
     parameters: createNetworkRequestIdsSchema(),
   },
   {
@@ -403,7 +411,7 @@ export const AVAILABLE_MODEL_TOOLS: ModelToolRegistryEntry[] = [
     groupId: MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID,
     requiredCapabilities: ["browser_control", "network_read"],
     displayName: "查找可疑参数",
-    description: "从请求详情中识别疑似签名、时间戳、随机数、凭据和加密载荷字段。",
+    description: "从请求详情中识别疑似签名、时间戳、随机数、凭据和加密载荷字段。遇到已脱敏字段时，受控增强模式下必须通过 boundary_request_user_choice 显式询问用户后再继续围绕该边界分析。",
     parameters: createNetworkRequestIdsSchema(),
   },
   {
@@ -661,6 +669,105 @@ export const AVAILABLE_MODEL_TOOLS: ModelToolRegistryEntry[] = [
       additionalProperties: false,
     },
   },
+  {
+    id: BOUNDARY_REQUEST_USER_CHOICE_TOOL_ID,
+    name: BOUNDARY_REQUEST_USER_CHOICE_TOOL_NAME,
+    groupId: MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID,
+    requiredCapabilities: ["browser_control", "controlled_enhanced", "boundary_choice"],
+    displayName: "请求用户边界确认",
+    description: "在受控增强模式下，向用户提出边界确认问题并提供动态多选项；用户选择后只生成本轮一次性授权。任何工具结果提示已脱敏字段、敏感字段、截断摘要、请求重放沙箱、同源 JS/Source Map 上下文扩展、Runtime 或完全访问边界时，必须主动调用本工具询问用户，不能继续猜测、还原或输出敏感原文。",
+    parameters: {
+      type: "object",
+      properties: {
+        question: { type: "string", description: "要询问用户的明确中文问题。" },
+        reason: { type: "string", description: "为什么需要用户确认边界。" },
+        targetToolName: { type: "string", description: "可选。用户允许后要放行的下一步工具名，例如 network_get_request_details 或 replay_send_request；只要选项 grants 不为空，就必须提供该字段，否则不会生成可消费授权。" },
+        targetToolArguments: { type: "object", description: "可选。用户允许后要放行的下一步工具参数；只要选项 grants 不为空，就必须提供该字段，且必须与后续实际工具调用参数一致。" },
+        choices: {
+          type: "array",
+          minItems: 2,
+          maxItems: 6,
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string", description: "选项 ID，只能包含字母、数字、下划线或短横线。" },
+              title: { type: "string", description: "选项标题。" },
+              description: { type: "string", description: "选项影响说明。" },
+              risk: { type: "string", enum: ["low", "medium", "high"], description: "风险等级。" },
+              grants: {
+                type: "array",
+                items: {
+                  type: "string",
+                  enum: [
+                    "include_sensitive_field_in_current_tool_result",
+                    "send_single_confirmed_replay_request_without_credentials",
+                    "expand_runtime_summary_depth",
+                    "expand_js_or_sourcemap_context",
+                    "write_sensitive_result_to_chat_once",
+                  ],
+                },
+                description: "该选项授予的一次性受控增强能力。",
+              },
+            },
+            required: ["id", "title", "description", "risk", "grants"],
+            additionalProperties: false,
+          },
+        },
+        allowMultiple: { type: "boolean", description: "是否允许用户多选。" },
+        expiresInMs: { type: "integer", minimum: 10000, maximum: 300000, description: "问题有效期，单位毫秒。" },
+      },
+      required: ["question", "reason", "choices"],
+      additionalProperties: false,
+    },
+  },
+  {
+    id: REPLAY_PREPARE_REQUEST_TOOL_ID,
+    name: REPLAY_PREPARE_REQUEST_TOOL_NAME,
+    groupId: MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID,
+    requiredCapabilities: ["browser_control", "controlled_enhanced", "request_replay"],
+    displayName: "生成请求重放草案",
+    description: "基于已采集请求生成脱敏重放草案，不会发起网络请求。",
+    parameters: {
+      type: "object",
+      properties: {
+        requestId: { type: "string", description: "由 network.list_requests 或 network.wait_for_requests 返回的请求 ID。" },
+      },
+      required: ["requestId"],
+      additionalProperties: false,
+    },
+  },
+  {
+    id: REPLAY_SEND_REQUEST_TOOL_ID,
+    name: REPLAY_SEND_REQUEST_TOOL_NAME,
+    groupId: MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID,
+    requiredCapabilities: ["browser_control", "controlled_enhanced", "request_replay"],
+    displayName: "发送请求重放草案",
+    description: "发送已确认、未过期且无凭据的请求重放草案，返回脱敏截断响应摘要；未确认、过期、跨边界、敏感 Header 或超出沙箱限制时必须停止并请求用户边界确认。",
+    parameters: {
+      type: "object",
+      properties: {
+        draftId: { type: "string", description: "replay.prepare_request 返回的草案 ID。" },
+      },
+      required: ["draftId"],
+      additionalProperties: false,
+    },
+  },
+  {
+    id: REPLAY_COMPARE_RESPONSES_TOOL_ID,
+    name: REPLAY_COMPARE_RESPONSES_TOOL_NAME,
+    groupId: MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID,
+    requiredCapabilities: ["browser_control", "controlled_enhanced", "request_replay"],
+    displayName: "对比请求重放响应",
+    description: "对比原始采集响应摘要与请求重放响应摘要，只返回结构和字段差异。",
+    parameters: {
+      type: "object",
+      properties: {
+        draftId: { type: "string", description: "已发送的请求重放草案 ID。" },
+      },
+      required: ["draftId"],
+      additionalProperties: false,
+    },
+  },
 ];
 
 const TOOL_ID_PATTERN = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/;
@@ -688,11 +795,22 @@ export function getModelToolGroups(tools: ModelToolRegistryEntry[] = getRegister
 }
 
 export function isBrowserAutomationToolId(toolId: string): boolean {
-  return toolId.startsWith("browser.") || toolId.startsWith("network.") || toolId.startsWith("js.") || toolId.startsWith("sourcemap.") || toolId.startsWith("runtime.");
+  return toolId.startsWith("browser.") ||
+    toolId.startsWith("network.") ||
+    toolId.startsWith("js.") ||
+    toolId.startsWith("sourcemap.") ||
+    toolId.startsWith("runtime.") ||
+    toolId.startsWith("boundary.") ||
+    toolId.startsWith("replay.") ||
+    toolId.startsWith("full_access.");
 }
 
 export function isRuntimeReadonlyToolId(toolId: string): boolean {
   return toolId.startsWith("runtime.");
+}
+
+export function isControlledEnhancedToolId(toolId: string): boolean {
+  return toolId.startsWith("boundary.") || toolId.startsWith("replay.");
 }
 
 function createNetworkRequestIdsSchema(): Record<string, unknown> {

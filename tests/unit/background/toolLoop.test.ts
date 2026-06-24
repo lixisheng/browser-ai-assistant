@@ -33,6 +33,18 @@ const tool: ModelToolRegistryEntry = {
   },
 };
 
+const browserTool: ModelToolRegistryEntry = {
+  id: "network.list_requests",
+  name: "network_list_requests",
+  displayName: "列出 Network 请求",
+  description: "列出请求",
+  parameters: {
+    type: "object",
+    properties: {},
+    additionalProperties: false,
+  },
+};
+
 describe("通用模型工具循环", () => {
   it("没有工具调用时直接返回最终文本", async () => {
     const requestModel = vi.fn().mockResolvedValue({ ok: true, content: "最终回答" });
@@ -210,6 +222,49 @@ describe("通用模型工具循环", () => {
         expect.objectContaining({ role: "tool", toolCallId: "call-1", content: "页面标题：示例" }),
       ]),
     );
+  });
+
+  it("同轮存在浏览器自动化工具时串行执行，避免一次性授权并发覆盖", async () => {
+    const started: string[] = [];
+    let releaseFirst: (() => void) | undefined;
+    const firstPending = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const requestModel = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        content: "",
+        toolCalls: [
+          { id: "call-browser-1", name: "network_list_requests", arguments: {} },
+          { id: "call-browser-2", name: "network_list_requests", arguments: {} },
+        ],
+      })
+      .mockResolvedValueOnce({ ok: true, content: "完成" });
+    const executeTool: ModelToolExecutor = vi.fn(async (call) => {
+      started.push(call.id);
+      if (call.id === "call-browser-1") {
+        await Promise.resolve();
+        expect(started).toEqual(["call-browser-1"]);
+        releaseFirst?.();
+        await firstPending;
+      }
+      return {
+        toolCallId: call.id,
+        name: call.name,
+        content: `结果 ${call.id}`,
+      };
+    });
+
+    await runModelToolLoop({
+      initialMessages: baseMessages,
+      tools: [browserTool],
+      enabledToolIds: [browserTool.id],
+      requestModel,
+      executeTool,
+    });
+
+    expect(started).toEqual(["call-browser-1", "call-browser-2"]);
   });
 
   it("AbortSignal 已中止时不再执行工具调用", async () => {

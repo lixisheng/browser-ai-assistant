@@ -299,10 +299,6 @@ function aggregateToolAttachmentGroup(group: ToolAttachmentAggregateGroup): Chat
     return undefined;
   }
 
-  if (attachments.length === 1) {
-    return attachments[0];
-  }
-
   const kinds = uniqueNonEmptyStrings(attachments.map((attachment) => attachment.kind));
   if (kinds.length > 1) {
     return aggregateMixedKindToolAttachments(attachments, group.toolDisplayName);
@@ -323,6 +319,10 @@ function aggregateToolAttachmentGroup(group: ToolAttachmentAggregateGroup): Chat
 
   if (kind === "source-map") {
     return aggregateSourceMapToolAttachments(attachments.filter(isSourceMapToolAttachment));
+  }
+
+  if (attachments.length === 1) {
+    return attachments[0];
   }
 
   return aggregateGenericToolAttachments(kind, attachments);

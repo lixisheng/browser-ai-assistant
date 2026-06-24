@@ -29,6 +29,10 @@ export function redactNetworkRequestMeta(meta: NetworkRequestMeta): NetworkReque
   };
 }
 
+export function redactNetworkText(value: string): string {
+  return redactBody(value) ?? "";
+}
+
 export function parseRelevantNetworkRequestIds(content: string, availableRequests: string[] | NetworkRequestMeta[]): string[] {
   const availableIds = availableRequests.map((request) => (typeof request === "string" ? request : request.id));
   const availableIdSet = new Set(availableIds);

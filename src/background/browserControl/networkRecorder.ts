@@ -81,7 +81,12 @@ export class BrowserNetworkRecorder {
     return filtered.slice(-limit);
   }
 
-  async getDetails(requestIds: string[]): Promise<NetworkRequestDetail[]> {
+  getRawRequestMeta(requestId: string): NetworkRequestMeta | undefined {
+    const cached = this.requestsById.get(requestId);
+    return cached ? { ...cached.meta } : undefined;
+  }
+
+  async getDetails(requestIds: string[], options: { redacted?: boolean } = {}): Promise<NetworkRequestDetail[]> {
     const details: NetworkRequestDetail[] = [];
     for (const requestId of requestIds) {
       const cached = this.requestsById.get(requestId);
@@ -90,13 +95,14 @@ export class BrowserNetworkRecorder {
       }
 
       const responseBody = shouldReadResponseBody(cached.meta) ? await this.readResponseBody(requestId) : undefined;
-      details.push(redactNetworkRequestDetail({
+      const detail = {
         ...cached.meta,
         responseBody: responseBody?.body,
         responseBodyEncoding: responseBody?.encoding,
         truncated: Boolean(responseBody?.truncated),
         redacted: false,
-      }));
+      };
+      details.push(options.redacted === false ? detail : redactNetworkRequestDetail(detail));
     }
 
     return details;

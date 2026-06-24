@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { aggregateDisplayAttachmentsByKind, getJsSourceAttachmentDisplayCount, MessageList } from "../../../src/side-panel/components/MessageList";
-import type { ChatJsSourceToolAttachment, ChatMessage } from "../../../src/shared/types";
+import type { ChatJsSourceToolAttachment, ChatMessage, ChatNetworkToolAttachment } from "../../../src/shared/types";
 
 function createJsSourceAttachment(partial: Partial<ChatJsSourceToolAttachment>): ChatJsSourceToolAttachment {
   return {
@@ -20,7 +20,64 @@ function createJsSourceAttachment(partial: Partial<ChatJsSourceToolAttachment>):
   };
 }
 
+function createNetworkAttachment(partial: Partial<ChatNetworkToolAttachment>): ChatNetworkToolAttachment {
+  return {
+    id: "attachment-network",
+    kind: "network",
+    title: "Network 请求详情",
+    summary: "已注入 1 个 Network 请求：POST 200 https://api.example.com/login",
+    createdAt: 1,
+    redacted: false,
+    truncated: false,
+    requests: [
+      {
+        id: "req-1",
+        url: "https://api.example.com/login",
+        method: "POST",
+        status: 200,
+        requestBody: "{\"password\":\"123456\",\"name\":\"张三\"}",
+        responseBody: "{\"ok\":true}",
+        redacted: false,
+        truncated: false,
+      },
+    ],
+    ...partial,
+  };
+}
+
 describe("MessageList 工具附件展示聚合", () => {
+  it("当前一次性授权的 Network 附件展示时不再二次脱敏", () => {
+    const message: ChatMessage = {
+      id: "assistant-network",
+      role: "assistant",
+      content: "已读取 Network 请求",
+      createdAt: 1,
+      modelId: "model-1",
+      endpointType: "openai_chat",
+      streamMode: false,
+      systemPrompt: "",
+      contextPrompt: "",
+      contextMode: "text",
+      toolAttachments: [createNetworkAttachment({})],
+    };
+
+    render(
+      <MessageList
+        messages={[message]}
+        retryProgressByMessageId={{}}
+        toolCallDisplayMode="assistant_grouped"
+        showToolCallProcessInAssistantMode
+        onRegenerateMessage={() => undefined}
+        onEditAndRegenerateUserMessage={() => undefined}
+        regenerating={false}
+      />,
+    );
+
+    expect(screen.getByText(/password/)).toBeInTheDocument();
+    expect(screen.getByText(/123456/)).toBeInTheDocument();
+    expect(screen.queryByText(/\[已脱敏]/)).not.toBeInTheDocument();
+  });
+
   it("同一气泡下多个 JS 源码附件聚合后仍保留结构化数据", () => {
     const attachments = aggregateDisplayAttachmentsByKind([
       createJsSourceAttachment({

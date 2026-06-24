@@ -5,6 +5,11 @@ import {
   RUNTIME_DESCRIBE_FUNCTION_TOOL_ID,
   RUNTIME_INSPECT_GLOBALS_TOOL_ID,
   RUNTIME_SEARCH_MODULES_TOOL_ID,
+  BOUNDARY_REQUEST_USER_CHOICE_TOOL_ID,
+  isBrowserAutomationToolId,
+  REPLAY_COMPARE_RESPONSES_TOOL_ID,
+  REPLAY_PREPARE_REQUEST_TOOL_ID,
+  REPLAY_SEND_REQUEST_TOOL_ID,
   TAVILY_SEARCH_TOOL_NAME,
 } from "../shared/models/toolRegistry";
 import type { ModelRequestMessage, ModelSystemMessage, ModelToolCall, ModelToolDefinition, ModelToolExecutor, ModelToolRegistryEntry } from "../shared/models/types";
@@ -54,6 +59,14 @@ export function shouldExposeTool(tool: ModelToolRegistryEntry): boolean {
     return browserControlManager.canExposeRuntimeReadTool();
   }
 
+  if (tool.id.startsWith("boundary.")) {
+    return browserControlManager.canExposeBoundaryChoiceTool();
+  }
+
+  if (tool.id.startsWith("replay.")) {
+    return browserControlManager.canExposeReplayTool();
+  }
+
   return true;
 }
 
@@ -93,6 +106,16 @@ export function createBackgroundToolExecutor(message: BackgroundToolExecutorMess
       return browserControlManager.executeRuntimeReadTool(toolCall);
     }
 
+    if (tool.id === BOUNDARY_REQUEST_USER_CHOICE_TOOL_ID) {
+      return browserControlManager.executeBoundaryChoiceTool(toolCall);
+    }
+
+    if (tool.id === REPLAY_PREPARE_REQUEST_TOOL_ID ||
+      tool.id === REPLAY_SEND_REQUEST_TOOL_ID ||
+      tool.id === REPLAY_COMPARE_RESPONSES_TOOL_ID) {
+      return browserControlManager.executeReplayTool(toolCall);
+    }
+
     if (tool.name === TAVILY_SEARCH_TOOL_NAME) {
       return executeTavilySearchTool(toolCall, message.tavily, fetcher);
     }
@@ -106,7 +129,7 @@ export function createBackgroundToolExecutor(message: BackgroundToolExecutorMess
 }
 
 export function appendBrowserControlPromptIfNeeded(messages: ModelRequestMessage[], enabledTools: ModelToolRegistryEntry[]): ModelRequestMessage[] {
-  if (!enabledTools.some((tool) => tool.id.startsWith("browser."))) {
+  if (!enabledTools.some((tool) => isBrowserAutomationToolId(tool.id))) {
     return messages;
   }
 
@@ -126,6 +149,13 @@ export function appendBrowserControlPromptIfNeeded(messages: ModelRequestMessage
     "- 当前页面信息不足时，先使用 list_pages 或 select_page 确认受控页面，再决定是否 new_page；不要跳过现有已打开页面。",
     "- 多页面操作只能使用 list_pages 返回的 index，不要猜测页面序号。",
     "- 遇到网页 JS 弹窗时会等待用户手动处理；不要编造用户选择或弹窗处理结果。",
+    ...(enabledTools.some((tool) => tool.id === BOUNDARY_REQUEST_USER_CHOICE_TOOL_ID)
+      ? [
+          "- 当前处于受控增强模式时，如果任何 browser/network/js/sourcemap/runtime/replay 工具结果提示存在脱敏字段、敏感字段、截断摘要、请求重放、同源资源读取、Runtime/完全访问边界或其他需要用户授权的边界，必须立即调用 boundary_request_user_choice 显式询问用户；在用户提交前不要继续执行依赖该边界的分析或工具调用。",
+          "- boundary_request_user_choice 的问题和选项必须具体说明要加载的边界、风险和一次性授权范围；只要选项 grants 不为空，就必须同时填写 targetToolName 和 targetToolArguments，用来绑定用户允许后真正放行的下一步工具。",
+          "- 不要把用户未确认的敏感原文写入回答或发送给远端模型；如果边界确认缺少目标工具绑定而失败，必须重新发起带目标工具和参数的确认，不要假装已经获得授权。",
+        ]
+      : []),
   ].join("\n");
   const systemIndex = messages.findIndex((message) => message.role === "system");
   if (systemIndex >= 0) {

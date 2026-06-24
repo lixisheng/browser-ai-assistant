@@ -1,7 +1,13 @@
 export const BROWSER_CONTROL_SET_ENABLED_MESSAGE_TYPE = "browserControl.setEnabled";
 export const BROWSER_CONTROL_DETACHED_MESSAGE_TYPE = "browserControl.detached";
+import type { BrowserAutomationGrant, BrowserAutomationMode } from "./toolAuthorization";
+
 export const BROWSER_CONTROL_SET_RUNTIME_READONLY_MESSAGE_TYPE = "browserControl.setRuntimeReadonly";
 export const BROWSER_CONTROL_RUNTIME_READONLY_CHANGED_MESSAGE_TYPE = "browserControl.runtimeReadonlyChanged";
+export const BROWSER_CONTROL_SET_AUTOMATION_MODE_MESSAGE_TYPE = "browserControl.setAutomationMode";
+export const BROWSER_CONTROL_AUTOMATION_MODE_CHANGED_MESSAGE_TYPE = "browserControl.automationModeChanged";
+export const BROWSER_CONTROL_BOUNDARY_CHOICE_REQUEST_MESSAGE_TYPE = "browserControl.boundaryChoiceRequest";
+export const BROWSER_CONTROL_BOUNDARY_CHOICE_RESPOND_MESSAGE_TYPE = "browserControl.boundaryChoiceRespond";
 
 export interface BrowserControlSetEnabledMessage {
   type: typeof BROWSER_CONTROL_SET_ENABLED_MESSAGE_TYPE;
@@ -30,8 +36,54 @@ export interface BrowserControlRuntimeReadonlyChangedMessage {
   expiresAt?: number;
 }
 
-export type BrowserControlMessage = BrowserControlSetEnabledMessage | BrowserControlSetRuntimeReadonlyMessage;
-export type BrowserControlRuntimeEvent = BrowserControlDetachedMessage | BrowserControlRuntimeReadonlyChangedMessage;
+export interface BrowserControlSetAutomationModeMessage {
+  type: typeof BROWSER_CONTROL_SET_AUTOMATION_MODE_MESSAGE_TYPE;
+  mode: BrowserAutomationMode;
+  reason?: string;
+}
+
+export interface BrowserControlAutomationModeChangedMessage {
+  type: typeof BROWSER_CONTROL_AUTOMATION_MODE_CHANGED_MESSAGE_TYPE;
+  mode: BrowserAutomationMode;
+  tabId?: number;
+  expiresAt?: number;
+}
+
+export interface BoundaryChoiceOption {
+  id: string;
+  title: string;
+  description: string;
+  risk: "low" | "medium" | "high";
+  grants: BrowserAutomationGrant[];
+}
+
+export interface BrowserControlBoundaryChoiceRequestMessage {
+  type: typeof BROWSER_CONTROL_BOUNDARY_CHOICE_REQUEST_MESSAGE_TYPE;
+  requestId: string;
+  question: string;
+  reason: string;
+  choices: BoundaryChoiceOption[];
+  allowMultiple: boolean;
+  expiresAt: number;
+}
+
+export interface BrowserControlBoundaryChoiceRespondMessage {
+  type: typeof BROWSER_CONTROL_BOUNDARY_CHOICE_RESPOND_MESSAGE_TYPE;
+  requestId: string;
+  selectedChoiceIds: string[];
+  otherText?: string;
+}
+
+export type BrowserControlMessage =
+  | BrowserControlSetEnabledMessage
+  | BrowserControlSetRuntimeReadonlyMessage
+  | BrowserControlSetAutomationModeMessage
+  | BrowserControlBoundaryChoiceRespondMessage;
+export type BrowserControlRuntimeEvent =
+  | BrowserControlDetachedMessage
+  | BrowserControlRuntimeReadonlyChangedMessage
+  | BrowserControlAutomationModeChangedMessage
+  | BrowserControlBoundaryChoiceRequestMessage;
 
 export type BrowserControlResponse =
   | {

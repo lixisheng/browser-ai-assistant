@@ -41,6 +41,7 @@ function createExecutor(
   fetchResult?: SameOriginSourceMapFetchResult,
   extraDetails: NetworkRequestDetail[] = [],
   pageUrl = "https://example.com/page",
+  options: { grant?: boolean } = {},
 ) {
   const index = new JsSourceIndex();
   const details = [detail, ...extraDetails];
@@ -61,6 +62,19 @@ function createExecutor(
     jsSourceIndex: index,
     getCurrentPageUrl: vi.fn(async () => pageUrl),
     fetcher: { fetch },
+    getBoundaryGrant: options.grant
+      ? () => ({
+          id: "grant-1",
+          tabId: 7,
+          origin: "https://example.com",
+          toolCallId: "call-boundary",
+          scopeKey: "test-scope",
+          grants: ["expand_js_or_sourcemap_context"],
+          selectedChoiceIds: ["allow_js_or_sourcemap_context_expansion"],
+          createdAt: Date.now(),
+          expiresAt: Date.now() + 60000,
+        })
+      : undefined,
   });
   return { executor, recorder, fetch };
 }
@@ -75,6 +89,17 @@ describe("Source Map 工具执行器", () => {
     expect(result).toMatchObject({
       content: expect.stringContaining("script-1"),
       toolAttachments: [expect.objectContaining({ kind: "source-map", candidates: [expect.objectContaining({ status: "available", parsed: true })] })],
+    });
+  });
+
+  it("存在一次性上下文扩展授权时会真实读取同源外部 Source Map", async () => {
+    const { executor, fetch } = createExecutor(createJsDetail(), undefined, [], "https://example.com/page", { grant: true });
+
+    const result = await executor.execute(createToolCall("sourcemap_list_candidates"));
+
+    expect(fetch).toHaveBeenCalledWith("https://example.com/assets/app.js.map", "https://example.com/page");
+    expect(result.toolAttachments?.[0]).toMatchObject({
+      candidates: [expect.objectContaining({ status: "available", parsed: true })],
     });
   });
 

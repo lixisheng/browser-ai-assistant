@@ -1391,6 +1391,108 @@ body {
     @apply flex flex-wrap items-center gap-1.5;
   }
 
+  .composer-mode-menu-wrap {
+    @apply relative inline-flex h-9 items-center;
+  }
+
+  .composer-mode-trigger {
+    @apply inline-flex h-9 items-center gap-1 rounded-md bg-transparent px-1.5 text-xs font-semibold outline-none transition;
+    border: 0;
+    color: var(--color-body);
+  }
+
+  .composer-mode-trigger:hover:not(:disabled),
+  .composer-mode-trigger[aria-expanded="true"] {
+    background: color-mix(in srgb, var(--color-surface-soft) 72%, transparent);
+  }
+
+  .composer-mode-trigger:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+  }
+
+  .composer-mode-trigger:focus-visible {
+    outline: 3px solid color-mix(in srgb, var(--color-primary) 15%, transparent);
+    outline-offset: 2px;
+  }
+
+  .composer-mode-trigger-controlled_enhanced,
+  .composer-mode-option-controlled_enhanced {
+    color: #c85f12;
+  }
+
+  .composer-mode-trigger-full_access,
+  .composer-mode-option-full_access {
+    color: #d92d20;
+  }
+
+  .composer-mode-chevron {
+    @apply inline-block h-1.5 w-1.5;
+    border-bottom: 1.5px solid currentColor;
+    border-right: 1.5px solid currentColor;
+    transform: translateY(-2px) rotate(45deg);
+  }
+
+  .composer-mode-menu {
+    @apply absolute bottom-full left-0 z-40 mb-2 w-[min(84vw,380px)] overflow-hidden rounded-lg py-2;
+    background: color-mix(in srgb, var(--color-canvas) 96%, #ffffff);
+    border: 1px solid color-mix(in srgb, var(--color-hairline) 86%, var(--color-body));
+    box-shadow: 0 18px 45px rgb(20 20 19 / 16%), 0 2px 8px rgb(20 20 19 / 8%);
+  }
+
+  .composer-mode-menu-header {
+    @apply flex items-center justify-between gap-4 px-4 pb-2 text-xs;
+    color: var(--color-muted);
+  }
+
+  .composer-mode-option {
+    @apply grid w-full grid-cols-[24px_1fr_20px] items-center gap-3 bg-transparent px-4 py-2 text-left outline-none transition;
+    border: 0;
+    color: var(--color-body);
+  }
+
+  .composer-mode-option:hover,
+  .composer-mode-option[aria-selected="true"] {
+    background: color-mix(in srgb, var(--color-surface-soft) 80%, transparent);
+  }
+
+  .composer-mode-option-icon {
+    @apply h-5 w-5;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 1.8;
+    color: var(--color-muted);
+  }
+
+  .composer-mode-option-copy {
+    @apply grid min-w-0 gap-0.5;
+  }
+
+  .composer-mode-option-title {
+    @apply text-sm font-semibold leading-tight;
+    color: var(--color-body-strong);
+  }
+
+  .composer-mode-option-description {
+    @apply truncate text-xs leading-tight;
+    color: var(--color-muted);
+  }
+
+  .composer-mode-option-controlled_enhanced .composer-mode-option-title {
+    color: #c85f12;
+  }
+
+  .composer-mode-option-full_access .composer-mode-option-title {
+    color: #d92d20;
+  }
+
+  .composer-mode-option-check {
+    @apply text-right text-base font-semibold;
+    color: var(--color-body);
+  }
+
   .composer-switch {
     @apply inline-grid h-9 w-9 shrink-0 place-items-center rounded-md transition;
     background: transparent;
@@ -1427,6 +1529,91 @@ body {
   .composer-switch:disabled {
     cursor: not-allowed;
     opacity: 0.45;
+  }
+
+  .boundary-choice-dialog {
+    @apply fixed left-1/2 top-1/2 z-50 grid w-[min(92vw,520px)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-lg p-4 shadow-xl;
+    background: color-mix(in srgb, var(--color-canvas) 96%, #ffffff);
+    border: 1px solid var(--color-hairline);
+    box-shadow: 0 18px 42px color-mix(in srgb, var(--color-surface-dark) 18%, transparent);
+  }
+
+  .boundary-choice-header {
+    @apply grid gap-1;
+  }
+
+  .boundary-choice-title {
+    @apply text-base font-semibold;
+    color: var(--color-body-strong);
+  }
+
+  .boundary-choice-reason {
+    @apply text-sm;
+    color: var(--color-muted);
+  }
+
+  .boundary-choice-list {
+    @apply grid max-h-72 gap-2 overflow-y-auto;
+  }
+
+  .boundary-choice-item {
+    @apply grid gap-1 rounded-md p-3 text-left transition;
+    border: 1px solid var(--color-hairline);
+    background: var(--color-surface-soft);
+  }
+
+  .boundary-choice-item-active {
+    border-color: var(--color-primary);
+    background: color-mix(in srgb, var(--color-primary) 8%, var(--color-canvas));
+  }
+
+  .boundary-choice-row {
+    @apply flex items-center justify-between gap-2;
+  }
+
+  .boundary-choice-option-title {
+    @apply text-sm font-semibold;
+    color: var(--color-body-strong);
+  }
+
+  .boundary-choice-risk {
+    @apply shrink-0 rounded px-1.5 py-0.5 text-[10px] uppercase;
+    border: 1px solid var(--color-hairline);
+  }
+
+  .boundary-choice-risk-high {
+    color: var(--color-error);
+  }
+
+  .boundary-choice-risk-medium {
+    color: var(--color-warning);
+  }
+
+  .boundary-choice-risk-low {
+    color: var(--color-success);
+  }
+
+  .boundary-choice-description,
+  .boundary-choice-grants {
+    @apply text-xs;
+    color: var(--color-muted);
+  }
+
+  .boundary-choice-other {
+    @apply grid gap-1 text-sm font-medium;
+    color: var(--color-body);
+  }
+
+  .boundary-choice-other-input {
+    @apply min-h-20 resize-y text-sm;
+  }
+
+  .boundary-choice-actions {
+    @apply flex flex-wrap justify-end gap-3;
+  }
+
+  .boundary-choice-action-button {
+    @apply min-h-9 min-w-24 px-4;
   }
 
   .composer-tool-menu-wrap {

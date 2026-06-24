@@ -8,6 +8,7 @@ import {
   SOURCEMAP_RESOLVE_LOCATION_TOOL_NAME,
 } from "../../shared/models/toolRegistry";
 import type { ModelToolCall, ModelToolResult } from "../../shared/models/types";
+import type { BoundaryGrantContext } from "../../shared/toolAuthorization";
 import type {
   ChatSourceMapToolAttachment,
   NetworkRequestDetail,
@@ -42,6 +43,7 @@ export interface SourceMapToolExecutorOptions {
   jsSourceIndex: JsSourceIndex;
   getCurrentPageUrl: () => Promise<string>;
   fetcher?: Pick<SameOriginSourceMapFetcher, "fetch">;
+  getBoundaryGrant?: () => BoundaryGrantContext | undefined;
 }
 
 interface SourceMapCandidateInternal extends SourceMapCandidate {
@@ -127,7 +129,7 @@ export class SourceMapToolExecutor {
   private async listCandidates(toolCall: ModelToolCall): Promise<ModelToolResult> {
     const resourceIds = normalizeOptionalStringArray(toolCall.arguments.resourceIds, MAX_RESOURCE_IDS, MAX_RESOURCE_ID_LENGTH);
     const limit = normalizeLimit(toolCall.arguments.limit, MAX_CANDIDATES);
-    const allowFetch = toolCall.arguments.allowSameOriginFetch === true;
+    const allowFetch = toolCall.arguments.allowSameOriginFetch === true || this.canExpandContext();
     const resources = this.selectResources(resourceIds).slice(0, limit);
     const candidates: SourceMapCandidate[] = [];
     const failures: ChatSourceMapToolAttachment["failures"] = [];
@@ -149,7 +151,7 @@ export class SourceMapToolExecutor {
     if (!resource) {
       return createSourceMapResult(toolCall, "未找到指定 JS 资源。", { failures: [{ resourceId: validation.resourceId, message: "未找到指定 JS 资源。" }] });
     }
-    const loaded = await this.loadSourceMap(resource, validation.allowSameOriginFetch);
+    const loaded = await this.loadSourceMap(resource, validation.allowSameOriginFetch || this.canExpandContext());
     const resolved = loaded.parsed ? resolveGeneratedLocation(resource, loaded.parsed.map, validation.line, validation.column) : createUnresolvedLocation(resource, validation.line, validation.column, firstFailureMessage(loaded));
     return createSourceMapResult(toolCall, formatResolvedLocations([resolved]), {
       candidates: loaded.candidates.map(toPublicCandidate),
@@ -167,7 +169,7 @@ export class SourceMapToolExecutor {
     if (!resource) {
       return createSourceMapResult(toolCall, "未找到指定 JS 资源。", { failures: [{ resourceId: validation.resourceId, message: "未找到指定 JS 资源。" }] });
     }
-    const loaded = await this.loadSourceMap(resource, validation.allowSameOriginFetch);
+    const loaded = await this.loadSourceMap(resource, validation.allowSameOriginFetch || this.canExpandContext());
     const radius = normalizeRadius(toolCall.arguments.radius);
     const context = loaded.parsed
       ? extractOriginalContextFromMap(resource, loaded.parsed.map, validation.line, validation.column, radius)
@@ -290,6 +292,10 @@ export class SourceMapToolExecutor {
 
   private isEnabled(): boolean {
     return typeof this.options.recorder.isEnabled === "function" ? this.options.recorder.isEnabled() : this.options.recorder.isEnabled;
+  }
+
+  private canExpandContext(): boolean {
+    return Boolean(this.options.getBoundaryGrant?.()?.grants.includes("expand_js_or_sourcemap_context"));
   }
 }
 

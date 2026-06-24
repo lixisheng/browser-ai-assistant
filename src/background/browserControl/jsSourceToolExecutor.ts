@@ -7,6 +7,7 @@ import {
   JS_SEARCH_SOURCES_TOOL_NAME,
 } from "../../shared/models/toolRegistry";
 import type { ModelToolCall, ModelToolResult } from "../../shared/models/types";
+import type { BoundaryGrantContext } from "../../shared/toolAuthorization";
 import type {
   ChatJsSourceToolAttachment,
   JsSourceContext,
@@ -40,6 +41,7 @@ export interface JsSourceToolExecutorOptions {
   recorder: JsSourceRecorderLike;
   getCurrentPageUrl: () => Promise<string>;
   fetcher?: Pick<SameOriginJsFetcher, "fetch">;
+  getBoundaryGrant?: () => BoundaryGrantContext | undefined;
 }
 
 const JS_SOURCE_DISABLED_MESSAGE = "JS 源码检索依赖 Network 采集，请先开启浏览器控制。";
@@ -147,9 +149,11 @@ export class JsSourceToolExecutor {
       return createErrorResult(toolCall, keywords.message);
     }
 
-    const failedFetches = toolCall.arguments.allowSameOriginFetch === true
-      ? await this.fetchSameOriginResources(normalizeStringArray(toolCall.arguments.urls, MAX_URLS, MAX_URL_LENGTH))
-      : [];
+    const urls = normalizeStringArray(toolCall.arguments.urls, MAX_URLS, MAX_URL_LENGTH);
+    const canFetch = toolCall.arguments.allowSameOriginFetch === true || this.canExpandContext();
+    const failedFetches = canFetch
+      ? await this.fetchSameOriginResources(urls)
+      : createSameOriginFetchBoundaryFailures(urls);
     const result = this.index.search(keywords.keywords, { maxMatches: normalizeLimit(toolCall.arguments.limit, DEFAULT_MATCH_LIMIT) });
     return createJsSourceResult(toolCall, formatSearchResult(result.matches, failedFetches, result.truncated), {
       query: keywords.keywords,
@@ -198,6 +202,10 @@ export class JsSourceToolExecutor {
 
   private isEnabled(): boolean {
     return typeof this.options.recorder.isEnabled === "function" ? this.options.recorder.isEnabled() : this.options.recorder.isEnabled;
+  }
+
+  private canExpandContext(): boolean {
+    return Boolean(this.options.getBoundaryGrant?.()?.grants.includes("expand_js_or_sourcemap_context"));
   }
 }
 
@@ -305,6 +313,13 @@ function formatContexts(contexts: JsSourceContext[]): string {
 
 function formatJsSourceSummary(resources: JsSourceResource[], matches: JsSourceMatch[], contexts: JsSourceContext[], failures: JsSourceFetchFailure[]): string {
   return `JS 资源 ${resources.length} 个，命中 ${matches.length} 个，上下文 ${contexts.length} 个，补位失败 ${failures.length} 个。`;
+}
+
+function createSameOriginFetchBoundaryFailures(urls: string[]): JsSourceFetchFailure[] {
+  return urls.map((url) => ({
+    url,
+    message: "需要 allowSameOriginFetch=true 才会读取同源 JS。",
+  }));
 }
 
 function normalizeKeywords(value: unknown): { ok: true; keywords: string[] } | { ok: false; message: string } {

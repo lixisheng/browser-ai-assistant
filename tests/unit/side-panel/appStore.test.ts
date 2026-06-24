@@ -197,7 +197,7 @@ describe("appStore 网络搜索", () => {
     });
   });
 
-  it("浏览器工具随浏览器控制暴露，runtime 工具还需要运行时只读授权", async () => {
+  it("普通模式默认暴露受限 runtime 工具，受控增强模式额外暴露边界确认和重放沙箱", async () => {
     const provider = createProvider();
     const model = createModel();
     const sendMessage = vi.fn((message: { type: string }, callback: (response: unknown) => void) => {
@@ -215,17 +215,24 @@ describe("appStore 网络搜索", () => {
       chatPreferences: {
         ...state.chatPreferences,
         toolCallingEnabled: true,
-        enabledToolIds: ["web_search.tavily", "browser.take_snapshot", "browser.click", "runtime.inspect_globals"],
+        enabledToolIds: [
+          "web_search.tavily",
+          "browser.take_snapshot",
+          "browser.click",
+          "runtime.inspect_globals",
+          "boundary.request_user_choice",
+          "replay.prepare_request",
+        ],
       },
       browserControlEnabled: false,
-      runtimeReadonlyEnabled: false,
+      browserAutomationMode: "normal_restricted",
     }));
 
     await useAppStore.getState().sendChatMessage("未开启浏览器控制");
     useAppStore.setState({ browserControlEnabled: true });
     await useAppStore.getState().sendChatMessage("已开启浏览器控制");
-    useAppStore.setState({ runtimeReadonlyEnabled: true });
-    await useAppStore.getState().sendChatMessage("已开启运行时只读");
+    useAppStore.setState({ browserAutomationMode: "controlled_enhanced" });
+    await useAppStore.getState().sendChatMessage("已开启受控增强");
 
     const chatRequests = sendMessage.mock.calls
       .map(([message]) => message as { type: string; enabledToolIds?: string[] })
@@ -256,12 +263,16 @@ describe("appStore 网络搜索", () => {
       "sourcemap.list_candidates",
       "sourcemap.resolve_location",
       "sourcemap.extract_original_context",
-    ]);
-    expect(chatRequests[2].enabledToolIds).toEqual([
-      ...chatRequests[1].enabledToolIds!,
       "runtime.inspect_globals",
       "runtime.search_modules",
       "runtime.describe_function",
+    ]);
+    expect(chatRequests[2].enabledToolIds).toEqual([
+      ...chatRequests[1].enabledToolIds!,
+      "boundary.request_user_choice",
+      "replay.prepare_request",
+      "replay.send_request",
+      "replay.compare_responses",
     ]);
   });
 });

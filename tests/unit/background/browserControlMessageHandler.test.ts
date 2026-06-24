@@ -392,7 +392,7 @@ describe("浏览器控制地基", () => {
     expect(response).toEqual({ ok: true, attached: true, tabId: 8, message: "已开启" });
   });
 
-  it("runtime 工具未额外授权时拒绝执行，授权后使用固定 Runtime.evaluate", async () => {
+  it("普通模式默认允许 runtime 只读工具使用固定 Runtime.evaluate", async () => {
     const chromeMock = createChromeMock({
       sendCommandResults: {
         "Runtime.evaluate": { result: { value: [{ path: "__APP_CONFIG__", exists: true, value: { entries: [["safe", { value: "ok" }]] } }] } },
@@ -402,13 +402,6 @@ describe("浏览器控制地基", () => {
     const manager = new BrowserControlManager(connection, chromeMock);
 
     await manager.setEnabled(true, 7);
-    const blocked = await manager.executeRuntimeReadTool(createNamedToolCall("runtime_inspect_globals", { paths: ["window.__APP_CONFIG__"] }));
-    expect(blocked).toMatchObject({
-      isError: true,
-      content: "运行时只读分析未授权，无法执行 runtime.* 工具。请先显式开启运行时只读分析。",
-    });
-
-    expect(manager.setRuntimeReadonlyEnabled(true)).toMatchObject({ ok: true, attached: true, expiresAt: expect.any(Number) });
     const result = await manager.executeRuntimeReadTool(createNamedToolCall("runtime_inspect_globals", { paths: ["window.__APP_CONFIG__"] }));
 
     expect(result.isError).toBeUndefined();
@@ -423,18 +416,9 @@ describe("浏览器控制地基", () => {
       }),
       expect.any(Function),
     );
-    expect(chromeMock.runtime.sendMessage).toHaveBeenCalledWith(
-      expect.objectContaining({
-        type: BROWSER_CONTROL_RUNTIME_READONLY_CHANGED_MESSAGE_TYPE,
-        enabled: true,
-        tabId: 7,
-        expiresAt: expect.any(Number),
-      }),
-      expect.any(Function),
-    );
   });
 
-  it("切换受控页面会清理运行时只读授权", async () => {
+  it("切换受控页面会保留用户选择的受控增强模式并清理一次性授权", async () => {
     const chromeMock = createChromeMock({
       tabs: [
         { id: 7, title: "页面 A", url: "https://example.com/a", active: true, windowId: 1, groupId: -1 } as chrome.tabs.Tab & { id: number },
@@ -445,14 +429,176 @@ describe("浏览器控制地基", () => {
     const manager = new BrowserControlManager(connection, chromeMock);
 
     await manager.setEnabled(true, 7);
-    expect(manager.setRuntimeReadonlyEnabled(true)).toMatchObject({ ok: true });
+    expect(manager.setAutomationMode("controlled_enhanced")).toMatchObject({ ok: true });
     await manager.executeBrowserTool(createNamedToolCall("select_page", { index: 2 }));
 
-    expect(manager.canExposeRuntimeReadTool()).toBe(false);
+    expect(manager.canExposeRuntimeReadTool()).toBe(true);
+    expect(manager.canExposeBoundaryChoiceTool()).toBe(true);
     expect(chromeMock.runtime.sendMessage).toHaveBeenCalledWith(
-      { type: BROWSER_CONTROL_RUNTIME_READONLY_CHANGED_MESSAGE_TYPE, enabled: false, tabId: 7 },
+      expect.objectContaining({ type: "browserControl.automationModeChanged", mode: "controlled_enhanced" }),
       expect.any(Function),
     );
+    expect(chromeMock.runtime.sendMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "browserControl.automationModeChanged", mode: "normal_restricted" }),
+      expect.any(Function),
+    );
+  });
+
+  it("受控增强模式下执行 Network 工具遇到脱敏字段会主动触发权限边界确认", async () => {
+    const chromeMock = createChromeMock({
+      sendCommandResults: {
+        "Network.getResponseBody": { body: "{\"token\":\"secret\",\"password\":\"123456\",\"ok\":true}", base64Encoded: false },
+      },
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+    chromeMock.runtime.sendMessage.mockImplementation((message: unknown, callback?: () => void) => {
+      if ((message as { type?: string }).type === "browserControl.boundaryChoiceRequest") {
+        manager.respondBoundaryChoice((message as { requestId: string }).requestId, { selectedChoiceIds: ["allow_redacted_sensitive_fields"] });
+      }
+      callback?.();
+      return undefined;
+    });
+
+    await manager.setEnabled(true, 7);
+    manager.setAutomationMode("controlled_enhanced");
+    chromeMock.eventListeners.forEach((listener) => {
+      listener({ tabId: 7 }, "Network.requestWillBeSent", {
+        requestId: "req-1",
+        type: "XHR",
+        request: {
+          url: "https://example.com/api/user?token=secret",
+          method: "GET",
+          headers: { Authorization: "Bearer secret" },
+        },
+      });
+      listener({ tabId: 7 }, "Network.responseReceived", {
+        requestId: "req-1",
+        type: "XHR",
+        response: {
+          status: 200,
+          statusText: "OK",
+          mimeType: "application/json",
+          headers: { "Content-Type": "application/json" },
+        },
+      });
+    });
+
+    const result = await manager.executeNetworkTool(createNamedToolCall("network_get_request_details", { requestIds: ["req-1"] }));
+
+    const boundaryChoiceCall = chromeMock.runtime.sendMessage.mock.calls.find(([message]) =>
+      (message as { type?: string }).type === "browserControl.boundaryChoiceRequest");
+    expect(boundaryChoiceCall?.[0]).toEqual(expect.objectContaining({
+      type: "browserControl.boundaryChoiceRequest",
+      question: expect.stringContaining("允许处理"),
+    }));
+    expect(result.content).toContain("\"password\":\"123456\"");
+    expect(result.toolAttachments?.[0]).toMatchObject({
+      redacted: false,
+      requests: [expect.objectContaining({
+        responseBody: "{\"token\":\"secret\",\"password\":\"123456\",\"ok\":true}",
+        redacted: false,
+      })],
+    });
+  });
+
+  it("受控增强确认 JS 上下文扩展后会立即重跑并启用同源补位", async () => {
+    const chromeMock = createChromeMock();
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+    chromeMock.runtime.sendMessage.mockImplementation((message: unknown, callback?: () => void) => {
+      if ((message as { type?: string }).type === "browserControl.boundaryChoiceRequest") {
+        manager.respondBoundaryChoice((message as { requestId: string }).requestId, { selectedChoiceIds: ["allow_js_or_sourcemap_context_expansion"] });
+      }
+      callback?.();
+      return undefined;
+    });
+
+    await manager.setEnabled(true, 7);
+    manager.setAutomationMode("controlled_enhanced");
+    const result = await manager.executeJsSourceTool(createNamedToolCall("js_search_sources", {
+      keywords: ["api"],
+      urls: ["https://example.com/app.js"],
+    }));
+
+    expect(result.content).not.toContain("需要 allowSameOriginFetch=true");
+    expect(result.content).not.toContain("用户已确认本次受控增强边界");
+  });
+
+  it("受控增强确认 Runtime 摘要扩展后会使用更大摘要参数重跑并消费授权", async () => {
+    const chromeMock = createChromeMock({
+      sendCommandResults: {
+        "Runtime.evaluate": { result: { value: { long: Array.from({ length: 40 }, (_, index) => [`k${index}`, { value: index }]), truncated: true } } },
+      },
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+    chromeMock.runtime.sendMessage.mockImplementation((message: unknown, callback?: () => void) => {
+      if ((message as { type?: string }).type === "browserControl.boundaryChoiceRequest") {
+        manager.respondBoundaryChoice((message as { requestId: string }).requestId, { selectedChoiceIds: ["allow_truncated_summary"] });
+      }
+      callback?.();
+      return undefined;
+    });
+
+    await manager.setEnabled(true, 7);
+    manager.setAutomationMode("controlled_enhanced");
+    await manager.executeRuntimeReadTool(createNamedToolCall("runtime_inspect_globals", { paths: ["window.__APP_CONFIG__"], maxDepth: 1, limit: 1 }));
+
+    const runtimeEvaluateCalls = chromeMock.debugger.sendCommand.mock.calls.filter((call) => call[1] === "Runtime.evaluate");
+    expect(runtimeEvaluateCalls.length).toBeGreaterThanOrEqual(2);
+    expect(runtimeEvaluateCalls.at(-1)?.[2]).toEqual(expect.objectContaining({
+      expression: expect.stringContaining("const maxDepth = 4"),
+    }));
+    expect(runtimeEvaluateCalls.at(-1)?.[2]).toEqual(expect.objectContaining({
+      expression: expect.stringContaining("const limit = 30"),
+    }));
+  });
+
+  it("已有请求重放授权时 send 只发送一次并立即消费授权", async () => {
+    const fetchMock = vi.fn(async () => new Response("{\"ok\":true}", {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const chromeMock = createChromeMock();
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+    chromeMock.runtime.sendMessage.mockImplementation((message: unknown, callback?: () => void) => {
+      if ((message as { type?: string }).type === "browserControl.boundaryChoiceRequest") {
+        const request = message as { requestId: string; choices?: Array<{ id: string; grants: string[] }> };
+        const allowChoiceId = request.choices?.find((choice) => choice.grants.length > 0)?.id ?? "";
+        manager.respondBoundaryChoice(request.requestId, { selectedChoiceIds: [allowChoiceId] });
+      }
+      callback?.();
+      return undefined;
+    });
+
+    await manager.setEnabled(true, 7);
+    manager.setAutomationMode("controlled_enhanced");
+    chromeMock.eventListeners.forEach((listener) => {
+      listener({ tabId: 7 }, "Network.requestWillBeSent", {
+        requestId: "req-1",
+        type: "XHR",
+        request: {
+          url: "https://example.com/api/items",
+          method: "GET",
+          headers: { Accept: "application/json" },
+        },
+      });
+    });
+    const prepareResult = await manager.executeReplayTool(createNamedToolCall("replay_prepare_request", { requestId: "req-1" }));
+    const draftId = prepareResult.content.match(/draftId：(\S+)/)?.[1];
+    expect(draftId).toBeTruthy();
+
+    const sendResult = await manager.executeReplayTool(createNamedToolCall("replay_send_request", { draftId }));
+
+    expect(sendResult.isError).toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const secondSend = await manager.executeReplayTool(createNamedToolCall("replay_send_request", { draftId }));
+    expect(secondSend.isError).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    vi.unstubAllGlobals();
   });
 
   it("已连接时读取 Accessibility Tree 并格式化为带 UID 的页面快照", async () => {

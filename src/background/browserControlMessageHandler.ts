@@ -1,27 +1,48 @@
 import {
+  BROWSER_CONTROL_AUTOMATION_MODE_CHANGED_MESSAGE_TYPE,
+  BROWSER_CONTROL_BOUNDARY_CHOICE_RESPOND_MESSAGE_TYPE,
   BROWSER_CONTROL_DETACHED_MESSAGE_TYPE,
-  BROWSER_CONTROL_RUNTIME_READONLY_CHANGED_MESSAGE_TYPE,
+  BROWSER_CONTROL_SET_AUTOMATION_MODE_MESSAGE_TYPE,
   BROWSER_CONTROL_SET_ENABLED_MESSAGE_TYPE,
   BROWSER_CONTROL_SET_RUNTIME_READONLY_MESSAGE_TYPE,
   getBrowserControlTabUrl,
   isBrowserControlRestrictedUrl,
+  type BrowserControlBoundaryChoiceRequestMessage,
   type BrowserControlMessage,
   type BrowserControlResponse,
 } from "../shared/browserControl";
 import type { ModelToolCall, ModelToolResult } from "../shared/models/types";
-import type { ToolAuthorizationContext } from "../shared/toolAuthorization";
-import { NORMAL_TOOL_AUTHORIZATION_CONTEXT, isRuntimeReadonlyAuthorized } from "../shared/toolAuthorization";
+import type { BrowserAutomationMode, ToolAuthorizationContext } from "../shared/toolAuthorization";
+import { NORMAL_TOOL_AUTHORIZATION_CONTEXT, createBoundaryGrantScopeKey, getOriginFromUrl, isControlledEnhancedAuthorized, isRuntimeReadonlyAuthorized } from "../shared/toolAuthorization";
+import {
+  NETWORK_COMPARE_REQUESTS_TOOL_ID,
+  NETWORK_COMPARE_REQUESTS_TOOL_NAME,
+  NETWORK_FIND_PARAMETER_CANDIDATES_TOOL_ID,
+  NETWORK_FIND_PARAMETER_CANDIDATES_TOOL_NAME,
+  NETWORK_GET_REQUEST_DETAILS_TOOL_ID,
+  NETWORK_GET_REQUEST_DETAILS_TOOL_NAME,
+  NETWORK_EXTRACT_JS_CANDIDATES_TOOL_ID,
+  NETWORK_EXTRACT_JS_CANDIDATES_TOOL_NAME,
+  REPLAY_SEND_REQUEST_TOOL_ID,
+  REPLAY_SEND_REQUEST_TOOL_NAME,
+  RUNTIME_DESCRIBE_FUNCTION_TOOL_NAME,
+  RUNTIME_INSPECT_GLOBALS_TOOL_NAME,
+  RUNTIME_SEARCH_MODULES_TOOL_NAME,
+} from "../shared/models/toolRegistry";
 import {
   BrowserControlActionExecutor,
   createBrowserActionDisabledResult,
   createBrowserActionErrorResult,
   isBrowserControlActionName,
 } from "./browserControl/actions";
+import { applyAutomationBoundaryConfirmation } from "./browserControl/automationBoundaryDetector";
 import { BrowserNetworkRecorder } from "./browserControl/networkRecorder";
 import { BrowserNetworkToolExecutor } from "./browserControl/networkToolExecutor";
 import { JsSourceToolExecutor } from "./browserControl/jsSourceToolExecutor";
 import { SourceMapToolExecutor } from "./browserControl/sourceMapToolExecutor";
 import { RuntimeReadToolExecutor } from "./browserControl/runtimeReadToolExecutor";
+import { BoundaryChoiceToolExecutor } from "./browserControl/boundaryChoiceToolExecutor";
+import { ReplayToolExecutor } from "./browserControl/replayToolExecutor";
 
 type Debuggee = chrome.debugger.Debuggee;
 type ChromeApi = typeof chrome;
@@ -628,6 +649,7 @@ export class BrowserControlSnapshotManager {
 
 export class BrowserControlManager {
   private targetTabId: number | undefined;
+  private currentOrigin: string | undefined;
   private readonly controlledTabIds = new Set<number>();
   private suppressNextDetachTabId: number | undefined;
   private desiredEnabled = false;
@@ -639,7 +661,11 @@ export class BrowserControlManager {
   private readonly jsSourceToolExecutor: JsSourceToolExecutor;
   private readonly sourceMapToolExecutor: SourceMapToolExecutor;
   private readonly runtimeReadToolExecutor: RuntimeReadToolExecutor;
+  private readonly boundaryChoiceToolExecutor: BoundaryChoiceToolExecutor;
+  private readonly replayToolExecutor: ReplayToolExecutor;
   private toolAuthorizationContext: ToolAuthorizationContext = NORMAL_TOOL_AUTHORIZATION_CONTEXT;
+  private browserAutomationMode: BrowserAutomationMode = "normal_restricted";
+  private activeBoundaryGrantScopeKey: string | undefined;
 
   constructor(
     private readonly connection = new BrowserDebuggerConnection(),
@@ -652,18 +678,29 @@ export class BrowserControlManager {
     this.jsSourceToolExecutor = new JsSourceToolExecutor({
       recorder: this.networkRecorder,
       getCurrentPageUrl: async () => (await this.getTargetTabInfo()).url,
+      getBoundaryGrant: () => this.getScopedBoundaryGrantContext(),
     });
     this.sourceMapToolExecutor = new SourceMapToolExecutor({
       recorder: this.networkRecorder,
       jsSourceIndex: this.jsSourceToolExecutor.getIndex(),
       getCurrentPageUrl: async () => (await this.getTargetTabInfo()).url,
+      getBoundaryGrant: () => this.getScopedBoundaryGrantContext(),
     });
     this.runtimeReadToolExecutor = new RuntimeReadToolExecutor(this.connection, () => this.getRuntimeToolAuthorizationContext());
+    this.boundaryChoiceToolExecutor = new BoundaryChoiceToolExecutor(
+      (message) => this.notifyBoundaryChoiceRequest(message),
+      () => this.getEnhancedToolContext(),
+    );
+    this.replayToolExecutor = new ReplayToolExecutor(
+      this.networkRecorder,
+      fetch,
+      () => this.getReplayToolContext(),
+    );
     this.networkToolExecutor = new BrowserNetworkToolExecutor(this.networkRecorder, () => {
       this.jsSourceToolExecutor.clear();
       this.sourceMapToolExecutor.clear();
-      this.clearRuntimeReadonlyAuthorization();
-    });
+      this.clearAutomationTransientState();
+    }, () => this.getScopedBoundaryGrantContext());
     this.connection.installDetachListener((tabId, reason) => {
       if (this.suppressNextDetachTabId === tabId) {
         this.suppressNextDetachTabId = undefined;
@@ -671,11 +708,12 @@ export class BrowserControlManager {
       }
 
       this.targetTabId = undefined;
+      this.currentOrigin = undefined;
       this.desiredEnabled = false;
       this.controlledTabIds.clear();
       this.snapshotManager.clearSnapshotCache();
       this.stopNetworkAnalysis();
-      this.clearRuntimeReadonlyAuthorization();
+      this.clearAutomationModeState();
       this.notifyDetached(tabId, normalizeDetachReason(reason));
     });
     this.connection.installEventListener();
@@ -687,10 +725,11 @@ export class BrowserControlManager {
     }
 
     this.targetTabId = undefined;
+    this.currentOrigin = undefined;
     this.controlledTabIds.delete(tabId);
     this.snapshotManager.clearSnapshotCache();
     this.stopNetworkAnalysis();
-    this.clearRuntimeReadonlyAuthorization();
+    this.clearAutomationModeState();
     this.notifyDetached(tabId, "tab_removed");
     void this.connection.detach(tabId).catch(() => {
       // 标签页关闭期间 detach 只是尽力清理；异常不能冒泡成未处理 Promise。
@@ -705,10 +744,11 @@ export class BrowserControlManager {
       const detachedTabId = tabId ?? this.connection.attachedTabId;
       await this.connection.detach();
       this.targetTabId = undefined;
+      this.currentOrigin = undefined;
       this.controlledTabIds.clear();
       this.snapshotManager.clearSnapshotCache();
       this.stopNetworkAnalysis();
-      this.clearRuntimeReadonlyAuthorization();
+      this.clearAutomationModeState();
       this.notifyDetached(detachedTabId, "disabled_by_user");
       return { ok: true, attached: false, message: "浏览器控制已关闭。" };
     }
@@ -716,31 +756,36 @@ export class BrowserControlManager {
     const tabResult = await this.resolveTargetTab(tabId);
     if (!this.isCurrentEnableOperation(operationVersion)) {
       this.targetTabId = undefined;
+      this.currentOrigin = undefined;
       this.controlledTabIds.clear();
       return { ok: true, attached: false, message: "浏览器控制已关闭。" };
     }
 
     if (!tabResult.ok) {
       this.targetTabId = undefined;
+      this.currentOrigin = undefined;
       this.controlledTabIds.clear();
       return tabResult;
     }
 
     this.targetTabId = tabResult.tab.id;
+    this.currentOrigin = getOriginFromUrl(getBrowserControlTabUrl(tabResult.tab));
     await this.initializeControlledTabs(tabResult.tab);
     const attachResult = await this.connection.attach(tabResult.tab.id, () => this.isCurrentEnableOperation(operationVersion));
     if (!this.isCurrentEnableOperation(operationVersion)) {
       await this.connection.detach(tabResult.tab.id);
       this.targetTabId = undefined;
+      this.currentOrigin = undefined;
       this.controlledTabIds.clear();
       return { ok: true, attached: false, message: "浏览器控制已关闭。" };
     }
 
     if (!attachResult.ok) {
       this.targetTabId = undefined;
+      this.currentOrigin = undefined;
       this.controlledTabIds.clear();
       this.stopNetworkAnalysis();
-      this.clearRuntimeReadonlyAuthorization();
+      this.clearAutomationModeState();
     } else if (this.connection.attachedTabId) {
       this.startNetworkAnalysis(this.connection.attachedTabId);
     }
@@ -762,56 +807,143 @@ export class BrowserControlManager {
 
   canExposeRuntimeReadTool(): boolean {
     if (!this.canExposeNetworkTool()) {
-      this.clearRuntimeReadonlyAuthorization();
       return false;
     }
 
-    return this.getRuntimeToolAuthorizationContext().mode === "runtime_readonly";
+    return this.browserAutomationMode === "normal_restricted" || this.getRuntimeToolAuthorizationContext().mode === "controlled_enhanced";
   }
 
-  setRuntimeReadonlyEnabled(enabled: boolean, reason = "用户临时开启运行时只读分析。"): BrowserControlResponse {
-    if (!enabled) {
-      this.clearRuntimeReadonlyAuthorization();
-      return { ok: true, attached: this.connection.isAttached, tabId: this.connection.attachedTabId, message: "运行时只读分析已关闭。" };
-    }
+  setRuntimeReadonlyEnabled(_enabled: boolean, reason = "用户临时开启运行时只读分析。"): BrowserControlResponse {
+    return this.setAutomationMode("normal_restricted", reason);
+  }
 
+  setAutomationMode(mode: BrowserAutomationMode, reason = "用户切换浏览器自动化模式。"): BrowserControlResponse {
     if (!this.canExposeNetworkTool() || typeof this.connection.attachedTabId !== "number") {
-      this.clearRuntimeReadonlyAuthorization();
-      return { ok: false, message: "浏览器控制或 Network 采集未开启，无法开启运行时只读分析。" };
+      this.clearAutomationModeState();
+      return { ok: false, message: "浏览器控制或 Network 采集未开启，无法切换浏览器自动化模式。" };
     }
 
-    const now = Date.now();
-    const expiresAt = now + 30 * 60 * 1000;
-    this.toolAuthorizationContext = {
-      mode: "runtime_readonly",
+    if (mode === "normal_restricted") {
+      this.clearAutomationModeState();
+      return { ok: true, attached: true, tabId: this.connection.attachedTabId, message: "已切换到普通模式（受限）。" };
+    }
+
+    this.browserAutomationMode = mode;
+    this.refreshAutomationModeAuthorizationContext(reason);
+    this.clearAutomationTransientState();
+    this.notifyAutomationModeChanged(mode, this.connection.attachedTabId);
+    return {
+      ok: true,
+      attached: true,
       tabId: this.connection.attachedTabId,
-      createdAt: now,
-      expiresAt,
-      reason,
+      message: mode === "controlled_enhanced" ? "受控增强模式已临时开启。" : "完全访问模式已进入规划占位，v1 暂不执行高权限动作。",
     };
-    this.notifyRuntimeReadonlyChanged(true, this.connection.attachedTabId, expiresAt);
-    return { ok: true, attached: true, tabId: this.connection.attachedTabId, expiresAt, message: "运行时只读分析已临时开启。" };
   }
 
   async executeNetworkTool(toolCall: ModelToolCall): Promise<ModelToolResult> {
-    return this.networkToolExecutor.execute(toolCall);
+    const scopeKey = createBoundaryGrantScopeKey(toolCall);
+    const hadGrantBefore = this.canRevealSensitiveNetworkResult(scopeKey);
+    const initialResult = await this.withBoundaryGrantScope(scopeKey, () => this.networkToolExecutor.execute(toolCall));
+    if (hadGrantBefore && isNetworkDetailLikeToolCall(toolCall)) {
+      this.boundaryChoiceToolExecutor.clearGrantContext();
+      return initialResult;
+    }
+    const boundaryResult = await this.applyAutomationBoundaryConfirmation(toolCall, initialResult);
+    if (!hadGrantBefore && isNetworkDetailLikeToolCall(toolCall) && this.canRevealSensitiveNetworkResult(scopeKey)) {
+      const revealedResult = await this.withBoundaryGrantScope(scopeKey, () => this.networkToolExecutor.execute(toolCall));
+      this.boundaryChoiceToolExecutor.clearGrantContext();
+      return revealedResult;
+    }
+    return boundaryResult;
   }
 
   async executeJsSourceTool(toolCall: ModelToolCall): Promise<ModelToolResult> {
-    return this.jsSourceToolExecutor.execute(toolCall);
+    const scopeKey = createBoundaryGrantScopeKey(toolCall);
+    const hadGrantBefore = this.canExpandJsOrSourceMapContext(scopeKey);
+    const initialResult = await this.withBoundaryGrantScope(scopeKey, () => this.jsSourceToolExecutor.execute(toolCall));
+    if (hadGrantBefore) {
+      this.boundaryChoiceToolExecutor.clearGrantContext();
+      return initialResult;
+    }
+    const boundaryResult = await this.applyAutomationBoundaryConfirmation(toolCall, initialResult);
+    if (!hadGrantBefore && this.canExpandJsOrSourceMapContext(scopeKey)) {
+      const expandedResult = await this.withBoundaryGrantScope(scopeKey, () => this.jsSourceToolExecutor.execute(toolCall));
+      this.boundaryChoiceToolExecutor.clearGrantContext();
+      return expandedResult;
+    }
+    return boundaryResult;
   }
 
   async executeSourceMapTool(toolCall: ModelToolCall): Promise<ModelToolResult> {
     await this.jsSourceToolExecutor.refreshResourcesForAnalysis();
-    return this.sourceMapToolExecutor.execute(toolCall);
+    const scopeKey = createBoundaryGrantScopeKey(toolCall);
+    const hadGrantBefore = this.canExpandJsOrSourceMapContext(scopeKey);
+    const initialResult = await this.withBoundaryGrantScope(scopeKey, () => this.sourceMapToolExecutor.execute(toolCall));
+    if (hadGrantBefore) {
+      this.boundaryChoiceToolExecutor.clearGrantContext();
+      return initialResult;
+    }
+    const boundaryResult = await this.applyAutomationBoundaryConfirmation(toolCall, initialResult);
+    if (!hadGrantBefore && this.canExpandJsOrSourceMapContext(scopeKey)) {
+      const expandedResult = await this.withBoundaryGrantScope(scopeKey, () => this.sourceMapToolExecutor.execute(toolCall));
+      this.boundaryChoiceToolExecutor.clearGrantContext();
+      return expandedResult;
+    }
+    return boundaryResult;
   }
 
   async executeRuntimeReadTool(toolCall: ModelToolCall): Promise<ModelToolResult> {
     if (!this.canExposeRuntimeReadTool()) {
-      return createBrowserToolErrorResult(toolCall, "运行时只读分析未授权，无法执行 runtime.* 工具。请先显式开启运行时只读分析。");
+      return createBrowserToolErrorResult(toolCall, "当前浏览器自动化模式不允许执行 runtime.* 工具。");
     }
 
-    return this.runtimeReadToolExecutor.execute(toolCall);
+    const scopeKey = createBoundaryGrantScopeKey(toolCall);
+    const hadGrantBefore = this.canExpandRuntimeSummary(scopeKey);
+    const initialResult = await this.runtimeReadToolExecutor.execute(hadGrantBefore ? createExpandedRuntimeToolCall(toolCall) : toolCall);
+    if (hadGrantBefore) {
+      this.boundaryChoiceToolExecutor.clearGrantContext();
+      return initialResult;
+    }
+    const boundaryResult = await this.applyAutomationBoundaryConfirmation(toolCall, initialResult);
+    if (!hadGrantBefore && this.canExpandRuntimeSummary(scopeKey)) {
+      const expandedResult = await this.runtimeReadToolExecutor.execute(createExpandedRuntimeToolCall(toolCall));
+      this.boundaryChoiceToolExecutor.clearGrantContext();
+      return expandedResult;
+    }
+    return boundaryResult;
+  }
+
+  canExposeBoundaryChoiceTool(): boolean {
+    return this.canExposeNetworkTool() && this.boundaryChoiceToolExecutor.canExpose();
+  }
+
+  executeBoundaryChoiceTool(toolCall: ModelToolCall): Promise<ModelToolResult> {
+    return this.boundaryChoiceToolExecutor.execute(toolCall);
+  }
+
+  canExposeReplayTool(): boolean {
+    return this.canExposeNetworkTool() && this.replayToolExecutor.canExpose();
+  }
+
+  async executeReplayTool(toolCall: ModelToolCall): Promise<ModelToolResult> {
+    const scopeKey = createBoundaryGrantScopeKey(toolCall);
+    const hadGrantBefore = this.hasReplaySendGrant(scopeKey);
+    const initialResult = await this.withBoundaryGrantScope(scopeKey, () => this.replayToolExecutor.execute(toolCall));
+    if (hadGrantBefore && isReplaySendToolCall(toolCall)) {
+      this.boundaryChoiceToolExecutor.clearGrantContext();
+      return initialResult;
+    }
+    const boundaryResult = await this.applyAutomationBoundaryConfirmation(toolCall, initialResult);
+    if (!hadGrantBefore && isReplaySendToolCall(toolCall) && this.hasReplaySendGrant(scopeKey)) {
+      const replayResult = await this.withBoundaryGrantScope(scopeKey, () => this.replayToolExecutor.execute(toolCall));
+      this.boundaryChoiceToolExecutor.clearGrantContext();
+      return replayResult;
+    }
+    return boundaryResult;
+  }
+
+  respondBoundaryChoice(requestId: string, response: { selectedChoiceIds: string[]; otherText?: string }): boolean {
+    return this.boundaryChoiceToolExecutor.respond(requestId, response);
   }
 
   async takeSnapshot(toolCall: ModelToolCall): Promise<ModelToolResult> {
@@ -910,14 +1042,16 @@ export class BrowserControlManager {
       this.snapshotManager.clearSnapshotCache();
       this.jsSourceToolExecutor.clear();
       this.sourceMapToolExecutor.clear();
-      this.clearRuntimeReadonlyAuthorization();
+      this.clearAutomationTransientState();
+      this.currentOrigin = getOriginFromUrl(urlResult.url);
+      this.refreshAutomationModeAuthorizationContext("页面导航后延续用户选择的浏览器自动化模式。");
       content = `已导航到 ${urlResult.url}。`;
     } else if (action === "reload") {
       await this.connection.reload();
       this.snapshotManager.clearSnapshotCache();
       this.jsSourceToolExecutor.clear();
       this.sourceMapToolExecutor.clear();
-      this.clearRuntimeReadonlyAuthorization();
+      this.clearAutomationTransientState();
       content = "已刷新当前页面。";
     } else {
       const history = normalizeNavigationHistory(await this.connection.getNavigationHistory());
@@ -930,7 +1064,7 @@ export class BrowserControlManager {
       this.snapshotManager.clearSnapshotCache();
       this.jsSourceToolExecutor.clear();
       this.sourceMapToolExecutor.clear();
-      this.clearRuntimeReadonlyAuthorization();
+      this.clearAutomationTransientState();
       content = action === "back" ? "已后退到上一页。" : "已前进到下一页。";
     }
 
@@ -1011,7 +1145,7 @@ export class BrowserControlManager {
       this.controlledTabIds.clear();
       this.snapshotManager.clearSnapshotCache();
       this.stopNetworkAnalysis();
-      this.clearRuntimeReadonlyAuthorization();
+      this.clearAutomationModeState();
       this.notifyDetached(detachedTabId, "tab_removed");
       return `已关闭当前受控页面 ${index}，浏览器控制后台受控列表内没有其他可控页面。`;
     }
@@ -1025,14 +1159,17 @@ export class BrowserControlManager {
     this.snapshotManager.clearSnapshotCache();
     this.jsSourceToolExecutor.clear();
     this.sourceMapToolExecutor.clear();
-    this.clearRuntimeReadonlyAuthorization();
     this.targetTabId = tabId;
     this.controlledTabIds.add(tabId);
+    const tab = await this.chromeApi?.tabs.get?.(tabId);
+    this.currentOrigin = getOriginFromUrl(getBrowserControlTabUrl(tab));
+    this.clearAutomationTransientState();
+    this.refreshAutomationModeAuthorizationContext("切换受控页面后延续用户选择的浏览器自动化模式。");
     const attachResult = await this.connection.attach(tabId);
     if (!attachResult.ok) {
       this.targetTabId = undefined;
       this.stopNetworkAnalysis();
-      this.clearRuntimeReadonlyAuthorization();
+      this.clearAutomationModeState();
       throw new Error(attachResult.message);
     }
     this.startNetworkAnalysis(tabId);
@@ -1041,32 +1178,140 @@ export class BrowserControlManager {
   private startNetworkAnalysis(tabId: number): void {
     this.jsSourceToolExecutor.clear();
     this.sourceMapToolExecutor.clear();
-    this.clearRuntimeReadonlyAuthorization();
+    this.clearAutomationTransientState();
+    this.refreshAutomationModeAuthorizationContext("Network 采集重启后延续用户选择的浏览器自动化模式。");
     this.networkRecorder.start(tabId);
   }
 
   private stopNetworkAnalysis(): void {
     this.jsSourceToolExecutor.clear();
     this.sourceMapToolExecutor.clear();
-    this.clearRuntimeReadonlyAuthorization();
+    this.clearAutomationTransientState();
     this.networkRecorder.stop();
   }
 
   private getRuntimeToolAuthorizationContext(): ToolAuthorizationContext {
+    if (this.canExposeNetworkTool() && this.browserAutomationMode === "normal_restricted" && typeof this.connection.attachedTabId === "number") {
+      return {
+        mode: "runtime_readonly",
+        tabId: this.connection.attachedTabId,
+        origin: this.getCurrentOrigin(),
+        createdAt: Date.now(),
+        reason: "普通模式默认启用运行时只读分析。",
+      };
+    }
+
     if (isRuntimeReadonlyAuthorized(this.toolAuthorizationContext, this.connection.attachedTabId)) {
       return this.toolAuthorizationContext;
     }
 
-    this.clearRuntimeReadonlyAuthorization();
     return NORMAL_TOOL_AUTHORIZATION_CONTEXT;
   }
 
-  private clearRuntimeReadonlyAuthorization(): void {
+  private refreshAutomationModeAuthorizationContext(reason: string): void {
+    if (this.browserAutomationMode === "normal_restricted" || typeof this.connection.attachedTabId !== "number") {
+      this.toolAuthorizationContext = NORMAL_TOOL_AUTHORIZATION_CONTEXT;
+      return;
+    }
+
+    this.toolAuthorizationContext = {
+      mode: this.browserAutomationMode === "controlled_enhanced" ? "controlled_enhanced" : "full_access_reserved",
+      tabId: this.connection.attachedTabId,
+      origin: this.getCurrentOrigin(),
+      createdAt: Date.now(),
+      reason,
+    };
+  }
+
+  private clearAutomationTransientState(): void {
+    this.boundaryChoiceToolExecutor.clearGrantContext();
+    this.replayToolExecutor.clear();
+  }
+
+  private clearAutomationModeState(): void {
     const previous = this.toolAuthorizationContext;
     this.toolAuthorizationContext = NORMAL_TOOL_AUTHORIZATION_CONTEXT;
-    if (previous.mode === "runtime_readonly") {
-      this.notifyRuntimeReadonlyChanged(false, previous.tabId);
+    this.browserAutomationMode = "normal_restricted";
+    this.boundaryChoiceToolExecutor.clear();
+    this.replayToolExecutor.clear();
+    if (previous.mode === "runtime_readonly" || previous.mode === "controlled_enhanced" || previous.mode === "full_access_reserved") {
+      this.notifyAutomationModeChanged("normal_restricted", previous.tabId);
     }
+  }
+
+  private getEnhancedToolContext(): { tabId?: number; origin?: string; enhanced: boolean } {
+    return {
+      tabId: this.connection.attachedTabId,
+      origin: this.getCurrentOrigin(),
+      enhanced: this.browserAutomationMode === "controlled_enhanced" &&
+        isControlledEnhancedAuthorized(this.toolAuthorizationContext, this.connection.attachedTabId),
+    };
+  }
+
+  private getReplayToolContext(): { tabId?: number; origin?: string; enhanced: boolean; grant?: ReturnType<BoundaryChoiceToolExecutor["getCurrentGrantContext"]> } {
+    return {
+      ...this.getEnhancedToolContext(),
+      grant: this.getScopedBoundaryGrantContext(),
+    };
+  }
+
+  private getScopedBoundaryGrantContext(): ReturnType<BoundaryChoiceToolExecutor["getCurrentGrantContext"]> {
+    const grant = this.boundaryChoiceToolExecutor.getCurrentGrantContext();
+    if (!grant || !this.activeBoundaryGrantScopeKey || grant.scopeKey !== this.activeBoundaryGrantScopeKey) {
+      return undefined;
+    }
+    return grant;
+  }
+
+  private async withBoundaryGrantScope<T>(scopeKey: string, action: () => Promise<T>): Promise<T> {
+    const previousScopeKey = this.activeBoundaryGrantScopeKey;
+    this.activeBoundaryGrantScopeKey = scopeKey;
+    try {
+      return await action();
+    } finally {
+      this.activeBoundaryGrantScopeKey = previousScopeKey;
+    }
+  }
+
+  private canRevealSensitiveNetworkResult(scopeKey: string): boolean {
+    const grant = this.boundaryChoiceToolExecutor.getCurrentGrantContext();
+    return Boolean(grant && grant.scopeKey === scopeKey &&
+      grant.grants.includes("include_sensitive_field_in_current_tool_result") &&
+      grant.grants.includes("write_sensitive_result_to_chat_once"));
+  }
+
+  private canExpandJsOrSourceMapContext(scopeKey: string): boolean {
+    const grant = this.boundaryChoiceToolExecutor.getCurrentGrantContext();
+    return Boolean(grant && grant.scopeKey === scopeKey && grant.grants.includes("expand_js_or_sourcemap_context"));
+  }
+
+  private canExpandRuntimeSummary(scopeKey: string): boolean {
+    const grant = this.boundaryChoiceToolExecutor.getCurrentGrantContext();
+    return Boolean(grant && grant.scopeKey === scopeKey && grant.grants.includes("expand_runtime_summary_depth"));
+  }
+
+  private hasReplaySendGrant(scopeKey: string): boolean {
+    const grant = this.boundaryChoiceToolExecutor.getCurrentGrantContext();
+    return Boolean(grant && grant.scopeKey === scopeKey && grant.grants.includes("send_single_confirmed_replay_request_without_credentials"));
+  }
+
+  private async applyAutomationBoundaryConfirmation(toolCall: ModelToolCall, result: ModelToolResult): Promise<ModelToolResult> {
+    const scopeKey = createBoundaryGrantScopeKey(toolCall);
+    return applyAutomationBoundaryConfirmation(result, async (request) => {
+      if (!this.canExposeBoundaryChoiceTool()) {
+        return undefined;
+      }
+      const confirmation = await this.boundaryChoiceToolExecutor.execute({
+        id: `auto-boundary-${toolCall.id}-${Date.now()}`,
+        name: "boundary_request_user_choice",
+        arguments: { ...request, scopeKey },
+      });
+      return confirmation.content;
+    });
+  }
+
+  private getCurrentOrigin(): string | undefined {
+    return this.currentOrigin;
   }
 
   private async waitAfterPageChange(content: string): Promise<string> {
@@ -1196,15 +1441,22 @@ export class BrowserControlManager {
     });
   }
 
-  private notifyRuntimeReadonlyChanged(enabled: boolean, tabId: number | undefined, expiresAt?: number): void {
+  private notifyAutomationModeChanged(mode: BrowserAutomationMode, tabId: number | undefined, expiresAt?: number): void {
     this.chromeApi?.runtime?.sendMessage?.({
-      type: BROWSER_CONTROL_RUNTIME_READONLY_CHANGED_MESSAGE_TYPE,
-      enabled,
+      type: BROWSER_CONTROL_AUTOMATION_MODE_CHANGED_MESSAGE_TYPE,
+      mode,
       tabId,
       ...(expiresAt === undefined ? {} : { expiresAt }),
     }, () => {
       const lastError = this.chromeApi?.runtime?.lastError;
       // Side Panel 未打开时广播可能没有接收者；读取 lastError 避免 MV3 runtime 噪声。
+      void lastError?.message;
+    });
+  }
+
+  private notifyBoundaryChoiceRequest(message: BrowserControlBoundaryChoiceRequestMessage): void {
+    this.chromeApi?.runtime?.sendMessage?.(message, () => {
+      const lastError = this.chromeApi?.runtime?.lastError;
       void lastError?.message;
     });
   }
@@ -1367,6 +1619,59 @@ function normalizePageToolError(error: unknown): string {
   return "浏览器页面工具执行失败，请确认当前页面仍可访问后重试。";
 }
 
+function isNetworkDetailLikeToolCall(toolCall: ModelToolCall): boolean {
+  return [
+    NETWORK_GET_REQUEST_DETAILS_TOOL_ID,
+    NETWORK_GET_REQUEST_DETAILS_TOOL_NAME,
+    NETWORK_COMPARE_REQUESTS_TOOL_ID,
+    NETWORK_COMPARE_REQUESTS_TOOL_NAME,
+    NETWORK_FIND_PARAMETER_CANDIDATES_TOOL_ID,
+    NETWORK_FIND_PARAMETER_CANDIDATES_TOOL_NAME,
+    NETWORK_EXTRACT_JS_CANDIDATES_TOOL_ID,
+    NETWORK_EXTRACT_JS_CANDIDATES_TOOL_NAME,
+  ].includes(toolCall.name);
+}
+
+function isReplaySendToolCall(toolCall: ModelToolCall): boolean {
+  return toolCall.name === REPLAY_SEND_REQUEST_TOOL_ID || toolCall.name === REPLAY_SEND_REQUEST_TOOL_NAME;
+}
+
+function createExpandedRuntimeToolCall(toolCall: ModelToolCall): ModelToolCall {
+  if (toolCall.name === RUNTIME_INSPECT_GLOBALS_TOOL_NAME) {
+    return {
+      ...toolCall,
+      arguments: {
+        ...toolCall.arguments,
+        maxDepth: Math.max(typeof toolCall.arguments.maxDepth === "number" ? toolCall.arguments.maxDepth : 0, 4),
+        limit: Math.max(typeof toolCall.arguments.limit === "number" ? toolCall.arguments.limit : 0, 30),
+      },
+    };
+  }
+
+  if (toolCall.name === RUNTIME_SEARCH_MODULES_TOOL_NAME) {
+    return {
+      ...toolCall,
+      arguments: {
+        ...toolCall.arguments,
+        limit: Math.max(typeof toolCall.arguments.limit === "number" ? toolCall.arguments.limit : 0, 20),
+        radius: Math.max(typeof toolCall.arguments.radius === "number" ? toolCall.arguments.radius : 0, 500),
+      },
+    };
+  }
+
+  if (toolCall.name === RUNTIME_DESCRIBE_FUNCTION_TOOL_NAME) {
+    return {
+      ...toolCall,
+      arguments: {
+        ...toolCall.arguments,
+        radius: Math.max(typeof toolCall.arguments.radius === "number" ? toolCall.arguments.radius : 0, 1000),
+      },
+    };
+  }
+
+  return toolCall;
+}
+
 function formatDialogCloseResult(dialog: BrowserControlDialogCloseState): string {
   if (dialog.type === "prompt" && dialog.result) {
     return `用户已确认并输入：${dialog.userInput ?? ""}`;
@@ -1435,6 +1740,20 @@ export async function handleBrowserControlMessage(
   sender?: chrome.runtime.MessageSender,
   manager = browserControlManager,
 ): Promise<BrowserControlResponse> {
+  if (message.type === BROWSER_CONTROL_SET_AUTOMATION_MODE_MESSAGE_TYPE) {
+    return manager.setAutomationMode(message.mode, message.reason);
+  }
+
+  if (message.type === BROWSER_CONTROL_BOUNDARY_CHOICE_RESPOND_MESSAGE_TYPE) {
+    const ok = manager.respondBoundaryChoice(message.requestId, {
+      selectedChoiceIds: message.selectedChoiceIds,
+      otherText: message.otherText,
+    });
+    return ok
+      ? { ok: true, attached: true, message: "已提交边界确认选择。" }
+      : { ok: false, message: "边界确认请求不存在或已过期。" };
+  }
+
   if (message.type === BROWSER_CONTROL_SET_RUNTIME_READONLY_MESSAGE_TYPE) {
     return manager.setRuntimeReadonlyEnabled(message.enabled, message.reason);
   }
@@ -1471,3 +1790,4 @@ function normalizeDetachReason(reason: DebuggerDetachReason | undefined): Browse
 
   return "unknown";
 }
+

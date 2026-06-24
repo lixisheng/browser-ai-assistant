@@ -14,12 +14,16 @@ const browserControlManagerMock = vi.hoisted(() => ({
   canExposeBrowserTool: vi.fn(),
   canExposeNetworkTool: vi.fn(),
   canExposeRuntimeReadTool: vi.fn(),
+  canExposeBoundaryChoiceTool: vi.fn(),
+  canExposeReplayTool: vi.fn(),
   takeSnapshot: vi.fn(),
   executeBrowserTool: vi.fn(),
   executeNetworkTool: vi.fn(),
   executeJsSourceTool: vi.fn(),
   executeSourceMapTool: vi.fn(),
   executeRuntimeReadTool: vi.fn(),
+  executeBoundaryChoiceTool: vi.fn(),
+  executeReplayTool: vi.fn(),
 }));
 
 const executeTavilySearchFromSettingsMock = vi.hoisted(() => vi.fn());
@@ -90,12 +94,16 @@ describe("background 工具运行时封装", () => {
     browserControlManagerMock.canExposeBrowserTool.mockReset();
     browserControlManagerMock.canExposeNetworkTool.mockReset();
     browserControlManagerMock.canExposeRuntimeReadTool.mockReset();
+    browserControlManagerMock.canExposeBoundaryChoiceTool.mockReset();
+    browserControlManagerMock.canExposeReplayTool.mockReset();
     browserControlManagerMock.takeSnapshot.mockReset();
     browserControlManagerMock.executeBrowserTool.mockReset();
     browserControlManagerMock.executeNetworkTool.mockReset();
     browserControlManagerMock.executeJsSourceTool.mockReset();
     browserControlManagerMock.executeSourceMapTool.mockReset();
     browserControlManagerMock.executeRuntimeReadTool.mockReset();
+    browserControlManagerMock.executeBoundaryChoiceTool.mockReset();
+    browserControlManagerMock.executeReplayTool.mockReset();
     executeTavilySearchFromSettingsMock.mockReset();
   });
 
@@ -104,20 +112,34 @@ describe("background 工具运行时封装", () => {
     browserControlManagerMock.canExposeBrowserTool.mockReturnValue(true);
     browserControlManagerMock.canExposeNetworkTool.mockReturnValue(true);
     browserControlManagerMock.canExposeRuntimeReadTool.mockReturnValue(false);
+    browserControlManagerMock.canExposeBoundaryChoiceTool.mockReturnValue(false);
+    browserControlManagerMock.canExposeReplayTool.mockReturnValue(false);
 
     expect(shouldExposeTool({ id: "browser.take_snapshot", name: "take_snapshot", parameters: {} })).toBe(false);
     expect(shouldExposeTool({ id: "browser.click", name: "click", parameters: {} })).toBe(true);
     expect(shouldExposeTool({ id: "network.list_requests", name: "network_list_requests", parameters: {} })).toBe(true);
     expect(shouldExposeTool({ id: "js.search_sources", name: "js_search_sources", parameters: {} })).toBe(true);
     expect(shouldExposeTool({ id: "runtime.inspect_globals", name: "runtime_inspect_globals", parameters: {} })).toBe(false);
+    expect(shouldExposeTool({ id: "boundary.request_user_choice", name: "boundary_request_user_choice", parameters: {} })).toBe(false);
+    expect(shouldExposeTool({ id: "replay.prepare_request", name: "replay_prepare_request", parameters: {} })).toBe(false);
     expect(shouldExposeTool({ id: "system.current_time", name: "get_current_time", parameters: {} })).toBe(true);
   });
 
-  it("运行时只读工具必须额外授权后才暴露", () => {
+  it("运行时只读工具跟随普通受限模式默认暴露", () => {
     browserControlManagerMock.canExposeRuntimeReadTool.mockReturnValueOnce(false).mockReturnValueOnce(true);
 
     expect(shouldExposeTool({ id: "runtime.inspect_globals", name: "runtime_inspect_globals", parameters: {} })).toBe(false);
     expect(shouldExposeTool({ id: "runtime.inspect_globals", name: "runtime_inspect_globals", parameters: {} })).toBe(true);
+  });
+
+  it("受控增强工具只在受控增强模式下暴露", () => {
+    browserControlManagerMock.canExposeBoundaryChoiceTool.mockReturnValueOnce(false).mockReturnValueOnce(true);
+    browserControlManagerMock.canExposeReplayTool.mockReturnValueOnce(false).mockReturnValueOnce(true);
+
+    expect(shouldExposeTool({ id: "boundary.request_user_choice", name: "boundary_request_user_choice", parameters: {} })).toBe(false);
+    expect(shouldExposeTool({ id: "boundary.request_user_choice", name: "boundary_request_user_choice", parameters: {} })).toBe(true);
+    expect(shouldExposeTool({ id: "replay.prepare_request", name: "replay_prepare_request", parameters: {} })).toBe(false);
+    expect(shouldExposeTool({ id: "replay.prepare_request", name: "replay_prepare_request", parameters: {} })).toBe(true);
   });
 
   it("浏览器控制未授权时不暴露浏览器操作工具", () => {
@@ -175,6 +197,24 @@ describe("background 工具运行时封装", () => {
     });
     expect(result[0]).toMatchObject({
       content: expect.not.stringContaining("Tavily 搜索"),
+    });
+  });
+
+  it("仅启用 Network 和受控增强工具时也追加边界确认调度提示", () => {
+    const result = appendBrowserControlPromptIfNeeded(
+      [createMessage("system", "你是网页助手"), createMessage("user", "分析 Network")],
+      [
+        { id: "network.get_request_details", name: "network_get_request_details", parameters: {} },
+        { id: "boundary.request_user_choice", name: "boundary_request_user_choice", parameters: {} },
+      ],
+    );
+
+    expect(result[0]).toMatchObject({
+      role: "system",
+      content: expect.stringContaining("必须立即调用 boundary_request_user_choice 显式询问用户"),
+    });
+    expect(result[0]).toMatchObject({
+      content: expect.stringContaining("用户提交前不要继续执行依赖该边界的分析或工具调用"),
     });
   });
 

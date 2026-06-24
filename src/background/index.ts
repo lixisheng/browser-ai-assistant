@@ -165,7 +165,10 @@ chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResp
     return true;
   }
 
-  if (message.type === "browserControl.setEnabled" || message.type === "browserControl.setRuntimeReadonly") {
+  if (message.type === "browserControl.setEnabled" ||
+    message.type === "browserControl.setRuntimeReadonly" ||
+    message.type === "browserControl.setAutomationMode" ||
+    message.type === "browserControl.boundaryChoiceRespond") {
     void handleBrowserControlMessage(message, _sender).then(sendResponse);
     return true;
   }

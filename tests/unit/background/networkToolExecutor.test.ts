@@ -53,6 +53,63 @@ describe("Network 工具执行器", () => {
     expect(recorder.waitForRequests).toHaveBeenCalledWith({ urlIncludes: "submit", method: undefined, resourceType: undefined, timeoutMs: 1000 });
   });
 
+  it("检测到已脱敏字段时保留脱敏结果供上层权限边界检测", async () => {
+    const recorder = {
+      isEnabled: vi.fn(() => true),
+      listRequests: vi.fn(),
+      getDetails: vi.fn(async () => [
+        createDetail({
+          requestHeaders: [{ name: "Authorization", value: "[已脱敏]" }],
+        }),
+      ]),
+      clear: vi.fn(),
+      waitForRequests: vi.fn(),
+    };
+    const executor = new BrowserNetworkToolExecutor(recorder);
+
+    const result = await executor.execute(createToolCall("network_get_request_details", { requestIds: ["req-1"] }));
+
+    expect(result.content).toContain("[已脱敏]");
+  });
+
+  it("存在一次性敏感字段授权时当前 Network 附件保留原文字段", async () => {
+    const recorder = {
+      isEnabled: vi.fn(() => true),
+      listRequests: vi.fn(),
+      getDetails: vi.fn(async (_ids: string[], options?: { redacted?: boolean }) => [
+        createDetail({
+          requestBody: options?.redacted === false ? "{\"password\":\"123456\",\"name\":\"张三\"}" : "{\"password\":\"[已脱敏]\",\"name\":\"张三\"}",
+          redacted: options?.redacted !== false,
+        }),
+      ]),
+      clear: vi.fn(),
+      waitForRequests: vi.fn(),
+    };
+    const executor = new BrowserNetworkToolExecutor(recorder, undefined, () => ({
+      id: "boundary-1",
+      tabId: 7,
+      origin: "https://api.example.com",
+      toolCallId: "call-boundary",
+      scopeKey: "test-scope",
+      grants: ["include_sensitive_field_in_current_tool_result", "write_sensitive_result_to_chat_once"],
+      selectedChoiceIds: ["allow_redacted_sensitive_fields"],
+      createdAt: Date.now(),
+      expiresAt: Date.now() + 60000,
+    }));
+
+    const result = await executor.execute(createToolCall("network_get_request_details", { requestIds: ["req-1"] }));
+
+    expect(recorder.getDetails).toHaveBeenCalledWith(["req-1"], { redacted: false });
+    expect(result.content).toContain("\"password\":\"123456\"");
+    expect(result.toolAttachments?.[0]).toMatchObject({
+      redacted: false,
+      requests: [expect.objectContaining({
+        requestBody: "{\"password\":\"123456\",\"name\":\"张三\"}",
+        redacted: false,
+      })],
+    });
+  });
+
   it("list/wait 工具在执行器层限制 limit 上限，不能只依赖模型 schema", async () => {
     const recorder = {
       isEnabled: vi.fn(() => true),

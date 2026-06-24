@@ -86,6 +86,24 @@ describe("运行时只读工具执行器", () => {
     expect(String(evaluateArgs?.expression)).not.toContain("fetch(");
   });
 
+  it("受控增强授权下仍只允许固定 Runtime 只读模板执行", async () => {
+    const connection = {
+      evaluate: vi.fn(async () => ({
+        result: { value: [{ path: "__APP_CONFIG__", exists: true, value: { entries: [["safe", { value: "ok" }]] } }] },
+      })),
+    };
+    const executor = new RuntimeReadToolExecutor(connection, () => createAuthorization("controlled_enhanced"));
+
+    const result = await executor.execute(createToolCall("runtime_inspect_globals", { paths: ["window.__APP_CONFIG__"] }));
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toContain("运行时全局摘要");
+    expect(connection.evaluate).toHaveBeenCalledWith(expect.objectContaining({
+      expression: expect.stringContaining("const paths"),
+      returnByValue: true,
+    }));
+  });
+
   it("固定读取模板会跳过 accessor，避免只读摘要触发页面 getter", async () => {
     let getterCalled = false;
     const connection = {

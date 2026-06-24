@@ -79,6 +79,18 @@ describe("debugger Network 采集器", () => {
       { name: "Set-Cookie", value: "[已脱敏]" },
       { name: "Content-Type", value: "application/json" },
     ]);
+
+    const rawDetails = await recorder.getDetails(["req-1"], { redacted: false });
+    expect(rawDetails[0]).toMatchObject({
+      url: "https://api.example.com/login?token=secret&safe=1",
+      requestBody: "{\"password\":\"123456\",\"name\":\"张三\"}",
+      responseBody: "{\"ok\":true,\"token\":\"secret\"}",
+      redacted: false,
+    });
+    expect(rawDetails[0].requestHeaders).toEqual([
+      { name: "Authorization", value: "Bearer secret" },
+      { name: "Content-Type", value: "application/json" },
+    ]);
   });
 
   it("支持清空、等待匹配请求和停止监听", async () => {

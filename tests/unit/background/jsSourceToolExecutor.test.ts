@@ -90,6 +90,48 @@ describe("JS 源码工具执行器", () => {
     });
   });
 
+  it("存在一次性上下文扩展授权时会真实执行同源补位", async () => {
+    const fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      resource: {
+        id: "same-origin-authorized",
+        source: "same-origin-fetch",
+        url: "https://example.com/authorized.js",
+        mimeType: "application/javascript",
+        content: "const api = '/api/authorized';",
+        fetchedAt: 1,
+      },
+    });
+    const executor = new JsSourceToolExecutor({
+      recorder: {
+        isEnabled: true,
+        listRequests: vi.fn(() => []),
+        getDetails: vi.fn(async () => []),
+      },
+      getCurrentPageUrl: vi.fn(async () => "https://example.com/page"),
+      fetcher: { fetch },
+      getBoundaryGrant: () => ({
+        id: "grant-1",
+        tabId: 7,
+        origin: "https://example.com",
+        toolCallId: "call-boundary",
+        scopeKey: "test-scope",
+        grants: ["expand_js_or_sourcemap_context"],
+        selectedChoiceIds: ["allow_js_or_sourcemap_context_expansion"],
+        createdAt: Date.now(),
+        expiresAt: Date.now() + 60000,
+      }),
+    });
+
+    const result = await executor.execute(createToolCall("js_search_sources", {
+      keywords: ["/api/authorized"],
+      urls: ["https://example.com/authorized.js"],
+    }));
+
+    expect(fetch).toHaveBeenCalledWith("https://example.com/authorized.js", "https://example.com/page");
+    expect(result.content).toContain("same-origin-authorized");
+  });
+
   it("未启用 Network recorder 或参数非法时返回中文错误", async () => {
     const recorder = {
         isEnabled: false,

@@ -1,5 +1,6 @@
 import type { ChatMessage, ChatToolAttachment, ChatToolCallRecord } from "../../shared/types";
 import type { ModelRequestMessage, ModelResponseData, ModelToolCall, ModelToolExecutor, ModelToolRegistryEntry, ModelToolResultMessage } from "../../shared/models/types";
+import { isBrowserAutomationToolId } from "../../shared/models/toolRegistry";
 import { truncateText } from "../../shared/utils/text";
 
 const DEFAULT_MAX_TOOL_ITERATIONS = 8;
@@ -75,35 +76,45 @@ export async function runModelToolLoop(input: RunModelToolLoopInput): Promise<Mo
         toolAttachments: [],
       }),
     );
-    const toolResultMessages = await Promise.all(
-      response.toolCalls.map((toolCall) =>
-        executeAllowedTool(toolCall, input.tools, enabledToolIds, input.executeTool, {
-          signal: input.signal,
-          onStart: (record) => {
+    const executeCurrentTool = (toolCall: ModelToolCall) =>
+      executeAllowedTool(toolCall, input.tools, enabledToolIds, input.executeTool, {
+        signal: input.signal,
+        onStart: (record) => {
+          toolCallRecords.push(record);
+          currentTurnRecords.push(record);
+          input.onToolCallStart?.(record);
+        },
+        onComplete: (record, attachments) => {
+          const existingIndex = toolCallRecords.findIndex((item) => item.id === record.id);
+          if (existingIndex >= 0) {
+            toolCallRecords[existingIndex] = record;
+          } else {
             toolCallRecords.push(record);
+          }
+          const currentTurnExistingIndex = currentTurnRecords.findIndex((item) => item.id === record.id);
+          if (currentTurnExistingIndex >= 0) {
+            currentTurnRecords[currentTurnExistingIndex] = record;
+          } else {
             currentTurnRecords.push(record);
-            input.onToolCallStart?.(record);
-          },
-          onComplete: (record, attachments) => {
-            const existingIndex = toolCallRecords.findIndex((item) => item.id === record.id);
-            if (existingIndex >= 0) {
-              toolCallRecords[existingIndex] = record;
-            } else {
-              toolCallRecords.push(record);
-            }
-            const currentTurnExistingIndex = currentTurnRecords.findIndex((item) => item.id === record.id);
-            if (currentTurnExistingIndex >= 0) {
-              currentTurnRecords[currentTurnExistingIndex] = record;
-            } else {
-              currentTurnRecords.push(record);
-            }
-            appendUniqueToolAttachments(toolAttachments, attachments);
-            appendUniqueToolAttachments(currentTurnAttachments, attachments);
-            input.onToolCallComplete?.(record, attachments);
-          },
-        }),
-      ),
-    );
+          }
+          appendUniqueToolAttachments(toolAttachments, attachments);
+          appendUniqueToolAttachments(currentTurnAttachments, attachments);
+          input.onToolCallComplete?.(record, attachments);
+        },
+      });
+    const hasBrowserAutomationToolCall = response.toolCalls.some((toolCall) => {
+      const tool = input.tools.find((entry) => entry.name === toolCall.name || entry.id === toolCall.name);
+      return tool ? isBrowserAutomationToolId(tool.id) : false;
+    });
+    const toolResultMessages: ModelToolResultMessage[] = [];
+    if (hasBrowserAutomationToolCall) {
+      // 浏览器自动化工具共享 tab、Network 缓存和一次性授权状态；串行执行避免同轮多个工具并发覆盖 grant。
+      for (const toolCall of response.toolCalls) {
+        toolResultMessages.push(await executeCurrentTool(toolCall));
+      }
+    } else {
+      toolResultMessages.push(...await Promise.all(response.toolCalls.map(executeCurrentTool)));
+    }
     if (input.signal?.aborted) {
       return createAbortResponse();
     }

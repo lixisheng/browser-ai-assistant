@@ -4,9 +4,11 @@ import { SettingsPanel } from "./components/SettingsPanel";
 import { SessionList } from "./components/SessionList";
 import { useAppStore } from "./state/appStore";
 import {
+  BROWSER_CONTROL_AUTOMATION_MODE_CHANGED_MESSAGE_TYPE,
+  BROWSER_CONTROL_BOUNDARY_CHOICE_REQUEST_MESSAGE_TYPE,
   BROWSER_CONTROL_DETACHED_MESSAGE_TYPE,
-  BROWSER_CONTROL_RUNTIME_READONLY_CHANGED_MESSAGE_TYPE,
-  type BrowserControlRuntimeReadonlyChangedMessage,
+  type BrowserControlAutomationModeChangedMessage,
+  type BrowserControlBoundaryChoiceRequestMessage,
   type BrowserControlRuntimeEvent,
 } from "../shared/browserControl";
 
@@ -21,11 +23,10 @@ export function App() {
   const loadSyncSettings = useAppStore((state) => state.loadSyncSettings);
   const refreshPageContext = useAppStore((state) => state.refreshPageContext);
   const browserControlEnabled = useAppStore((state) => state.browserControlEnabled);
-  const runtimeReadonlyEnabled = useAppStore((state) => state.runtimeReadonlyEnabled);
   const setBrowserControlEnabled = useAppStore((state) => state.setBrowserControlEnabled);
-  const setRuntimeReadonlyEnabled = useAppStore((state) => state.setRuntimeReadonlyEnabled);
   const markBrowserControlDetached = useAppStore((state) => state.markBrowserControlDetached);
-  const markRuntimeReadonlyChanged = useAppStore((state) => state.markRuntimeReadonlyChanged);
+  const markBrowserAutomationModeChanged = useAppStore((state) => state.markBrowserAutomationModeChanged);
+  const showBoundaryChoiceRequest = useAppStore((state) => state.showBoundaryChoiceRequest);
 
   useEffect(() => {
     void Promise.all([loadChannelConfig(), loadExtractionRules(), loadPromptTemplates(), loadChatData(), loadSyncSettings()]).then(() => refreshPageContext());
@@ -41,38 +42,27 @@ export function App() {
       return;
     }
 
-    let runtimeReadonlyExpiryTimer: ReturnType<typeof setTimeout> | undefined;
-    const clearRuntimeReadonlyExpiryTimer = () => {
-      if (runtimeReadonlyExpiryTimer) {
-        clearTimeout(runtimeReadonlyExpiryTimer);
-        runtimeReadonlyExpiryTimer = undefined;
-      }
-    };
-
     const handleRuntimeMessage = (message: unknown) => {
       if (isBrowserControlDetachedEvent(message)) {
-        clearRuntimeReadonlyExpiryTimer();
         markBrowserControlDetached();
         return;
       }
 
-      if (isRuntimeReadonlyChangedEvent(message)) {
-        clearRuntimeReadonlyExpiryTimer();
-        markRuntimeReadonlyChanged(message.enabled);
-        if (message.enabled && typeof message.expiresAt === "number") {
-          runtimeReadonlyExpiryTimer = setTimeout(() => {
-            markRuntimeReadonlyChanged(false);
-          }, Math.max(0, message.expiresAt - Date.now()));
-        }
+      if (isAutomationModeChangedEvent(message)) {
+        markBrowserAutomationModeChanged(message.mode);
+        return;
+      }
+
+      if (isBoundaryChoiceRequestEvent(message)) {
+        showBoundaryChoiceRequest(message);
       }
     };
 
     runtime.onMessage.addListener(handleRuntimeMessage);
     return () => {
-      clearRuntimeReadonlyExpiryTimer();
       runtime.onMessage.removeListener?.(handleRuntimeMessage);
     };
-  }, [markBrowserControlDetached, markRuntimeReadonlyChanged]);
+  }, [markBrowserAutomationModeChanged, markBrowserControlDetached, showBoundaryChoiceRequest]);
 
   return (
     <main className="app-shell">
@@ -94,24 +84,6 @@ export function App() {
             <svg className="app-header-icon" viewBox="0 0 24 24" aria-hidden="true">
               <path d="M5 5h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z" />
               <path d="M3 9h18M12 12v4M10 14h4" />
-            </svg>
-          </button>
-          <button
-            className={
-              runtimeReadonlyEnabled
-                ? "ui-button-secondary app-header-icon-button runtime-readonly-global-button-active"
-                : "ui-button-secondary app-header-icon-button"
-            }
-            type="button"
-            aria-label="运行时只读分析"
-            aria-pressed={runtimeReadonlyEnabled}
-            disabled={!browserControlEnabled}
-            title={`${runtimeReadonlyEnabled ? "运行时只读分析已开启" : "运行时只读分析已关闭"}。开启后模型可读取当前页面公开运行时对象摘要；不会开放任意脚本、写入页面或读取 Cookie/Storage。`}
-            onClick={() => void setRuntimeReadonlyEnabled(!runtimeReadonlyEnabled)}
-          >
-            <svg className="app-header-icon" viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M4 6h16v12H4Z" />
-              <path d="M8 10h4M8 14h8M16 10h.01" />
             </svg>
           </button>
           <button className="ui-button-secondary app-header-icon-button" type="button" aria-label="设置" title="设置" onClick={() => setShowSettings((value) => !value)}>
@@ -153,14 +125,26 @@ function isBrowserControlDetachedEvent(message: unknown): message is BrowserCont
     );
 }
 
-function isRuntimeReadonlyChangedEvent(message: unknown): message is BrowserControlRuntimeReadonlyChangedMessage {
+function isAutomationModeChangedEvent(message: unknown): message is BrowserControlAutomationModeChangedMessage {
   if (typeof message !== "object" || message === null) {
     return false;
   }
 
-  const event = message as { type?: unknown; enabled?: unknown; tabId?: unknown; expiresAt?: unknown };
-  return event.type === BROWSER_CONTROL_RUNTIME_READONLY_CHANGED_MESSAGE_TYPE &&
-    typeof event.enabled === "boolean" &&
+  const event = message as { type?: unknown; mode?: unknown; tabId?: unknown; expiresAt?: unknown };
+  return event.type === BROWSER_CONTROL_AUTOMATION_MODE_CHANGED_MESSAGE_TYPE &&
+    (event.mode === "normal_restricted" || event.mode === "controlled_enhanced" || event.mode === "full_access") &&
     (typeof event.tabId === "undefined" || typeof event.tabId === "number") &&
     (typeof event.expiresAt === "undefined" || typeof event.expiresAt === "number");
+}
+
+function isBoundaryChoiceRequestEvent(message: unknown): message is BrowserControlBoundaryChoiceRequestMessage {
+  if (typeof message !== "object" || message === null) {
+    return false;
+  }
+  const event = message as { type?: unknown; requestId?: unknown; question?: unknown; choices?: unknown; expiresAt?: unknown };
+  return event.type === BROWSER_CONTROL_BOUNDARY_CHOICE_REQUEST_MESSAGE_TYPE &&
+    typeof event.requestId === "string" &&
+    typeof event.question === "string" &&
+    Array.isArray(event.choices) &&
+    typeof event.expiresAt === "number";
 }

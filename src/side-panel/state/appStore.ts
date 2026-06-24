@@ -54,10 +54,14 @@ import type {
   WebSearchSettings,
 } from "../../shared/types";
 import {
+  BROWSER_CONTROL_BOUNDARY_CHOICE_RESPOND_MESSAGE_TYPE,
+  BROWSER_CONTROL_SET_AUTOMATION_MODE_MESSAGE_TYPE,
   BROWSER_CONTROL_SET_ENABLED_MESSAGE_TYPE,
   BROWSER_CONTROL_SET_RUNTIME_READONLY_MESSAGE_TYPE,
+  type BrowserControlBoundaryChoiceRequestMessage,
   type BrowserControlResponse,
 } from "../../shared/browserControl";
+import type { BrowserAutomationMode } from "../../shared/toolAuthorization";
 import {
   createChatFolderAction,
   moveChatSessionToFolderAction,
@@ -210,7 +214,9 @@ export interface AppState {
   defaultChatModelId: string;
   chatPreferences: ChatPreferenceValues;
   browserControlEnabled: boolean;
+  browserAutomationMode: BrowserAutomationMode;
   runtimeReadonlyEnabled: boolean;
+  pendingBoundaryChoice?: BrowserControlBoundaryChoiceRequestMessage;
   activeSessionId: string;
   privateModeActive: boolean;
   privateChatSession?: ChatSession;
@@ -240,9 +246,13 @@ export interface AppState {
   updateChatPreferences: (updates: Partial<ChatPreferenceValues>) => Promise<void>;
   updateActiveSessionChatPreferences: (updates: ChatSessionPreferenceOverrides) => Promise<void>;
   setBrowserControlEnabled: (enabled: boolean) => Promise<void>;
+  setBrowserAutomationMode: (mode: BrowserAutomationMode) => Promise<void>;
   setRuntimeReadonlyEnabled: (enabled: boolean) => Promise<void>;
   markBrowserControlDetached: () => void;
+  markBrowserAutomationModeChanged: (mode: BrowserAutomationMode) => void;
   markRuntimeReadonlyChanged: (enabled: boolean) => void;
+  showBoundaryChoiceRequest: (request: BrowserControlBoundaryChoiceRequestMessage) => void;
+  respondBoundaryChoice: (requestId: string, selectedChoiceIds: string[], otherText?: string) => Promise<void>;
   deleteProvider: (providerId: string) => void;
   deleteModel: (modelId: string) => void;
   loadChannelConfig: () => Promise<void>;
@@ -343,7 +353,9 @@ export const useAppStore = create<AppState>()((set, get) => ({
   defaultChatModelId: "",
   chatPreferences: DEFAULT_CHAT_PREFERENCES,
   browserControlEnabled: false,
+  browserAutomationMode: "normal_restricted",
   runtimeReadonlyEnabled: false,
+  pendingBoundaryChoice: undefined,
   activeSessionId: "",
   privateModeActive: false,
   privateChatSession: undefined,
@@ -548,7 +560,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
     set({
       browserControlEnabled: enabled,
-      ...(enabled ? {} : { runtimeReadonlyEnabled: false }),
+      ...(enabled ? {} : { runtimeReadonlyEnabled: false, browserAutomationMode: "normal_restricted", pendingBoundaryChoice: undefined }),
     });
     const response = await syncBrowserControlEnabled(enabled);
     if (!response.ok) {
@@ -556,6 +568,18 @@ export const useAppStore = create<AppState>()((set, get) => ({
         browserControlEnabled: previousEnabled,
         failure: { message: response.message },
       });
+    }
+  },
+  setBrowserAutomationMode: async (mode) => {
+    if (!get().browserControlEnabled) {
+      set({ browserAutomationMode: "normal_restricted", failure: { message: "请先开启浏览器控制，再切换自动化模式。" } });
+      return;
+    }
+    const previousMode = get().browserAutomationMode;
+    set({ browserAutomationMode: mode, pendingBoundaryChoice: undefined });
+    const response = await syncBrowserAutomationMode(mode);
+    if (!response.ok) {
+      set({ browserAutomationMode: previousMode, failure: { message: response.message } });
     }
   },
   setRuntimeReadonlyEnabled: async (enabled) => {
@@ -578,12 +602,35 @@ export const useAppStore = create<AppState>()((set, get) => ({
     }
   },
   markBrowserControlDetached: () => {
-    set({ browserControlEnabled: false, runtimeReadonlyEnabled: false });
+    set({ browserControlEnabled: false, runtimeReadonlyEnabled: false, browserAutomationMode: "normal_restricted", pendingBoundaryChoice: undefined });
+  },
+  markBrowserAutomationModeChanged: (mode) => {
+    set((state) => ({
+      browserAutomationMode: state.browserControlEnabled ? mode : "normal_restricted",
+      runtimeReadonlyEnabled: state.browserControlEnabled,
+      ...(mode === "normal_restricted" ? { pendingBoundaryChoice: undefined } : {}),
+    }));
   },
   markRuntimeReadonlyChanged: (enabled) => {
     set((state) => ({
       runtimeReadonlyEnabled: enabled && state.browserControlEnabled,
     }));
+  },
+  showBoundaryChoiceRequest: (request) => {
+    set({ pendingBoundaryChoice: request });
+  },
+  respondBoundaryChoice: async (requestId, selectedChoiceIds, otherText) => {
+    const response = await sendRuntimeMessage<BrowserControlResponse>({
+      type: BROWSER_CONTROL_BOUNDARY_CHOICE_RESPOND_MESSAGE_TYPE,
+      requestId,
+      selectedChoiceIds,
+      otherText,
+    });
+    if (!response?.ok) {
+      set({ failure: { message: response?.message || "提交边界确认失败。" } });
+      return;
+    }
+    set((state) => state.pendingBoundaryChoice?.requestId === requestId ? { pendingBoundaryChoice: undefined } : {});
   },
   deleteProvider: (providerId) => {
     let sessionToPersist: ChatSession | undefined;
@@ -1412,8 +1459,8 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
       }));
     }
 
-    const titleGenerationPromise = !input.privateMode && input.shouldGenerateTitle
-      ? generateTitleForSession({
+    if (!input.privateMode && input.shouldGenerateTitle) {
+      void generateTitleForSession({
         sessionId: nextSession.id,
         fallbackTitle: input.fallbackTitle,
         userContent: input.userMessage.content,
@@ -1421,14 +1468,13 @@ async function runChatRequest(input: RunChatRequestInput): Promise<void> {
         retryCount: effectiveChatPreferences.aiRequestRetryCount,
         get: input.get,
         set: input.set,
-      })
-      : Promise.resolve();
-    void titleGenerationPromise;
+      });
+    }
 
     const enabledTools = effectiveChatPreferences.toolCallingEnabled
       ? resolveEnabledModelTools(
           getRegisteredModelTools(),
-          resolveRuntimeEnabledToolIds(effectiveChatPreferences.enabledToolIds, input.state.browserControlEnabled, input.state.runtimeReadonlyEnabled),
+          resolveRuntimeEnabledToolIds(effectiveChatPreferences.enabledToolIds, input.state.browserControlEnabled, input.state.browserAutomationMode),
         )
       : [];
     const enabledToolIds = enabledTools.map((tool) => tool.id);
@@ -1720,5 +1766,13 @@ async function syncRuntimeReadonlyEnabled(enabled: boolean): Promise<BrowserCont
     type: BROWSER_CONTROL_SET_RUNTIME_READONLY_MESSAGE_TYPE,
     enabled,
     reason: "用户在侧边栏临时开启运行时只读分析。",
+  });
+}
+
+async function syncBrowserAutomationMode(mode: BrowserAutomationMode): Promise<BrowserControlResponse> {
+  return sendRuntimeMessage<BrowserControlResponse>({
+    type: BROWSER_CONTROL_SET_AUTOMATION_MODE_MESSAGE_TYPE,
+    mode,
+    reason: "用户在输入区切换浏览器自动化模式。",
   });
 }

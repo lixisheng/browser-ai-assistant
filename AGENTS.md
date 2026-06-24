@@ -285,16 +285,47 @@
 * `source-map` 工具附件必须通过通用 `toolAttachments` 保存、展示、导出和后续上下文注入；历史归一化和聚合必须保留候选来源、映射位置、原始片段、失败摘要、`redacted` 与 `truncated` 标记。
 * `source-map` 原始片段即使未实际替换敏感词，也必须标记为已进入脱敏管道；UI 展示、工具正文、导出和后续追问上下文只能输出 `resourceId`、行列、原始 source、name、ignored、sourcesContent 状态和中文失败摘要，不得直接 `JSON.stringify` 完整对象或暴露完整 `resourceUrl`；候选展示只能显示 inline、外部 Source Map 或无 URL 摘要，不得直接渲染完整 map URL。
 * Source Map 原始源码片段展示、导出和再次注入模型前必须复用敏感赋值脱敏和截断规则，避免泄露 Cookie、Authorization、Token、API Key、Secret、Password、Session、CSRF 等凭据。
-* `runtime.inspect_globals`、`runtime.search_modules`、`runtime.describe_function` 可作为下一阶段受控只读 `Runtime.evaluate` 工具方向；它们属于浏览器自动化工具组，但必须额外满足单独高风险只读授权，未授权时 Side Panel 和 background 都不得下发或执行 `runtime.*`。
-* `runtime.*` 已接入统一工具注册表，OpenAI-compatible 函数名固定为 `runtime_inspect_globals`、`runtime_search_modules`、`runtime_describe_function`；浏览器控制开启时不得自动启用该组，必须同时满足 `runtimeReadonlyEnabled` 前端运行态和 background `runtime_readonly` 授权上下文。
+* 浏览器自动化授权统一为三种运行态：`normal_restricted` 普通模式、`controlled_enhanced` 受控增强模式、`full_access` 完全访问占位；模式只属于运行态，不得进入聊天偏好、会话历史、同步快照或导出内容。
+* `.composer-switches` 中流式响应开关左侧必须保留三模式选择；顶部不得恢复“运行时只读分析”按钮。浏览器控制关闭时模式选择必须禁用并显示普通模式。
+* 三模式选择菜单弹层必须使用当前主题已定义的实体背景变量，例如 `--color-canvas`、`--color-surface-soft` 或 `--color-surface-card`；不得引用未定义的 `--color-surface` 导致弹层背景在 Claude light 主题下变成透明。
+* `runtime.inspect_globals`、`runtime.search_modules`、`runtime.describe_function` 已并入普通模式默认能力；它们属于浏览器自动化工具组，但仍必须满足浏览器控制开启、当前 tab 已 attach、Network recorder 已启用和 background 固定只读模板校验。
+* `runtime.*` 已接入统一工具注册表，OpenAI-compatible 函数名固定为 `runtime_inspect_globals`、`runtime_search_modules`、`runtime_describe_function`；浏览器控制开启不等于允许任意 Runtime 表达式，只能执行固定只读模板并由三模式运行态过滤。
 * `runtime.*` 工具不得接收模型传入的任意 JavaScript 表达式，只能接收路径、关键词、模块索引、数量上限和摘要半径等结构化参数，并由独立执行器拼装固定只读模板；危险路径段、超长输入、超预算结果和疑似副作用用途必须 fail closed。
 * `runtime.*` 解析 CDP `Runtime.evaluate` 响应时必须显式校验响应层级类型；用户输入路径允许 `window.` / `globalThis.` 作为控制台书写习惯前缀，但执行固定模板前必须统一剥离并继续套用危险字段校验。
 * `runtime.*` 固定模板读取对象属性时必须优先通过自有 data property 描述符读取，accessor 属性必须跳过并标记；每个属性读取都要独立容错，避免 getter 或页面对象异常把“只读摘要”变成页面业务代码执行或整轮工具失败。
 * `runtime.*` 只允许读取公开全局配置、模块缓存摘要和函数摘要；不得 DOM 写入、表单填写、点击、导航、刷新、发起网络请求、调用页面业务函数，或读取 Cookie、LocalStorage、SessionStorage、IndexedDB 等敏感存储。
 * `runtime.*` 结果必须脱敏、截断并限制对象深度、数组/对象条目数、函数字符串长度和总字节数；字符串中出现 Cookie、Authorization、Bearer、JWT、API Key、Secret、Password、Session、CSRF 等敏感值时必须按值级或整段脱敏，不能只替换字段名；默认只作为 tool message 回灌模型，未完成附件 kind、展示、导出、历史归一化和后续追问上下文设计前不得生成用户可见 `toolAttachments`。
-* 阶段四高风险只读授权不得持久化到聊天偏好、会话历史、同步快照或导出内容；刷新、重载、关闭浏览器控制、切换受控 tab、导航、刷新或 debugger detach 后必须回到关闭状态，background 清理或授权过期时必须广播运行时只读状态变化，让 Side Panel 运行态同步收口。
+* 用户选择的三模式在当前会话内生效，不能因为 AI 回复轮次、工具循环、`network.clear_requests`、导航、刷新、切换受控 tab 或自动化模式消息里的历史 `expiresAt` 自动回到普通模式；只有用户手动切换、关闭浏览器控制、tab 关闭或 debugger detach 这类硬断开才能收口为普通模式。
 * `full_access_reserved` 只能作为未来阶段授权占位；当前阶段所有执行器遇到该授权必须 fail closed，不得借该占位关闭脱敏、关闭只读限制或放行任意脚本。
-* 受控只读 `Runtime.evaluate` 之外的请求重放沙箱、敏感字段解锁等更高风险 Web 逆向能力仍默认关闭；未单独完成权限、确认、沙箱、脱敏、审计和测试设计前不得实现或暗中启用。
+* 受控增强模式才允许暴露 `boundary.request_user_choice` 和 `replay.*`；普通模式不得暴露 `replay.*`、`full_access.*`，完全访问模式 v1 只保留状态占位并 fail closed。
+* `boundary.request_user_choice` 必须展示 AI 提供的问题、原因、动态多选项、风险等级和授权摘要；UI 必须固定追加“其他”自由输入项。“其他”只回灌给模型，不得直接生成授权。
+* 边界确认弹窗提交或取消后必须立即进入本地提交中状态，禁用选项、文本框和提交/取消按钮，避免同一个 `requestId` 被重复响应导致误报失败。
+* 受控增强模式下，任何 `network.*`、`js.*`、`sourcemap.*`、`runtime.*` 或 `replay.*` 工具结果只要检测到 `[已脱敏]`、`[REDACTED]`、敏感字段、截断摘要、请求重放发送确认、JS/Source Map 上下文扩展、Runtime 高风险路径、完全访问占位或其他需要用户授权的权限边界，就必须主动触发 `boundary.request_user_choice` 或在工具结果中强制要求模型下一步调用该工具；用户提交前工具循环应阻塞在确认边界上，不得继续推断、还原、请求、扩展上下文或输出敏感原文。
+* 受控增强边界检测必须覆盖具体拒绝语义：同源 JS 补位失败、同源 JS 跨域重定向、Source Map 读取/同源/大小/MIME/JSON/mappings/浏览器拒绝失败、inline Source Map 失败、请求重放草案不存在/过期/跨页面/敏感 Header/方法或大小越界、运行时只读未授权、运行时路径表达式或高风险字段。普通参数类型错误、空 UID、等待超时等不涉及越权的失败不应自动弹边界确认，避免确认噪声。
+* 用户在受控增强弹窗中允许“脱敏或敏感字段”后，当前 Network 详情类工具必须基于一次性 grant 立即重读当前请求详情，并把本轮工具结果和当前可见附件改为未脱敏结果；不能只把“用户已确认”文字回灌给模型却继续展示 `[已脱敏]`。该未脱敏附件只能作为当前工具结果/当前消息可见内容存在，历史追问上下文、复制、导出、同步归一化和旧附件恢复仍必须重新脱敏。
+* 受控增强的每一个 `BrowserAutomationGrant` 都必须有对应执行器消费路径和回归测试；新增或修改 grant 时，测试必须证明“用户选择允许后，当前工具行为真实改变并且 grant 被一次性消费”。禁止只在弹窗、Prompt 或 tool result 文案中声明授权而不改变执行边界。
+* 受控增强白名单只允许登记当前阶段已有真实消费路径的 grant；无副作用或仅保留摘要的选项必须使用空 `grants: []`，不得通过新增 grant 制造“已授权但执行器不消费”的伪放行状态。
+* 边界确认返回后，manager 是否重跑原工具只能由当前 `scopeKey` 下的具体 grant 是否可消费决定，不能依赖“已触发确认”或“grantCreated”这类过程状态，避免把确认文案误当成真实放行。
+* 受控增强一次性 grant 必须绑定 `scopeKey`，且消费时必须匹配当前工具名和关键参数签名；授权请求 A 不得放行请求 B、草案 B 或同源同 tab 下的其他工具调用。
+* `scopeKey` 生成必须兼容内部点号工具 ID 与 OpenAI-compatible 下划线工具名，避免 AI 用 `network.get_request_details` 绑定、实际执行 `network_get_request_details` 时出现“用户允许但未放行”。
+* AI 主动调用 `boundary_request_user_choice` 且选项包含非空 `grants` 时，必须同时提供 `targetToolName` 和 `targetToolArguments` 生成可消费 `scopeKey`；缺少目标工具绑定时执行器必须 fail closed，不得把“用户已确认”文字当成真实放行结果回灌模型。
+* 同一轮模型返回多个浏览器自动化工具调用时必须串行执行，避免多个工具并发覆盖 `BoundaryGrantContext`、Network 缓存或请求重放草案；普通非浏览器工具可继续并发。
+* 用户选择 AI 提供的边界选项后，只能生成绑定当前 tab、origin、工具轮和过期时间的一次性 `BoundaryGrantContext`；grant 不得持久化，不得跨 tab/origin/tool round 复用；导航、刷新、切换受控 tab 和 `network.clear_requests` 只能清理已生成 grant 与请求重放草案，不能取消正在等待用户提交的边界确认表单，也不能改写用户选择的三模式。
+* `replay.*` 必须采用 `prepare -> boundary.request_user_choice -> send -> compare` 的执行边界；模型只能生成脱敏重放草案，不能代替用户确认发送请求，background 也必须拒绝跳过确认的伪造工具调用。
+* 阶段五请求重放默认无凭据：不得携带 Cookie、Authorization、Proxy-Authorization、API Key、Storage、IndexedDB、客户端证书、扩展本地密钥、页面上下文凭据，也不得重放包含敏感 query/body 字段的请求；如需敏感凭据必须进入阶段六逐次解锁设计，阶段五只能返回固定中文拒绝。
+* 请求重放工具只允许验证非敏感接口结构，默认限制为当前受控页面同源或用户逐次确认的已采集请求目标；禁止模型构造任意第三方扫描目标、批量参数字典、撞库、爆破、绕过验证码、规避风控或解释如何绕过 401/403。
+* 请求重放执行器必须独立于 Network recorder、JS source index、Runtime read executor 和 `browserControlMessageHandler.ts` 主流程；请求必须由 background 受控沙箱发起，禁止注入页面执行 `fetch` 或借页面上下文携带站点凭据。
+* 请求重放必须限制 method、协议、host、header、请求体类型、请求体大小、响应体大小、超时、重定向次数、并发和本轮调用次数；默认只允许 `GET`、`HEAD` 和可证明无凭据、无敏感 body 的受限 `POST`，`PUT`、`PATCH`、`DELETE` 和文件上传类请求必须先保持禁用。
+* 请求重放结果默认只作为 tool message 回灌模型；未完成 `request-replay` 附件 kind、展示、导出、历史归一化和后续追问上下文设计前，不得生成用户可见 `toolAttachments`，也不得保存完整 URL、header、body 或响应原文。
+* 关闭浏览器控制、切换受控 tab、导航、刷新、debugger detach、授权过期或终止生成时，必须清理请求重放授权、草案和临时确认，并中止正在进行的重放请求；其中切换受控 tab、导航和刷新不得顺带把用户选择的受控增强模式改回普通模式。
+* 敏感字段解锁和“完全访问”属于请求重放之后的最高风险授权层，默认关闭；`full_access_reserved` 只能作为规划占位，正式落地前所有执行器遇到该授权仍必须 fail closed，不能借占位关闭脱敏、只读限制、敏感信息过滤、审计或用户确认。
+* “完全访问”不得被实现为模型或脚本不受任何限制；即使用户授权，也必须保留用户逐次确认、短时效、当前 tab/origin 绑定、撤销、超时、大小上限、并发上限、目标范围校验、取消机制和审计摘要。
+* 完全访问授权不得持久化到聊天偏好、会话历史、同步快照或导出；刷新、导航、切换受控 tab、关闭浏览器控制、debugger detach、生成终止、授权过期或用户撤销时必须立即失效，并广播状态变化让所有 Side Panel 收口。
+* 完全访问能力必须拆成草案和确认执行两步；模型只能生成 `full_access.prepare_action` 这类高权限动作草案，不能绕过用户确认直接执行脚本、请求、DOM 写入、表单提交、导航、上传、下载、删除、支付、发帖、发送消息或账号设置修改。
+* 完全访问结果默认只能本地临时查看，不得自动进入聊天消息、工具附件、同步快照、导出或远端模型上下文；如用户明确要求写入聊天或发送给远端模型，必须作为单独授权项二次确认并明确提示第三方模型提供商可能接收敏感数据。
+* 完全访问不得自动执行破坏性、高频、批量、绕过验证码、绕过风控、撞库、爆破、权限提升、隐蔽采集、跨站批量扫描、自我持久化、自我传播或绕过用户确认的行为；相关需求必须固定中文拒绝。
+* 高权限脚本或请求必须展示用户可审查草案、目标 origin、敏感字段、预期副作用、超时、输出上限和取消方式；未知脚本、混淆脚本、跨 origin 脚本、远程加载脚本、动态 `eval` / `Function`、无限循环迹象和批量请求迹象必须默认拒绝或要求用户手工审查后重新确认。
+* 受控只读 `Runtime.evaluate`、请求重放沙箱、敏感字段解锁与完全访问之外的更高风险 Web 逆向能力仍默认关闭；未单独完成权限、确认、脱敏、审计、取消和测试设计前不得实现或暗中启用。
 * 修改 Network 工具、浏览器控制 debugger allow-list、manifest、background 入口或工具注册时，最小验证必须覆盖相关 vitest、`npm run typecheck` 和 `npm run build:extension`；涉及真实扩展加载路径时还应运行 `npx playwright test --project=chrome-extension`。
 * Network 工具化与完整 Web 逆向路线的主规划文档统一维护在 `docs/Network工具化与Web逆向自动化规划.md`；该文档必须与当前实现保持一致，旧版 DevTools Network 手动连接方案只可作为历史背景，不得作为当前操作说明继续传播。
 

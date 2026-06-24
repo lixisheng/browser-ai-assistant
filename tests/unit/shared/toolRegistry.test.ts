@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  BOUNDARY_REQUEST_USER_CHOICE_TOOL_ID,
+  BOUNDARY_REQUEST_USER_CHOICE_TOOL_NAME,
   BROWSER_CLICK_TOOL_ID,
   BROWSER_CLICK_TOOL_NAME,
   BROWSER_FILL_TOOL_ID,
@@ -38,6 +40,12 @@ import {
   RUNTIME_INSPECT_GLOBALS_TOOL_NAME,
   RUNTIME_SEARCH_MODULES_TOOL_ID,
   RUNTIME_SEARCH_MODULES_TOOL_NAME,
+  REPLAY_COMPARE_RESPONSES_TOOL_ID,
+  REPLAY_COMPARE_RESPONSES_TOOL_NAME,
+  REPLAY_PREPARE_REQUEST_TOOL_ID,
+  REPLAY_PREPARE_REQUEST_TOOL_NAME,
+  REPLAY_SEND_REQUEST_TOOL_ID,
+  REPLAY_SEND_REQUEST_TOOL_NAME,
   SOURCEMAP_EXTRACT_ORIGINAL_CONTEXT_TOOL_ID,
   SOURCEMAP_LIST_CANDIDATES_TOOL_ID,
   SOURCEMAP_RESOLVE_LOCATION_TOOL_ID,
@@ -277,6 +285,10 @@ describe("模型工具注册表", () => {
       RUNTIME_INSPECT_GLOBALS_TOOL_ID,
       RUNTIME_SEARCH_MODULES_TOOL_ID,
       RUNTIME_DESCRIBE_FUNCTION_TOOL_ID,
+      BOUNDARY_REQUEST_USER_CHOICE_TOOL_ID,
+      REPLAY_PREPARE_REQUEST_TOOL_ID,
+      REPLAY_SEND_REQUEST_TOOL_ID,
+      REPLAY_COMPARE_RESPONSES_TOOL_ID,
     ]);
   });
 
@@ -374,6 +386,36 @@ describe("模型工具注册表", () => {
     });
   });
 
+  it("注册受控增强边界确认与请求重放工具并声明能力边界", () => {
+    const tools = getRegisteredModelTools();
+
+    expect(tools.find((tool) => tool.id === BOUNDARY_REQUEST_USER_CHOICE_TOOL_ID)).toMatchObject({
+      name: BOUNDARY_REQUEST_USER_CHOICE_TOOL_NAME,
+      requiredCapabilities: ["browser_control", "controlled_enhanced", "boundary_choice"],
+      parameters: { type: "object", required: ["question", "reason", "choices"], additionalProperties: false },
+    });
+    expect(tools.find((tool) => tool.id === REPLAY_PREPARE_REQUEST_TOOL_ID)).toMatchObject({
+      name: REPLAY_PREPARE_REQUEST_TOOL_NAME,
+      requiredCapabilities: ["browser_control", "controlled_enhanced", "request_replay"],
+      parameters: { type: "object", required: ["requestId"], additionalProperties: false },
+    });
+    expect(tools.find((tool) => tool.id === REPLAY_SEND_REQUEST_TOOL_ID)).toMatchObject({
+      name: REPLAY_SEND_REQUEST_TOOL_NAME,
+      requiredCapabilities: ["browser_control", "controlled_enhanced", "request_replay"],
+      parameters: { type: "object", required: ["draftId"], additionalProperties: false },
+    });
+    expect(tools.find((tool) => tool.id === REPLAY_COMPARE_RESPONSES_TOOL_ID)).toMatchObject({
+      name: REPLAY_COMPARE_RESPONSES_TOOL_NAME,
+      requiredCapabilities: ["browser_control", "controlled_enhanced", "request_replay"],
+      parameters: { type: "object", required: ["draftId"], additionalProperties: false },
+    });
+    expect(tools.find((tool) => tool.id === BOUNDARY_REQUEST_USER_CHOICE_TOOL_ID)?.parameters.properties).toMatchObject({
+      choices: { type: "array", minItems: 2, maxItems: 6 },
+    });
+    expect(tools.find((tool) => tool.id === BOUNDARY_REQUEST_USER_CHOICE_TOOL_ID)?.description).toContain("任何工具结果提示已脱敏字段");
+    expect(tools.find((tool) => tool.id === NETWORK_GET_REQUEST_DETAILS_TOOL_ID)?.description).toContain("必须先调用 boundary_request_user_choice");
+  });
+
   it("对外工具函数名兼容 OpenAI-compatible 命名规则", () => {
     const tools = getRegisteredModelTools();
 
@@ -395,6 +437,10 @@ describe("模型工具注册表", () => {
         "runtime_inspect_globals",
         "runtime_search_modules",
         "runtime_describe_function",
+        "boundary_request_user_choice",
+        "replay_prepare_request",
+        "replay_send_request",
+        "replay_compare_responses",
       ]),
     );
     expect(tools.every((tool) => /^[a-zA-Z0-9_-]+$/.test(tool.name))).toBe(true);

@@ -9,6 +9,7 @@ import {
 import { isPngDataUrl, isTabCaptureImageAttachment, TAB_CAPTURE_VISIBLE_MESSAGE_TYPE, type TabCaptureVisibleResponse } from "../../shared/tabCapture";
 import type { ChatImageAttachment, ChatPromptInvocation, PromptTemplate, SendShortcut } from "../../shared/types";
 import { useAppStore } from "../state/appStore";
+import { BoundaryChoiceDialog } from "./BoundaryChoiceDialog";
 import { PromptInlineEditor } from "./PromptInlineEditor";
 
 const MAX_IMAGE_ATTACHMENTS = 5;
@@ -23,6 +24,28 @@ const SWITCH_ICON_PATHS = {
 } as const;
 
 type SwitchIconName = keyof typeof SWITCH_ICON_PATHS;
+type BrowserAutomationMode = "normal_restricted" | "controlled_enhanced" | "full_access";
+
+const BROWSER_AUTOMATION_MODE_OPTIONS: Array<{ mode: BrowserAutomationMode; label: string; description: string; iconPath: string }> = [
+  {
+    mode: "normal_restricted",
+    label: "普通模式",
+    description: "默认受限，只读、脱敏、固定模板",
+    iconPath: "M12 3 5 6v5c0 4 2.8 7.4 7 10 4.2-2.6 7-6 7-10V6l-7-3Z",
+  },
+  {
+    mode: "controlled_enhanced",
+    label: "受控增强",
+    description: "允许 AI 请求一次性边界授权",
+    iconPath: "M5 12a7 7 0 0 1 14 0M8 12h8M12 8v8",
+  },
+  {
+    mode: "full_access",
+    label: "完全访问",
+    description: "最高风险占位，v1 仍拒绝高权限执行",
+    iconPath: "M12 3 4 7v5c0 4.4 3.2 7.6 8 9 4.8-1.4 8-4.6 8-9V7l-8-4ZM12 8v5M12 16h.01",
+  },
+];
 
 interface ChatComposerProps {
   canSend: boolean;
@@ -69,6 +92,7 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
   const [previewAttachment, setPreviewAttachment] = useState<ChatImageAttachment | undefined>();
   const [contextDialogOpen, setContextDialogOpen] = useState(false);
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
+  const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [toolMenuPosition, setToolMenuPosition] = useState<{ left: number; top: number } | undefined>();
   const [composing, setComposing] = useState(false);
   const imageInputId = useId();
@@ -87,6 +111,8 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
   const promptTemplates = useAppStore((state) => state.promptTemplates);
   const streamMode = useAppStore((state) => state.streamMode);
   const browserControlEnabled = useAppStore((state) => state.browserControlEnabled);
+  const browserAutomationMode = useAppStore((state) => state.browserAutomationMode);
+  const pendingBoundaryChoice = useAppStore((state) => state.pendingBoundaryChoice);
   const contextMode = useAppStore((state) => state.contextMode);
   const appendPageContextToSystemPrompt = useAppStore((state) => state.appendPageContextToSystemPrompt);
   const sending = useAppStore((state) => state.sending);
@@ -95,6 +121,7 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
   const contextTabsLoading = useAppStore((state) => state.contextTabsLoading);
   const contextTabsError = useAppStore((state) => state.contextTabsError);
   const setStreamMode = useAppStore((state) => state.setStreamMode);
+  const setBrowserAutomationMode = useAppStore((state) => state.setBrowserAutomationMode);
   const setContextMode = useAppStore((state) => state.setContextMode);
   const setComposerHasDraft = useAppStore((state) => state.setComposerHasDraft);
   const setAppendPageContextToSystemPrompt = useAppStore((state) => state.setAppendPageContextToSystemPrompt);
@@ -104,6 +131,7 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
   const toggleContextTabSelection = useAppStore((state) => state.toggleContextTabSelection);
   const sendChatMessage = useAppStore((state) => state.sendChatMessage);
   const abortActiveChatTask = useAppStore((state) => state.abortActiveChatTask);
+  const respondBoundaryChoice = useAppStore((state) => state.respondBoundaryChoice);
   const registeredTools = useMemo(() => getRegisteredModelTools(), []);
   const registeredToolGroups = useMemo(() => getModelToolGroups(registeredTools), [registeredTools]);
   const userEditableToolIds = useMemo(() => registeredTools.filter((tool) => !isBrowserAutomationToolId(tool.id)).map((tool) => tool.id), [registeredTools]);
@@ -161,6 +189,32 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
       window.removeEventListener("scroll", updateToolMenuPosition, true);
     };
   }, [toolMenuOpen]);
+
+  useEffect(() => {
+    if (!modeMenuOpen) {
+      return undefined;
+    }
+
+    const closeOnPointerDown = (event: PointerEvent) => {
+      if (event.target instanceof Element && event.target.closest(".composer-mode-menu-wrap")) {
+        return;
+      }
+
+      setModeMenuOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setModeMenuOpen(false);
+      }
+    };
+
+    document.addEventListener("pointerdown", closeOnPointerDown);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnPointerDown);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [modeMenuOpen]);
 
   const submit = async () => {
     const content = input.trim();
@@ -381,6 +435,8 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
 
   const contextModeLabel = contextMode === "all" ? "提取所有" : "提取文本";
   const toolCallingLabel = `工具调用：${toolCallingEnabled ? "已启用" : "已关闭"}`;
+  const effectiveBrowserAutomationMode: BrowserAutomationMode = browserControlEnabled ? browserAutomationMode : "normal_restricted";
+  const browserAutomationModeLabel = BROWSER_AUTOMATION_MODE_OPTIONS.find((option) => option.mode === effectiveBrowserAutomationMode)?.label ?? "普通模式";
   const filteredPromptTemplates = filterPromptTemplates(promptTemplates, slashQuery);
   const hasDraft = input.trim().length > 0 || attachments.length > 0 || promptInvocations.length > 0;
   const canSubmit = canSend && hasDraft;
@@ -490,6 +546,53 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
       </div>
       <div className="composer-actions">
         <div className="composer-switches">
+          <div className="composer-mode-menu-wrap">
+            <button
+              className={`composer-mode-trigger composer-mode-trigger-${effectiveBrowserAutomationMode}`}
+              type="button"
+              aria-label="浏览器自动化模式"
+              aria-haspopup="listbox"
+              aria-expanded={modeMenuOpen}
+              disabled={!browserControlEnabled}
+              title="浏览器自动化模式"
+              onClick={() => setModeMenuOpen((open) => !open)}
+            >
+              <span>{browserAutomationModeLabel}</span>
+              <span className="composer-mode-chevron" aria-hidden="true" />
+            </button>
+            {modeMenuOpen && browserControlEnabled ? (
+              <div className="composer-mode-menu" role="listbox" aria-label="浏览器自动化模式">
+                <div className="composer-mode-menu-header">
+                  <span>选择浏览器自动化模式</span>
+                  <span>本轮生效</span>
+                </div>
+                {BROWSER_AUTOMATION_MODE_OPTIONS.map((option) => (
+                  <button
+                    key={option.mode}
+                    className={`composer-mode-option composer-mode-option-${option.mode}`}
+                    type="button"
+                    role="option"
+                    aria-selected={option.mode === effectiveBrowserAutomationMode}
+                    onClick={() => {
+                      setModeMenuOpen(false);
+                      void setBrowserAutomationMode(option.mode);
+                    }}
+                  >
+                    <svg className="composer-mode-option-icon" viewBox="0 0 24 24" aria-hidden="true">
+                      <path d={option.iconPath} />
+                    </svg>
+                    <span className="composer-mode-option-copy">
+                      <span className="composer-mode-option-title">{option.label}</span>
+                      <span className="composer-mode-option-description">{option.description}</span>
+                    </span>
+                    <span className="composer-mode-option-check" aria-hidden="true">
+                      {option.mode === effectiveBrowserAutomationMode ? "✓" : ""}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
           <ComposerSwitch ariaLabel="流式响应" checked={streamMode} icon="stream" label="流式响应" onToggle={() => setStreamMode(!streamMode)} />
           <div className="composer-tool-menu-wrap" ref={toolMenuRef}>
             <button
@@ -659,6 +762,12 @@ export function ChatComposer({ canSend, matchedRuleLabel }: ChatComposerProps) {
             <p className="context-preview">{pageContext.text || "暂无上下文"}</p>
           </section>
         </>
+      ) : null}
+      {pendingBoundaryChoice ? (
+        <BoundaryChoiceDialog
+          request={pendingBoundaryChoice}
+          onSubmit={(selectedChoiceIds, otherText) => void respondBoundaryChoice(pendingBoundaryChoice.requestId, selectedChoiceIds, otherText)}
+        />
       ) : null}
     </section>
   );

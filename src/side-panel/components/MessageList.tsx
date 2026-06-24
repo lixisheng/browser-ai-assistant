@@ -500,7 +500,7 @@ function createDisplayAttachmentGroups(messages: ChatMessage[], toolCallDisplayM
     const isToolCallTurn = isAssistant && message.assistantMessageKind === "tool_call_turn";
     const hideToolTurnContent = shouldHideToolTurnContent(message, toolCallDisplayMode);
     const hasVisibleAssistantBubble = isAssistant && Boolean(message.content.trim()) && !hideToolTurnContent;
-    const attachments = isAssistant ? collectMessageToolAttachments(message) : [];
+    const attachments = isAssistant ? collectRawMessageToolAttachments(message) : [];
     const targetMessageId = isToolCallTurn && !hasVisibleAssistantBubble && attachments.length > 0 && lastAssistantBubbleMessageId ? lastAssistantBubbleMessageId : message.id;
 
     if (attachments.length > 0) {
@@ -537,8 +537,11 @@ function aggregateDisplayAttachmentKindGroup(kind: string, attachments: ChatTool
 
   if (kind === "network") {
     const networkAttachments = attachments.filter(isNetworkToolAttachment);
+    const canShowUnredacted = networkAttachments.length === 1 && networkAttachments[0]?.redacted === false;
     const requests = uniqueDisplayItems(
-      networkAttachments.flatMap((attachment) => attachment.requests.map(redactNetworkRequestDetail)),
+      networkAttachments.flatMap((attachment) => attachment.redacted === false && canShowUnredacted
+        ? attachment.requests
+        : attachment.requests.map(redactNetworkRequestDetail)),
       (request) => request.id.trim() || `${request.method}\u0000${request.url}\u0000${request.status ?? ""}`,
     );
     return {
@@ -547,7 +550,7 @@ function aggregateDisplayAttachmentKindGroup(kind: string, attachments: ChatTool
       title: "Network 请求详情",
       summary: formatNetworkAttachmentSummary(requests),
       createdAt: getMaxCreatedAt(networkAttachments),
-      redacted: true,
+      redacted: !canShowUnredacted,
       truncated: networkAttachments.some((attachment) => attachment.truncated || attachment.requests.some((request) => request.truncated)),
       requests,
     };
@@ -621,7 +624,7 @@ function aggregateGenericDisplayAttachments(kind: string, attachments: ChatToolA
   return {
     id: `message-display-${kind}-${attachments.map((attachment) => attachment.id).join("-")}`,
     kind,
-    title: `${first.title}（${attachments.length} 项）`,
+    title: first.title,
     summary: uniqueNonEmptyStrings(attachments.map((attachment) => attachment.summary)).join("\n"),
     createdAt: getMaxCreatedAt(attachments),
     redacted: attachments.every((attachment) => attachment.redacted),
@@ -693,7 +696,7 @@ function NetworkToolAttachmentView({ attachment }: { attachment: ChatToolAttachm
     return null;
   }
 
-  const requests = attachment.requests.map(redactNetworkRequestDetail);
+  const requests = attachment.redacted === false ? attachment.requests : attachment.requests.map(redactNetworkRequestDetail);
   const summary = formatNetworkAttachmentSummary(requests);
 
   return (
