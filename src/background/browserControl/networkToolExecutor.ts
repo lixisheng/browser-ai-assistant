@@ -41,10 +41,10 @@ type NetworkToolName =
 
 interface NetworkRecorderLike {
   isEnabled: boolean | (() => boolean);
-  listRequests(filter?: NetworkRequestFilter): NetworkRequestMeta[];
+  listRequests(filter?: NetworkRequestFilter, options?: { redacted?: boolean }): NetworkRequestMeta[];
   getDetails(requestIds: string[], options?: { redacted?: boolean }): Promise<NetworkRequestDetail[]>;
   clear(): void;
-  waitForRequests(filter?: NetworkWaitFilter): Promise<NetworkRequestMeta[]>;
+  waitForRequests(filter?: NetworkWaitFilter, options?: { redacted?: boolean }): Promise<NetworkRequestMeta[]>;
 }
 
 interface ParameterCandidate {
@@ -89,6 +89,7 @@ export class BrowserNetworkToolExecutor {
     private readonly recorder: NetworkRecorderLike | BrowserNetworkRecorder,
     private readonly onClear?: () => void,
     private readonly getBoundaryGrant?: () => BoundaryGrantContext | undefined,
+    private readonly isFullAccess?: () => boolean,
   ) {}
 
   async execute(toolCall: ModelToolCall): Promise<ModelToolResult> {
@@ -116,14 +117,22 @@ export class BrowserNetworkToolExecutor {
     }
 
     if (isToolCallName(toolCall.name, NETWORK_LIST_REQUESTS_TOOL_ID, NETWORK_LIST_REQUESTS_TOOL_NAME)) {
-      const requests = this.recorder.listRequests(normalizeRequestFilter(toolCall.arguments));
-      return createNetworkResult(toolCall, formatRequestList(requests), requests.map(createMetaDetail));
+      const fullAccess = this.isFullAccess?.() === true;
+      const requests = this.recorder.listRequests(normalizeRequestFilter(toolCall.arguments), { redacted: !fullAccess });
+      return createNetworkResult(toolCall, formatRequestList(requests), requests.map((request) => createMetaDetail(request, fullAccess)), {
+        preserveRaw: fullAccess,
+        fullAccess,
+      });
     }
 
     if (isToolCallName(toolCall.name, NETWORK_WAIT_FOR_REQUESTS_TOOL_ID, NETWORK_WAIT_FOR_REQUESTS_TOOL_NAME)) {
-      const requests = await this.recorder.waitForRequests(normalizeWaitFilter(toolCall.arguments));
+      const fullAccess = this.isFullAccess?.() === true;
+      const requests = await this.recorder.waitForRequests(normalizeWaitFilter(toolCall.arguments), { redacted: !fullAccess });
       const content = requests.length ? `已捕获 ${requests.length} 个匹配的 Network 请求：\n${formatRequestList(requests)}` : "等待 Network 请求超时，未捕获到匹配请求。";
-      return createNetworkResult(toolCall, content, requests.map(createMetaDetail));
+      return createNetworkResult(toolCall, content, requests.map((request) => createMetaDetail(request, fullAccess)), {
+        preserveRaw: fullAccess,
+        fullAccess,
+      });
     }
 
     if (isToolCallName(toolCall.name, NETWORK_EXTRACT_JS_CANDIDATES_TOOL_ID, NETWORK_EXTRACT_JS_CANDIDATES_TOOL_NAME) && toolCall.arguments.requestIds === undefined) {
@@ -145,18 +154,30 @@ export class BrowserNetworkToolExecutor {
     const revealCurrentResult = this.canRevealCurrentToolResult();
     const details = await this.recorder.getDetails(requestIds.requestIds, { redacted: !revealCurrentResult });
     if (isToolCallName(toolCall.name, NETWORK_GET_REQUEST_DETAILS_TOOL_ID, NETWORK_GET_REQUEST_DETAILS_TOOL_NAME)) {
-      return createNetworkResult(toolCall, createNetworkContextPrompt({ userDemand: "Network 工具读取请求详情", details }), details, revealCurrentResult);
+      return createNetworkResult(toolCall, createNetworkContextPrompt({ userDemand: "Network 工具读取请求详情", details }), details, {
+        preserveRaw: revealCurrentResult,
+        fullAccess: this.isFullAccess?.() === true,
+      });
     }
 
     if (isToolCallName(toolCall.name, NETWORK_COMPARE_REQUESTS_TOOL_ID, NETWORK_COMPARE_REQUESTS_TOOL_NAME)) {
-      return createNetworkResult(toolCall, compareRequests(details), details, revealCurrentResult);
+      return createNetworkResult(toolCall, compareRequests(details), details, {
+        preserveRaw: revealCurrentResult,
+        fullAccess: this.isFullAccess?.() === true,
+      });
     }
 
     if (isToolCallName(toolCall.name, NETWORK_FIND_PARAMETER_CANDIDATES_TOOL_ID, NETWORK_FIND_PARAMETER_CANDIDATES_TOOL_NAME)) {
-      return createNetworkResult(toolCall, formatParameterCandidates(findParameterCandidates(details)), details, revealCurrentResult);
+      return createNetworkResult(toolCall, formatParameterCandidates(findParameterCandidates(details)), details, {
+        preserveRaw: revealCurrentResult,
+        fullAccess: this.isFullAccess?.() === true,
+      });
     }
 
-    return createNetworkResult(toolCall, extractJsCandidates(details, toolCall.arguments), details, revealCurrentResult);
+    return createNetworkResult(toolCall, extractJsCandidates(details, toolCall.arguments), details, {
+      preserveRaw: revealCurrentResult,
+      fullAccess: this.isFullAccess?.() === true,
+    });
   }
 
   private isEnabled(): boolean {
@@ -245,25 +266,36 @@ function formatRequestList(requests: NetworkRequestMeta[]): string {
     .join("\n");
 }
 
-function createMetaDetail(meta: NetworkRequestMeta): NetworkRequestDetail {
-  return redactNetworkRequestDetail({
+function createMetaDetail(meta: NetworkRequestMeta, fullAccess = false): NetworkRequestDetail {
+  const detail = {
     ...meta,
     truncated: false,
-    redacted: true,
-  });
+    redacted: false,
+  };
+  return fullAccess ? detail : redactNetworkRequestDetail(detail);
 }
 
-function createNetworkResult(toolCall: ModelToolCall, content: string, details: NetworkRequestDetail[], revealCurrentResult = false): ModelToolResult {
+function createNetworkResult(
+  toolCall: ModelToolCall,
+  content: string,
+  details: NetworkRequestDetail[],
+  options: { preserveRaw?: boolean; fullAccess?: boolean } = {},
+): ModelToolResult {
   return {
     toolCallId: toolCall.id,
     name: toolCall.name,
     content,
-    ...(details.length ? { toolAttachments: [createNetworkAttachment(toolCall.id, details, revealCurrentResult)] } : {}),
+    ...(details.length ? { toolAttachments: [createNetworkAttachment(toolCall.id, details, options)] } : {}),
   };
 }
 
-function createNetworkAttachment(sourceToolCallId: string, details: NetworkRequestDetail[], revealCurrentResult = false): ChatNetworkToolAttachment {
-  const requests = revealCurrentResult ? details : details.map(redactNetworkRequestDetail);
+function createNetworkAttachment(
+  sourceToolCallId: string,
+  details: NetworkRequestDetail[],
+  options: { preserveRaw?: boolean; fullAccess?: boolean } = {},
+): ChatNetworkToolAttachment {
+  const preserveRaw = options.preserveRaw === true;
+  const requests = preserveRaw ? details : details.map(redactNetworkRequestDetail);
   return {
     id: `tool-attachment-${sourceToolCallId}`,
     kind: "network",
@@ -271,7 +303,8 @@ function createNetworkAttachment(sourceToolCallId: string, details: NetworkReque
     summary: formatNetworkAttachmentSummary(requests),
     sourceToolCallId,
     createdAt: Date.now(),
-    redacted: !revealCurrentResult,
+    redacted: !preserveRaw,
+    fullAccess: options.fullAccess === true && preserveRaw ? true : undefined,
     truncated: requests.some((request) => request.truncated),
     requests,
   };

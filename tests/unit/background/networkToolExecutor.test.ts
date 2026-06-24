@@ -50,7 +50,7 @@ describe("Network 工具执行器", () => {
       content: expect.stringContaining("req-wait"),
     });
     expect(recorder.clear).toHaveBeenCalled();
-    expect(recorder.waitForRequests).toHaveBeenCalledWith({ urlIncludes: "submit", method: undefined, resourceType: undefined, timeoutMs: 1000 });
+    expect(recorder.waitForRequests).toHaveBeenCalledWith({ urlIncludes: "submit", method: undefined, resourceType: undefined, timeoutMs: 1000 }, { redacted: true });
   });
 
   it("检测到已脱敏字段时保留脱敏结果供上层权限边界检测", async () => {
@@ -103,11 +103,49 @@ describe("Network 工具执行器", () => {
     expect(result.content).toContain("\"password\":\"123456\"");
     expect(result.toolAttachments?.[0]).toMatchObject({
       redacted: false,
+      fullAccess: undefined,
       requests: [expect.objectContaining({
         requestBody: "{\"password\":\"123456\",\"name\":\"张三\"}",
         redacted: false,
       })],
     });
+  });
+
+  it("完全访问模式下 list/wait 附件直接保留 recorder 原文", async () => {
+    const rawDetail = createDetail({
+      url: "https://api.example.com/login?token=secret",
+      requestHeaders: [{ name: "Authorization", value: "Bearer secret" }],
+      requestBody: "{\"password\":\"123456\"}",
+      redacted: false,
+    });
+    const recorder = {
+      isEnabled: vi.fn(() => true),
+      listRequests: vi.fn((_filter: unknown, options?: { redacted?: boolean }) => [createDetail({ ...rawDetail, id: `list-${options?.redacted === false ? "raw" : "redacted"}` })]),
+      getDetails: vi.fn(),
+      clear: vi.fn(),
+      waitForRequests: vi.fn(async (_filter: unknown, options?: { redacted?: boolean }) => [createDetail({ ...rawDetail, id: `wait-${options?.redacted === false ? "raw" : "redacted"}` })]),
+    };
+    const executor = new BrowserNetworkToolExecutor(recorder, undefined, undefined, () => true);
+
+    const listResult = await executor.execute(createToolCall("network_list_requests", { urlIncludes: "login" }));
+    const waitResult = await executor.execute(createToolCall("network_wait_for_requests", { urlIncludes: "login", timeoutMs: 1000 }));
+
+    expect(recorder.listRequests).toHaveBeenCalledWith(expect.any(Object), { redacted: false });
+    expect(recorder.waitForRequests).toHaveBeenCalledWith(expect.any(Object), { redacted: false });
+    for (const result of [listResult, waitResult]) {
+      expect(result.content).toContain("token=secret");
+      expect(result.toolAttachments?.[0]).toMatchObject({
+        kind: "network",
+        redacted: false,
+        fullAccess: true,
+        requests: [expect.objectContaining({
+          url: "https://api.example.com/login?token=secret",
+          requestHeaders: [expect.objectContaining({ name: "Authorization", value: "Bearer secret" })],
+          requestBody: "{\"password\":\"123456\"}",
+          redacted: false,
+        })],
+      });
+    }
   });
 
   it("list/wait 工具在执行器层限制 limit 上限，不能只依赖模型 schema", async () => {
@@ -123,8 +161,8 @@ describe("Network 工具执行器", () => {
     await executor.execute(createToolCall("network_list_requests", { limit: 9999 }));
     await executor.execute(createToolCall("network_wait_for_requests", { limit: 9999, timeoutMs: 10 }));
 
-    expect(recorder.listRequests).toHaveBeenCalledWith({ urlIncludes: undefined, method: undefined, resourceType: undefined, status: undefined, limit: 200 });
-    expect(recorder.waitForRequests).toHaveBeenCalledWith({ urlIncludes: undefined, method: undefined, resourceType: undefined, status: undefined, limit: 200, timeoutMs: 10 });
+    expect(recorder.listRequests).toHaveBeenCalledWith({ urlIncludes: undefined, method: undefined, resourceType: undefined, status: undefined, limit: 200 }, { redacted: true });
+    expect(recorder.waitForRequests).toHaveBeenCalledWith({ urlIncludes: undefined, method: undefined, resourceType: undefined, status: undefined, limit: 200, timeoutMs: 10 }, { redacted: true });
   });
 
   it("compare/find/extract 工具输出逆向分析线索", async () => {
@@ -285,7 +323,7 @@ describe("Network 工具执行器", () => {
       resourceType: "x".repeat(64),
       status: undefined,
       limit: undefined,
-    });
+    }, { redacted: true });
     expect(recorder.getDetails).toHaveBeenCalledWith([]);
   });
 

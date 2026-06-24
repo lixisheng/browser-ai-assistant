@@ -78,6 +78,53 @@ describe("MessageList 工具附件展示聚合", () => {
     expect(screen.queryByText(/\[已脱敏]/)).not.toBeInTheDocument();
   });
 
+  it("完全访问 Network 附件聚合后仍展示原文", () => {
+    const attachments = aggregateDisplayAttachmentsByKind([
+      createNetworkAttachment({
+        id: "network-full-a",
+        fullAccess: true,
+        requests: [
+          {
+            id: "req-a",
+            url: "https://api.example.com/login?token=secret-token",
+            method: "POST",
+            status: 200,
+            requestHeaders: [{ name: "Authorization", value: "Bearer secret" }],
+            requestBody: "{\"password\":\"123456\"}",
+            responseBody: "{\"access_token\":\"secret-token\"}",
+            redacted: false,
+            truncated: false,
+          },
+        ],
+      }),
+      createNetworkAttachment({
+        id: "network-full-b",
+        createdAt: 2,
+        fullAccess: true,
+        requests: [
+          {
+            id: "req-b",
+            url: "https://api.example.com/profile?token=profile-token",
+            method: "GET",
+            status: 200,
+            requestHeaders: [{ name: "Cookie", value: "sid=secret" }],
+            responseBody: "{\"email\":\"user@example.com\"}",
+            redacted: false,
+            truncated: false,
+          },
+        ],
+      }),
+    ]);
+
+    expect(attachments).toHaveLength(1);
+    const attachment = attachments[0] as ChatNetworkToolAttachment;
+    expect(attachment.redacted).toBe(false);
+    expect(attachment.fullAccess).toBe(true);
+    expect(JSON.stringify(attachment.requests)).toContain("123456");
+    expect(JSON.stringify(attachment.requests)).toContain("Bearer secret");
+    expect(JSON.stringify(attachment.requests)).not.toContain("[已脱敏]");
+  });
+
   it("同一气泡下多个 JS 源码附件聚合后仍保留结构化数据", () => {
     const attachments = aggregateDisplayAttachmentsByKind([
       createJsSourceAttachment({

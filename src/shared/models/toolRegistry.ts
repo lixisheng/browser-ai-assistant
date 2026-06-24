@@ -64,6 +64,16 @@ export const REPLAY_SEND_REQUEST_TOOL_ID = "replay.send_request";
 export const REPLAY_SEND_REQUEST_TOOL_NAME = "replay_send_request";
 export const REPLAY_COMPARE_RESPONSES_TOOL_ID = "replay.compare_responses";
 export const REPLAY_COMPARE_RESPONSES_TOOL_NAME = "replay_compare_responses";
+export const FULL_ACCESS_EXECUTE_SCRIPT_TOOL_ID = "full_access.execute_script";
+export const FULL_ACCESS_EXECUTE_SCRIPT_TOOL_NAME = "full_access_execute_script";
+export const FULL_ACCESS_FETCH_TOOL_ID = "full_access.fetch";
+export const FULL_ACCESS_FETCH_TOOL_NAME = "full_access_fetch";
+export const FULL_ACCESS_GET_NETWORK_DETAILS_TOOL_ID = "full_access.get_network_details";
+export const FULL_ACCESS_GET_NETWORK_DETAILS_TOOL_NAME = "full_access_get_network_details";
+export const FULL_ACCESS_READ_STORAGE_TOOL_ID = "full_access.read_storage";
+export const FULL_ACCESS_READ_STORAGE_TOOL_NAME = "full_access_read_storage";
+export const FULL_ACCESS_REVOKE_TOOL_ID = "full_access.revoke";
+export const FULL_ACCESS_REVOKE_TOOL_NAME = "full_access_revoke";
 
 export const MODEL_TOOL_GROUP_SYSTEM_ID = "system";
 export const MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID = "browser_automation";
@@ -765,6 +775,88 @@ export const AVAILABLE_MODEL_TOOLS: ModelToolRegistryEntry[] = [
         draftId: { type: "string", description: "已发送的请求重放草案 ID。" },
       },
       required: ["draftId"],
+      additionalProperties: false,
+    },
+  },
+  {
+    id: FULL_ACCESS_EXECUTE_SCRIPT_TOOL_ID,
+    name: FULL_ACCESS_EXECUTE_SCRIPT_TOOL_NAME,
+    groupId: MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID,
+    requiredCapabilities: ["browser_control", "full_access"],
+    displayName: "完全访问执行脚本",
+    description: "在当前完全访问页面上下文执行任意 JavaScript，并返回原始执行结果。该工具只在用户切换到完全访问模式后暴露，不做脱敏、只读限制或敏感信息过滤。",
+    parameters: {
+      type: "object",
+      properties: {
+        script: { type: "string", description: "要在当前页面执行的 JavaScript 表达式或脚本。" },
+        awaitPromise: { type: "boolean", description: "是否等待 Promise 结果，默认等待。" },
+      },
+      required: ["script"],
+      additionalProperties: false,
+    },
+  },
+  {
+    id: FULL_ACCESS_FETCH_TOOL_ID,
+    name: FULL_ACCESS_FETCH_TOOL_NAME,
+    groupId: MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID,
+    requiredCapabilities: ["browser_control", "full_access"],
+    displayName: "完全访问页面请求",
+    description: "在当前页面上下文发起任意 fetch 请求，默认 credentials=include，并返回原始响应摘要。该工具不套用请求重放沙箱限制。",
+    parameters: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "请求目标 URL，可为页面 fetch 支持的绝对或相对 URL。" },
+        method: { type: "string", description: "请求方法，默认 GET。" },
+        headers: {
+          type: "object",
+          additionalProperties: { type: "string" },
+          description: "请求 Header 原样传入页面 fetch。",
+        },
+        body: { type: "string", description: "请求体原文。" },
+        credentials: {
+          type: "string",
+          enum: ["include", "same-origin", "omit"],
+          description: "fetch credentials，默认 include。",
+        },
+      },
+      required: ["url"],
+      additionalProperties: false,
+    },
+  },
+  {
+    id: FULL_ACCESS_GET_NETWORK_DETAILS_TOOL_ID,
+    name: FULL_ACCESS_GET_NETWORK_DETAILS_TOOL_NAME,
+    groupId: MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID,
+    requiredCapabilities: ["browser_control", "full_access"],
+    displayName: "完全访问 Network 原文",
+    description: "读取已采集 Network 请求和响应完整原文，不做脱敏、截断过滤或敏感字段屏蔽。",
+    parameters: createNetworkRequestIdsSchema(),
+  },
+  {
+    id: FULL_ACCESS_READ_STORAGE_TOOL_ID,
+    name: FULL_ACCESS_READ_STORAGE_TOOL_NAME,
+    groupId: MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID,
+    requiredCapabilities: ["browser_control", "full_access"],
+    displayName: "完全访问读取存储",
+    description: "读取当前页面可访问的 Cookie、localStorage、sessionStorage 和页面状态原文。",
+    parameters: {
+      type: "object",
+      properties: {},
+      required: [],
+      additionalProperties: false,
+    },
+  },
+  {
+    id: FULL_ACCESS_REVOKE_TOOL_ID,
+    name: FULL_ACCESS_REVOKE_TOOL_NAME,
+    groupId: MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID,
+    requiredCapabilities: ["browser_control", "full_access"],
+    displayName: "撤销完全访问",
+    description: "退出完全访问模式并清理当前运行态授权。",
+    parameters: {
+      type: "object",
+      properties: {},
+      required: [],
       additionalProperties: false,
     },
   },

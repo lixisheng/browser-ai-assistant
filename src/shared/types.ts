@@ -186,6 +186,7 @@ export interface ChatWebSearchToolAttachment extends ChatToolAttachmentBase {
 
 export interface ChatNetworkToolAttachment extends ChatToolAttachmentBase {
   kind: "network";
+  fullAccess?: boolean;
   requests: NetworkRequestDetail[];
 }
 

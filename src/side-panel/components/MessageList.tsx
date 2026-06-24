@@ -537,9 +537,10 @@ function aggregateDisplayAttachmentKindGroup(kind: string, attachments: ChatTool
 
   if (kind === "network") {
     const networkAttachments = attachments.filter(isNetworkToolAttachment);
-    const canShowUnredacted = networkAttachments.length === 1 && networkAttachments[0]?.redacted === false;
+    const allFullAccessRaw = networkAttachments.every((attachment) => attachment.fullAccess === true && attachment.redacted === false);
+    const canShowUnredacted = allFullAccessRaw || (networkAttachments.length === 1 && networkAttachments[0]?.redacted === false);
     const requests = uniqueDisplayItems(
-      networkAttachments.flatMap((attachment) => attachment.redacted === false && canShowUnredacted
+      networkAttachments.flatMap((attachment) => canShowUnredacted
         ? attachment.requests
         : attachment.requests.map(redactNetworkRequestDetail)),
       (request) => request.id.trim() || `${request.method}\u0000${request.url}\u0000${request.status ?? ""}`,
@@ -551,6 +552,7 @@ function aggregateDisplayAttachmentKindGroup(kind: string, attachments: ChatTool
       summary: formatNetworkAttachmentSummary(requests),
       createdAt: getMaxCreatedAt(networkAttachments),
       redacted: !canShowUnredacted,
+      fullAccess: allFullAccessRaw || undefined,
       truncated: networkAttachments.some((attachment) => attachment.truncated || attachment.requests.some((request) => request.truncated)),
       requests,
     };

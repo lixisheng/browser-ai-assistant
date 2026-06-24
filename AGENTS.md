@@ -285,7 +285,7 @@
 * `source-map` 工具附件必须通过通用 `toolAttachments` 保存、展示、导出和后续上下文注入；历史归一化和聚合必须保留候选来源、映射位置、原始片段、失败摘要、`redacted` 与 `truncated` 标记。
 * `source-map` 原始片段即使未实际替换敏感词，也必须标记为已进入脱敏管道；UI 展示、工具正文、导出和后续追问上下文只能输出 `resourceId`、行列、原始 source、name、ignored、sourcesContent 状态和中文失败摘要，不得直接 `JSON.stringify` 完整对象或暴露完整 `resourceUrl`；候选展示只能显示 inline、外部 Source Map 或无 URL 摘要，不得直接渲染完整 map URL。
 * Source Map 原始源码片段展示、导出和再次注入模型前必须复用敏感赋值脱敏和截断规则，避免泄露 Cookie、Authorization、Token、API Key、Secret、Password、Session、CSRF 等凭据。
-* 浏览器自动化授权统一为三种运行态：`normal_restricted` 普通模式、`controlled_enhanced` 受控增强模式、`full_access` 完全访问占位；模式只属于运行态，不得进入聊天偏好、会话历史、同步快照或导出内容。
+* 浏览器自动化授权统一为三种运行态：`normal_restricted` 普通模式、`controlled_enhanced` 受控增强模式、`full_access` 完全访问最高权限模式；模式只属于运行态，不得进入聊天偏好、会话历史、同步快照或导出内容。
 * `.composer-switches` 中流式响应开关左侧必须保留三模式选择；顶部不得恢复“运行时只读分析”按钮。浏览器控制关闭时模式选择必须禁用并显示普通模式。
 * 三模式选择菜单弹层必须使用当前主题已定义的实体背景变量，例如 `--color-canvas`、`--color-surface-soft` 或 `--color-surface-card`；不得引用未定义的 `--color-surface` 导致弹层背景在 Claude light 主题下变成透明。
 * `runtime.inspect_globals`、`runtime.search_modules`、`runtime.describe_function` 已并入普通模式默认能力；它们属于浏览器自动化工具组，但仍必须满足浏览器控制开启、当前 tab 已 attach、Network recorder 已启用和 background 固定只读模板校验。
@@ -296,11 +296,11 @@
 * `runtime.*` 只允许读取公开全局配置、模块缓存摘要和函数摘要；不得 DOM 写入、表单填写、点击、导航、刷新、发起网络请求、调用页面业务函数，或读取 Cookie、LocalStorage、SessionStorage、IndexedDB 等敏感存储。
 * `runtime.*` 结果必须脱敏、截断并限制对象深度、数组/对象条目数、函数字符串长度和总字节数；字符串中出现 Cookie、Authorization、Bearer、JWT、API Key、Secret、Password、Session、CSRF 等敏感值时必须按值级或整段脱敏，不能只替换字段名；默认只作为 tool message 回灌模型，未完成附件 kind、展示、导出、历史归一化和后续追问上下文设计前不得生成用户可见 `toolAttachments`。
 * 用户选择的三模式在当前会话内生效，不能因为 AI 回复轮次、工具循环、`network.clear_requests`、导航、刷新、切换受控 tab 或自动化模式消息里的历史 `expiresAt` 自动回到普通模式；只有用户手动切换、关闭浏览器控制、tab 关闭或 debugger detach 这类硬断开才能收口为普通模式。
-* `full_access_reserved` 只能作为未来阶段授权占位；当前阶段所有执行器遇到该授权必须 fail closed，不得借该占位关闭脱敏、关闭只读限制或放行任意脚本。
-* 受控增强模式才允许暴露 `boundary.request_user_choice` 和 `replay.*`；普通模式不得暴露 `replay.*`、`full_access.*`，完全访问模式 v1 只保留状态占位并 fail closed。
+* 完全访问模式允许暴露 `full_access.*`，并按用户当前会话授权关闭人为脱敏、只读限制、敏感信息过滤、逐项边界确认和请求重放沙箱限制；普通模式和受控增强模式不得暴露 `full_access.*`，background 对伪造调用必须 fail closed。
+* 受控增强模式才允许暴露 `boundary.request_user_choice` 和 `replay.*`；普通模式不得暴露 `replay.*`、`full_access.*`，完全访问模式下模型应直接使用 `full_access.*` 执行最高权限动作，不再触发受控增强边界确认。
 * `boundary.request_user_choice` 必须展示 AI 提供的问题、原因、动态多选项、风险等级和授权摘要；UI 必须固定追加“其他”自由输入项。“其他”只回灌给模型，不得直接生成授权。
 * 边界确认弹窗提交或取消后必须立即进入本地提交中状态，禁用选项、文本框和提交/取消按钮，避免同一个 `requestId` 被重复响应导致误报失败。
-* 受控增强模式下，任何 `network.*`、`js.*`、`sourcemap.*`、`runtime.*` 或 `replay.*` 工具结果只要检测到 `[已脱敏]`、`[REDACTED]`、敏感字段、截断摘要、请求重放发送确认、JS/Source Map 上下文扩展、Runtime 高风险路径、完全访问占位或其他需要用户授权的权限边界，就必须主动触发 `boundary.request_user_choice` 或在工具结果中强制要求模型下一步调用该工具；用户提交前工具循环应阻塞在确认边界上，不得继续推断、还原、请求、扩展上下文或输出敏感原文。
+* 受控增强模式下，任何 `network.*`、`js.*`、`sourcemap.*`、`runtime.*` 或 `replay.*` 工具结果只要检测到 `[已脱敏]`、`[REDACTED]`、敏感字段、截断摘要、请求重放发送确认、JS/Source Map 上下文扩展、Runtime 高风险路径、完全访问边界或其他需要用户授权的权限边界，就必须主动触发 `boundary.request_user_choice` 或在工具结果中强制要求模型下一步调用该工具；用户提交前工具循环应阻塞在确认边界上，不得继续推断、还原、请求、扩展上下文或输出敏感原文。
 * 受控增强边界检测必须覆盖具体拒绝语义：同源 JS 补位失败、同源 JS 跨域重定向、Source Map 读取/同源/大小/MIME/JSON/mappings/浏览器拒绝失败、inline Source Map 失败、请求重放草案不存在/过期/跨页面/敏感 Header/方法或大小越界、运行时只读未授权、运行时路径表达式或高风险字段。普通参数类型错误、空 UID、等待超时等不涉及越权的失败不应自动弹边界确认，避免确认噪声。
 * 用户在受控增强弹窗中允许“脱敏或敏感字段”后，当前 Network 详情类工具必须基于一次性 grant 立即重读当前请求详情，并把本轮工具结果和当前可见附件改为未脱敏结果；不能只把“用户已确认”文字回灌给模型却继续展示 `[已脱敏]`。该未脱敏附件只能作为当前工具结果/当前消息可见内容存在，历史追问上下文、复制、导出、同步归一化和旧附件恢复仍必须重新脱敏。
 * 受控增强的每一个 `BrowserAutomationGrant` 都必须有对应执行器消费路径和回归测试；新增或修改 grant 时，测试必须证明“用户选择允许后，当前工具行为真实改变并且 grant 被一次性消费”。禁止只在弹窗、Prompt 或 tool result 文案中声明授权而不改变执行边界。
@@ -318,13 +318,13 @@
 * 请求重放必须限制 method、协议、host、header、请求体类型、请求体大小、响应体大小、超时、重定向次数、并发和本轮调用次数；默认只允许 `GET`、`HEAD` 和可证明无凭据、无敏感 body 的受限 `POST`，`PUT`、`PATCH`、`DELETE` 和文件上传类请求必须先保持禁用。
 * 请求重放结果默认只作为 tool message 回灌模型；未完成 `request-replay` 附件 kind、展示、导出、历史归一化和后续追问上下文设计前，不得生成用户可见 `toolAttachments`，也不得保存完整 URL、header、body 或响应原文。
 * 关闭浏览器控制、切换受控 tab、导航、刷新、debugger detach、授权过期或终止生成时，必须清理请求重放授权、草案和临时确认，并中止正在进行的重放请求；其中切换受控 tab、导航和刷新不得顺带把用户选择的受控增强模式改回普通模式。
-* 敏感字段解锁和“完全访问”属于请求重放之后的最高风险授权层，默认关闭；`full_access_reserved` 只能作为规划占位，正式落地前所有执行器遇到该授权仍必须 fail closed，不能借占位关闭脱敏、只读限制、敏感信息过滤、审计或用户确认。
-* “完全访问”不得被实现为模型或脚本不受任何限制；即使用户授权，也必须保留用户逐次确认、短时效、当前 tab/origin 绑定、撤销、超时、大小上限、并发上限、目标范围校验、取消机制和审计摘要。
-* 完全访问授权不得持久化到聊天偏好、会话历史、同步快照或导出；刷新、导航、切换受控 tab、关闭浏览器控制、debugger detach、生成终止、授权过期或用户撤销时必须立即失效，并广播状态变化让所有 Side Panel 收口。
-* 完全访问能力必须拆成草案和确认执行两步；模型只能生成 `full_access.prepare_action` 这类高权限动作草案，不能绕过用户确认直接执行脚本、请求、DOM 写入、表单提交、导航、上传、下载、删除、支付、发帖、发送消息或账号设置修改。
-* 完全访问结果默认只能本地临时查看，不得自动进入聊天消息、工具附件、同步快照、导出或远端模型上下文；如用户明确要求写入聊天或发送给远端模型，必须作为单独授权项二次确认并明确提示第三方模型提供商可能接收敏感数据。
-* 完全访问不得自动执行破坏性、高频、批量、绕过验证码、绕过风控、撞库、爆破、权限提升、隐蔽采集、跨站批量扫描、自我持久化、自我传播或绕过用户确认的行为；相关需求必须固定中文拒绝。
-* 高权限脚本或请求必须展示用户可审查草案、目标 origin、敏感字段、预期副作用、超时、输出上限和取消方式；未知脚本、混淆脚本、跨 origin 脚本、远程加载脚本、动态 `eval` / `Function`、无限循环迹象和批量请求迹象必须默认拒绝或要求用户手工审查后重新确认。
+* 敏感字段解锁和“完全访问”属于请求重放之后的最高风险授权层，默认关闭；用户切换到完全访问模式后，本会话当前受控页面可通过 `full_access.execute_script`、`full_access.fetch`、`full_access.get_network_details`、`full_access.read_storage` 和 `full_access.revoke` 执行最高权限动作，工具结果可原样回灌给 AI。
+* “完全访问”是用户在当前会话当前受控页面显式选择的最高权限模式；该模式下不得再叠加人为逐项确认、只读、脱敏、敏感字段过滤、请求重放沙箱、凭据剥离或目标范围白名单。实现仍只能使用 Chrome、网页和扩展平台本身允许的能力。
+* 完全访问授权不得持久化到聊天偏好、同步快照或导出配置；用户切换模式、关闭浏览器控制、tab 关闭、debugger detach 或用户撤销时必须立即失效，并广播状态变化让所有 Side Panel 收口。刷新、导航、工具轮次变化或生成终止不得擅自把用户选择的完全访问模式改回普通模式。
+* 完全访问模式不再拆成草案和确认执行两步；用户切换模式即视为当前会话授权。实现仍只能使用 Chrome、网页和扩展平台本身允许的能力，不得声称能绕过浏览器、网页 CSP、站点权限或扩展平台硬限制。
+* 修改完全访问工具时，必须覆盖：普通/受控增强不暴露、完全访问暴露、非完全访问伪造调用 fail closed、脚本执行原始返回、fetch 默认 `credentials: "include"`、Network/Storage 原文返回、撤销和生命周期清理。
+* 完全访问工具结果允许原样进入 tool result、聊天消息、工具附件和后续 AI 上下文；Network 详情、列表、等待、聚合附件、展示组件、导出和后续追问上下文必须共同识别 `fullAccess: true` 与 `redacted: false`，不得在附件链路重新脱敏为“已脱敏”。
+* 完全访问模式下不再要求高权限脚本或请求走草案、逐项确认或受控增强边界弹窗；如执行失败，只能返回平台、页面或扩展实际错误的安全摘要，不得声称已绕过浏览器、网页 CSP、站点权限或扩展平台硬限制。
 * 受控只读 `Runtime.evaluate`、请求重放沙箱、敏感字段解锁与完全访问之外的更高风险 Web 逆向能力仍默认关闭；未单独完成权限、确认、脱敏、审计、取消和测试设计前不得实现或暗中启用。
 * 修改 Network 工具、浏览器控制 debugger allow-list、manifest、background 入口或工具注册时，最小验证必须覆盖相关 vitest、`npm run typecheck` 和 `npm run build:extension`；涉及真实扩展加载路径时还应运行 `npx playwright test --project=chrome-extension`。
 * Network 工具化与完整 Web 逆向路线的主规划文档统一维护在 `docs/Network工具化与Web逆向自动化规划.md`；该文档必须与当前实现保持一致，旧版 DevTools Network 手动连接方案只可作为历史背景，不得作为当前操作说明继续传播。

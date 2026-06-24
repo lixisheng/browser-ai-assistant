@@ -91,6 +91,10 @@ describe("debugger Network 采集器", () => {
       { name: "Authorization", value: "Bearer secret" },
       { name: "Content-Type", value: "application/json" },
     ]);
+
+    const rawList = recorder.listRequests({}, { redacted: false });
+    expect(rawList[0]?.url).toBe("https://api.example.com/login?token=secret&safe=1");
+    expect(rawList[0]?.requestHeaders).toEqual(expect.arrayContaining([{ name: "Authorization", value: "Bearer secret" }]));
   });
 
   it("支持清空、等待匹配请求和停止监听", async () => {

@@ -12,10 +12,10 @@ function createAuthorization(mode: ToolAuthorizationContext["mode"]): ToolAuthor
 }
 
 describe("运行时只读工具执行器", () => {
-  it("未授权和预留完全访问授权都会 fail closed", async () => {
+  it("未授权和完全访问授权都会 fail closed，任意脚本执行必须走 full_access.*", async () => {
     const connection = { evaluate: vi.fn() };
     const normalExecutor = new RuntimeReadToolExecutor(connection, () => createAuthorization("normal"));
-    const fullAccessExecutor = new RuntimeReadToolExecutor(connection, () => createAuthorization("full_access_reserved"));
+    const fullAccessExecutor = new RuntimeReadToolExecutor(connection, () => createAuthorization("full_access"));
 
     await expect(normalExecutor.execute(createToolCall("runtime_inspect_globals", { paths: ["window.__APP_CONFIG__"] }))).resolves.toMatchObject({
       isError: true,
@@ -23,7 +23,7 @@ describe("运行时只读工具执行器", () => {
     });
     await expect(fullAccessExecutor.execute(createToolCall("runtime_inspect_globals", { paths: ["window.__APP_CONFIG__"] }))).resolves.toMatchObject({
       isError: true,
-      content: "完全访问授权仍处于后续阶段预留状态，当前版本已拒绝执行。",
+      content: "运行时只读分析未授权，无法执行 runtime.* 工具。请先显式开启运行时只读分析。",
     });
     expect(connection.evaluate).not.toHaveBeenCalled();
   });

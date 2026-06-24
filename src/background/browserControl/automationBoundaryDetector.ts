@@ -124,7 +124,7 @@ export function detectAutomationBoundarySignals(content: string): BoundarySignal
   appendSignalIfMatch(signals, content, {
     id: "runtime_or_full_access_boundary",
     label: "Runtime 或完全访问边界",
-    reason: "工具结果触达运行时高风险路径、完全访问占位或当前模式不允许的能力边界。",
+    reason: "工具结果触达运行时高风险路径、完全访问边界或当前模式不允许的能力边界。",
     grants: ["expand_runtime_summary_depth"],
     risk: "high",
   }, RUNTIME_BOUNDARY_PATTERNS);

@@ -106,7 +106,7 @@ export function formatToolAttachmentForPrompt(attachment: ChatToolAttachment): s
   }
 
   if (isNetworkToolAttachment(attachment)) {
-    const requests = attachment.requests.map(redactNetworkRequestDetail);
+    const requests = shouldPreserveNetworkAttachmentRaw(attachment) ? attachment.requests : attachment.requests.map(redactNetworkRequestDetail);
     return ["后续追问需要继续参考以下历史 Network 请求详情：", formatNetworkAttachmentForExport(requests)].join("\n");
   }
 
@@ -131,7 +131,7 @@ export function formatToolAttachmentForExport(attachment: ChatToolAttachment): s
   }
 
   if (isNetworkToolAttachment(attachment)) {
-    const requests = attachment.requests.map(redactNetworkRequestDetail);
+    const requests = shouldPreserveNetworkAttachmentRaw(attachment) ? attachment.requests : attachment.requests.map(redactNetworkRequestDetail);
     return ["# Network 请求详情附件", "", formatNetworkAttachmentSummary(requests), "", formatNetworkAttachmentForExport(requests)].join("\n");
   }
 
@@ -375,8 +375,11 @@ function aggregateNetworkToolAttachments(attachments: ChatNetworkToolAttachment[
     return undefined;
   }
 
+  const preserveRaw = attachments.every(shouldPreserveNetworkAttachmentRaw);
   const requests = uniqueBy(
-    attachments.flatMap((attachment) => attachment.requests.map(redactNetworkRequestDetail)),
+    attachments.flatMap((attachment) => shouldPreserveNetworkAttachmentRaw(attachment)
+      ? attachment.requests
+      : attachment.requests.map(redactNetworkRequestDetail)),
     (request) => request.id.trim() || `${request.method}\u0000${request.url}\u0000${request.status ?? ""}`,
   );
   const createdAt = Math.max(...attachments.map((attachment) => attachment.createdAt));
@@ -386,7 +389,8 @@ function aggregateNetworkToolAttachments(attachments: ChatNetworkToolAttachment[
     title: "Network 请求详情",
     summary: formatNetworkAttachmentSummary(requests),
     createdAt,
-    redacted: true,
+    redacted: !preserveRaw,
+    fullAccess: preserveRaw || undefined,
     truncated: attachments.some((attachment) => attachment.truncated || attachment.requests.some((request) => request.truncated)),
     requests,
   };
@@ -561,8 +565,15 @@ function normalizeNetworkToolAttachment(source: Partial<ChatToolAttachment>): Ch
     return undefined;
   }
 
+  const preserveRaw = isFullAccessNetworkAttachmentSource(source);
   const requests = source.requests
-    .map((item) => (item && typeof item === "object" ? redactNetworkRequestDetail(item as ChatNetworkToolAttachment["requests"][number]) : undefined))
+    .map((item) => {
+      if (!item || typeof item !== "object") {
+        return undefined;
+      }
+      const request = item as ChatNetworkToolAttachment["requests"][number];
+      return preserveRaw ? { ...request, redacted: false } : redactNetworkRequestDetail(request);
+    })
     .filter((item): item is ChatNetworkToolAttachment["requests"][number] => Boolean(item));
   if (requests.length === 0) {
     return undefined;
@@ -575,10 +586,19 @@ function normalizeNetworkToolAttachment(source: Partial<ChatToolAttachment>): Ch
     summary: formatNetworkAttachmentSummary(requests),
     sourceToolCallId: normalizeOptionalString(source.sourceToolCallId),
     createdAt: normalizeTimestamp(source.createdAt),
-    redacted: true,
+    redacted: !preserveRaw,
+    fullAccess: preserveRaw || undefined,
     truncated: typeof source.truncated === "boolean" ? source.truncated : false,
     requests,
   };
+}
+
+function shouldPreserveNetworkAttachmentRaw(attachment: ChatNetworkToolAttachment): boolean {
+  return attachment.fullAccess === true && attachment.redacted === false;
+}
+
+function isFullAccessNetworkAttachmentSource(source: Partial<ChatToolAttachment>): source is Partial<ChatNetworkToolAttachment> {
+  return "fullAccess" in source && source.fullAccess === true && source.redacted === false;
 }
 
 function normalizeJsSourceToolAttachment(source: Partial<ChatToolAttachment>): ChatJsSourceToolAttachment | undefined {

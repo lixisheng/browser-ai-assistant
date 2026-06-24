@@ -57,6 +57,45 @@ describe("通用工具附件聚合", () => {
     expect(formatToolAttachmentForExport(attachment)).toContain("[已脱敏]");
   });
 
+  it("完全访问 Network 附件归一化和聚合后仍保留原文", () => {
+    const message = createAssistantMessage({
+      toolAttachments: [
+        {
+          id: "attachment-network-full-access",
+          kind: "network",
+          title: "Network 请求详情",
+          summary: "原始详情",
+          sourceToolCallId: "call-network",
+          createdAt: 2,
+          redacted: false,
+          fullAccess: true,
+          truncated: false,
+          requests: [
+            {
+              id: "req-1",
+              url: "https://example.com/login?token=secret",
+              method: "POST",
+              requestHeaders: [{ name: "Authorization", value: "Bearer secret" }],
+              requestBody: "{\"password\":\"123456\"}",
+              responseBody: "{\"token\":\"secret\",\"ok\":true}",
+              redacted: false,
+              truncated: false,
+            },
+          ],
+        },
+      ],
+    });
+
+    const [attachment] = collectMessageToolAttachments(message);
+
+    expect(attachment).toMatchObject({ kind: "network", redacted: false, fullAccess: true });
+    expect(formatToolAttachmentForPrompt(attachment)).toContain("123456");
+    expect(formatToolAttachmentForPrompt(attachment)).toContain("Bearer secret");
+    expect(formatToolAttachmentForExport(attachment)).toContain("123456");
+    expect(formatToolAttachmentForExport(attachment)).toContain("Bearer secret");
+    expect(formatToolAttachmentForExport(attachment)).not.toContain("[已脱敏]");
+  });
+
   it("会把同一条消息里的多次 Tavily 工具结果聚合成一个网络搜索附件", () => {
     const message = createAssistantMessage({
       toolCallRecords: [

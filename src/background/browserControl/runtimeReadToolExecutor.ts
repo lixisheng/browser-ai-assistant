@@ -5,7 +5,6 @@ import {
 } from "../../shared/models/toolRegistry";
 import type { ModelToolCall, ModelToolResult } from "../../shared/models/types";
 import type { ToolAuthorizationContext } from "../../shared/toolAuthorization";
-import { isUnsupportedReservedAuthorization } from "../../shared/toolAuthorization";
 
 export interface RuntimeReadConnection {
   evaluate(params: Record<string, unknown>): Promise<unknown>;
@@ -23,7 +22,6 @@ interface RuntimeReadSummary {
 }
 
 const RUNTIME_READ_DISABLED_MESSAGE = "运行时只读分析未授权，无法执行 runtime.* 工具。请先显式开启运行时只读分析。";
-const RUNTIME_FULL_ACCESS_RESERVED_MESSAGE = "完全访问授权仍处于后续阶段预留状态，当前版本已拒绝执行。";
 const RUNTIME_READ_FAILED_MESSAGE = "运行时只读分析失败，请确认当前页面仍可访问后重试。";
 const DEFAULT_OBJECT_DEPTH = 2;
 const DEFAULT_ENTRY_LIMIT = 12;
@@ -60,9 +58,6 @@ export class RuntimeReadToolExecutor {
 
   async execute(toolCall: ModelToolCall): Promise<ModelToolResult> {
     const authorization = this.getAuthorizationContext();
-    if (isUnsupportedReservedAuthorization(authorization)) {
-      return createRuntimeReadErrorResult(toolCall, RUNTIME_FULL_ACCESS_RESERVED_MESSAGE);
-    }
     if (authorization.mode !== "runtime_readonly" && authorization.mode !== "controlled_enhanced") {
       return createRuntimeReadErrorResult(toolCall, RUNTIME_READ_DISABLED_MESSAGE);
     }

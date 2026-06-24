@@ -24,6 +24,16 @@ import {
   BROWSER_CLOSE_PAGE_TOOL_NAME,
   CURRENT_TIME_TOOL_ID,
   CURRENT_TIME_TOOL_NAME,
+  FULL_ACCESS_EXECUTE_SCRIPT_TOOL_ID,
+  FULL_ACCESS_EXECUTE_SCRIPT_TOOL_NAME,
+  FULL_ACCESS_FETCH_TOOL_ID,
+  FULL_ACCESS_FETCH_TOOL_NAME,
+  FULL_ACCESS_GET_NETWORK_DETAILS_TOOL_ID,
+  FULL_ACCESS_GET_NETWORK_DETAILS_TOOL_NAME,
+  FULL_ACCESS_READ_STORAGE_TOOL_ID,
+  FULL_ACCESS_READ_STORAGE_TOOL_NAME,
+  FULL_ACCESS_REVOKE_TOOL_ID,
+  FULL_ACCESS_REVOKE_TOOL_NAME,
   NETWORK_CLEAR_REQUESTS_TOOL_ID,
   NETWORK_COMPARE_REQUESTS_TOOL_ID,
   NETWORK_EXTRACT_JS_CANDIDATES_TOOL_ID,
@@ -289,6 +299,11 @@ describe("模型工具注册表", () => {
       REPLAY_PREPARE_REQUEST_TOOL_ID,
       REPLAY_SEND_REQUEST_TOOL_ID,
       REPLAY_COMPARE_RESPONSES_TOOL_ID,
+      FULL_ACCESS_EXECUTE_SCRIPT_TOOL_ID,
+      FULL_ACCESS_FETCH_TOOL_ID,
+      FULL_ACCESS_GET_NETWORK_DETAILS_TOOL_ID,
+      FULL_ACCESS_READ_STORAGE_TOOL_ID,
+      FULL_ACCESS_REVOKE_TOOL_ID,
     ]);
   });
 
@@ -416,6 +431,33 @@ describe("模型工具注册表", () => {
     expect(tools.find((tool) => tool.id === NETWORK_GET_REQUEST_DETAILS_TOOL_ID)?.description).toContain("必须先调用 boundary_request_user_choice");
   });
 
+  it("注册完全访问工具并声明最高权限能力", () => {
+    const tools = getRegisteredModelTools();
+
+    expect(tools.find((tool) => tool.id === FULL_ACCESS_EXECUTE_SCRIPT_TOOL_ID)).toMatchObject({
+      name: FULL_ACCESS_EXECUTE_SCRIPT_TOOL_NAME,
+      requiredCapabilities: ["browser_control", "full_access"],
+      parameters: { type: "object", required: ["script"], additionalProperties: false },
+    });
+    expect(tools.find((tool) => tool.id === FULL_ACCESS_FETCH_TOOL_ID)).toMatchObject({
+      name: FULL_ACCESS_FETCH_TOOL_NAME,
+      requiredCapabilities: ["browser_control", "full_access"],
+      parameters: { type: "object", required: ["url"], additionalProperties: false },
+    });
+    expect(tools.find((tool) => tool.id === FULL_ACCESS_GET_NETWORK_DETAILS_TOOL_ID)).toMatchObject({
+      name: FULL_ACCESS_GET_NETWORK_DETAILS_TOOL_NAME,
+      requiredCapabilities: ["browser_control", "full_access"],
+    });
+    expect(tools.find((tool) => tool.id === FULL_ACCESS_READ_STORAGE_TOOL_ID)).toMatchObject({
+      name: FULL_ACCESS_READ_STORAGE_TOOL_NAME,
+      requiredCapabilities: ["browser_control", "full_access"],
+    });
+    expect(tools.find((tool) => tool.id === FULL_ACCESS_REVOKE_TOOL_ID)).toMatchObject({
+      name: FULL_ACCESS_REVOKE_TOOL_NAME,
+      requiredCapabilities: ["browser_control", "full_access"],
+    });
+  });
+
   it("对外工具函数名兼容 OpenAI-compatible 命名规则", () => {
     const tools = getRegisteredModelTools();
 
@@ -441,6 +483,11 @@ describe("模型工具注册表", () => {
         "replay_prepare_request",
         "replay_send_request",
         "replay_compare_responses",
+        "full_access_execute_script",
+        "full_access_fetch",
+        "full_access_get_network_details",
+        "full_access_read_storage",
+        "full_access_revoke",
       ]),
     );
     expect(tools.every((tool) => /^[a-zA-Z0-9_-]+$/.test(tool.name))).toBe(true);

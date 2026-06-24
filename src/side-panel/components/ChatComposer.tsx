@@ -42,7 +42,7 @@ const BROWSER_AUTOMATION_MODE_OPTIONS: Array<{ mode: BrowserAutomationMode; labe
   {
     mode: "full_access",
     label: "完全访问",
-    description: "最高风险占位，v1 仍拒绝高权限执行",
+    description: "最高风险，允许原样执行高权限工具",
     iconPath: "M12 3 4 7v5c0 4.4 3.2 7.6 8 9 4.8-1.4 8-4.6 8-9V7l-8-4ZM12 8v5M12 16h.01",
   },
 ];

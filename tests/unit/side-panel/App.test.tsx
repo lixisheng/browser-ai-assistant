@@ -3984,7 +3984,7 @@ describe("App", () => {
     expect(screen.getByRole("listbox", { name: "浏览器自动化模式" })).toBeInTheDocument();
     expect(screen.getByText("选择浏览器自动化模式")).toBeInTheDocument();
     expect(screen.getByRole("option", { name: /受控增强/ })).toHaveTextContent("允许 AI 请求一次性边界授权");
-    expect(screen.getByRole("option", { name: /完全访问/ })).toHaveTextContent("最高风险占位");
+    expect(screen.getByRole("option", { name: /完全访问/ })).toHaveTextContent("最高风险");
 
     await user.click(screen.getByRole("option", { name: /完全访问/ }));
 

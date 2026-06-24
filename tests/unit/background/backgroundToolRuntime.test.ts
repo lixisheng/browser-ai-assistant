@@ -16,6 +16,7 @@ const browserControlManagerMock = vi.hoisted(() => ({
   canExposeRuntimeReadTool: vi.fn(),
   canExposeBoundaryChoiceTool: vi.fn(),
   canExposeReplayTool: vi.fn(),
+  canExposeFullAccessTool: vi.fn(),
   takeSnapshot: vi.fn(),
   executeBrowserTool: vi.fn(),
   executeNetworkTool: vi.fn(),
@@ -24,6 +25,7 @@ const browserControlManagerMock = vi.hoisted(() => ({
   executeRuntimeReadTool: vi.fn(),
   executeBoundaryChoiceTool: vi.fn(),
   executeReplayTool: vi.fn(),
+  executeFullAccessTool: vi.fn(),
 }));
 
 const executeTavilySearchFromSettingsMock = vi.hoisted(() => vi.fn());
@@ -96,6 +98,7 @@ describe("background 工具运行时封装", () => {
     browserControlManagerMock.canExposeRuntimeReadTool.mockReset();
     browserControlManagerMock.canExposeBoundaryChoiceTool.mockReset();
     browserControlManagerMock.canExposeReplayTool.mockReset();
+    browserControlManagerMock.canExposeFullAccessTool.mockReset();
     browserControlManagerMock.takeSnapshot.mockReset();
     browserControlManagerMock.executeBrowserTool.mockReset();
     browserControlManagerMock.executeNetworkTool.mockReset();
@@ -104,6 +107,7 @@ describe("background 工具运行时封装", () => {
     browserControlManagerMock.executeRuntimeReadTool.mockReset();
     browserControlManagerMock.executeBoundaryChoiceTool.mockReset();
     browserControlManagerMock.executeReplayTool.mockReset();
+    browserControlManagerMock.executeFullAccessTool.mockReset();
     executeTavilySearchFromSettingsMock.mockReset();
   });
 
@@ -114,6 +118,7 @@ describe("background 工具运行时封装", () => {
     browserControlManagerMock.canExposeRuntimeReadTool.mockReturnValue(false);
     browserControlManagerMock.canExposeBoundaryChoiceTool.mockReturnValue(false);
     browserControlManagerMock.canExposeReplayTool.mockReturnValue(false);
+    browserControlManagerMock.canExposeFullAccessTool.mockReturnValue(false);
 
     expect(shouldExposeTool({ id: "browser.take_snapshot", name: "take_snapshot", parameters: {} })).toBe(false);
     expect(shouldExposeTool({ id: "browser.click", name: "click", parameters: {} })).toBe(true);
@@ -122,6 +127,7 @@ describe("background 工具运行时封装", () => {
     expect(shouldExposeTool({ id: "runtime.inspect_globals", name: "runtime_inspect_globals", parameters: {} })).toBe(false);
     expect(shouldExposeTool({ id: "boundary.request_user_choice", name: "boundary_request_user_choice", parameters: {} })).toBe(false);
     expect(shouldExposeTool({ id: "replay.prepare_request", name: "replay_prepare_request", parameters: {} })).toBe(false);
+    expect(shouldExposeTool({ id: "full_access.execute_script", name: "full_access_execute_script", parameters: {} })).toBe(false);
     expect(shouldExposeTool({ id: "system.current_time", name: "get_current_time", parameters: {} })).toBe(true);
   });
 
@@ -140,6 +146,25 @@ describe("background 工具运行时封装", () => {
     expect(shouldExposeTool({ id: "boundary.request_user_choice", name: "boundary_request_user_choice", parameters: {} })).toBe(true);
     expect(shouldExposeTool({ id: "replay.prepare_request", name: "replay_prepare_request", parameters: {} })).toBe(false);
     expect(shouldExposeTool({ id: "replay.prepare_request", name: "replay_prepare_request", parameters: {} })).toBe(true);
+  });
+
+  it("完全访问工具只在完全访问模式下暴露", () => {
+    browserControlManagerMock.canExposeFullAccessTool.mockReturnValueOnce(false).mockReturnValueOnce(true);
+
+    expect(shouldExposeTool({ id: "full_access.execute_script", name: "full_access_execute_script", parameters: {} })).toBe(false);
+    expect(shouldExposeTool({ id: "full_access.execute_script", name: "full_access_execute_script", parameters: {} })).toBe(true);
+  });
+
+  it("完全访问提示要求模型直接放行边界而不走受控增强确认", () => {
+    const result = appendBrowserControlPromptIfNeeded(
+      [createMessage("user", "读取完整请求")],
+      [{ id: "full_access.execute_script", name: "full_access_execute_script", parameters: {} }],
+    );
+
+    expect(result[0].content).toContain("当前处于完全访问模式");
+    expect(result[0].content).toContain("直接使用 full_access.* 工具");
+    expect(result[0].content).toContain("不需要调用 boundary_request_user_choice");
+    expect(result[0].content).toContain("不使用请求重放沙箱");
   });
 
   it("浏览器控制未授权时不暴露浏览器操作工具", () => {
@@ -254,6 +279,7 @@ describe("background 工具运行时封装", () => {
     browserControlManagerMock.executeNetworkTool.mockResolvedValue({ toolCallId: "call-network_list_requests", name: "network_list_requests", content: "Network 列表" });
     browserControlManagerMock.executeJsSourceTool.mockResolvedValue({ toolCallId: "call-js_search_sources", name: "js_search_sources", content: "JS 搜索" });
     browserControlManagerMock.executeRuntimeReadTool.mockResolvedValue({ toolCallId: "call-runtime_inspect_globals", name: "runtime_inspect_globals", content: "运行时摘要" });
+    browserControlManagerMock.executeFullAccessTool.mockResolvedValue({ toolCallId: "call-full_access_execute_script", name: "full_access_execute_script", content: "完全访问结果" });
     executeTavilySearchFromSettingsMock.mockResolvedValue({
       ok: true,
       attachment: {
@@ -285,6 +311,9 @@ describe("background 工具运行时封装", () => {
     });
     await expect(executor(createToolCall("runtime_inspect_globals", { paths: ["window.__APP_CONFIG__"] }), { id: "runtime.inspect_globals", name: "runtime_inspect_globals", parameters: {} })).resolves.toMatchObject({
       content: "运行时摘要",
+    });
+    await expect(executor(createToolCall("full_access_execute_script", { script: "document.cookie" }), { id: "full_access.execute_script", name: "full_access_execute_script", parameters: {} })).resolves.toMatchObject({
+      content: "完全访问结果",
     });
     await expect(executor(createToolCall("get_current_time"), { id: "system.current_time", name: "get_current_time", parameters: {} })).resolves.toMatchObject({
       content: expect.stringContaining("当前系统时间："),

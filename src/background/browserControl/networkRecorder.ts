@@ -29,6 +29,10 @@ interface CachedNetworkRequest {
   error?: string;
 }
 
+interface NetworkRequestReadOptions {
+  redacted?: boolean;
+}
+
 const MAX_BODY_LENGTH = 12000;
 const MAX_CACHED_REQUESTS = 1000;
 const DEFAULT_LIST_LIMIT = 200;
@@ -40,6 +44,7 @@ export class BrowserNetworkRecorder {
   private readonly requestsById = new Map<string, CachedNetworkRequest>();
   private readonly waiters = new Set<{
     filter: NetworkWaitFilter;
+    options: NetworkRequestReadOptions;
     resolve: (requests: NetworkRequestMeta[]) => void;
     timer: ReturnType<typeof setTimeout>;
   }>();
@@ -74,8 +79,8 @@ export class BrowserNetworkRecorder {
     this.requestsById.clear();
   }
 
-  listRequests(filter: NetworkRequestFilter = {}): NetworkRequestMeta[] {
-    const requests = Array.from(this.requestsById.values()).map((cached) => redactNetworkRequestMeta(cached.meta));
+  listRequests(filter: NetworkRequestFilter = {}, options: NetworkRequestReadOptions = {}): NetworkRequestMeta[] {
+    const requests = Array.from(this.requestsById.values()).map((cached) => options.redacted === false ? { ...cached.meta } : redactNetworkRequestMeta(cached.meta));
     const filtered = requests.filter((request) => matchesFilter(request, filter));
     const limit = normalizeLimit(filter.limit) ?? DEFAULT_LIST_LIMIT;
     return filtered.slice(-limit);
@@ -108,8 +113,8 @@ export class BrowserNetworkRecorder {
     return details;
   }
 
-  waitForRequests(filter: NetworkWaitFilter = {}): Promise<NetworkRequestMeta[]> {
-    const existing = this.listRequests(filter);
+  waitForRequests(filter: NetworkWaitFilter = {}, options: NetworkRequestReadOptions = {}): Promise<NetworkRequestMeta[]> {
+    const existing = this.listRequests(filter, options);
     if (existing.length > 0) {
       return Promise.resolve(existing);
     }
@@ -118,6 +123,7 @@ export class BrowserNetworkRecorder {
     return new Promise((resolve) => {
       const waiter = {
         filter,
+        options,
         resolve,
         timer: setTimeout(() => {
           this.waiters.delete(waiter);
@@ -251,7 +257,7 @@ export class BrowserNetworkRecorder {
 
   private resolveMatchingWaiters(): void {
     for (const waiter of Array.from(this.waiters)) {
-      const requests = this.listRequests(waiter.filter);
+      const requests = this.listRequests(waiter.filter, waiter.options);
       if (requests.length === 0) {
         continue;
       }

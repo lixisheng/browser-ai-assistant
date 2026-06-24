@@ -6,6 +6,11 @@ import {
   RUNTIME_INSPECT_GLOBALS_TOOL_ID,
   RUNTIME_SEARCH_MODULES_TOOL_ID,
   BOUNDARY_REQUEST_USER_CHOICE_TOOL_ID,
+  FULL_ACCESS_EXECUTE_SCRIPT_TOOL_ID,
+  FULL_ACCESS_FETCH_TOOL_ID,
+  FULL_ACCESS_GET_NETWORK_DETAILS_TOOL_ID,
+  FULL_ACCESS_READ_STORAGE_TOOL_ID,
+  FULL_ACCESS_REVOKE_TOOL_ID,
   isBrowserAutomationToolId,
   REPLAY_COMPARE_RESPONSES_TOOL_ID,
   REPLAY_PREPARE_REQUEST_TOOL_ID,
@@ -67,6 +72,10 @@ export function shouldExposeTool(tool: ModelToolRegistryEntry): boolean {
     return browserControlManager.canExposeReplayTool();
   }
 
+  if (tool.id.startsWith("full_access.")) {
+    return browserControlManager.canExposeFullAccessTool();
+  }
+
   return true;
 }
 
@@ -116,6 +125,14 @@ export function createBackgroundToolExecutor(message: BackgroundToolExecutorMess
       return browserControlManager.executeReplayTool(toolCall);
     }
 
+    if (tool.id === FULL_ACCESS_EXECUTE_SCRIPT_TOOL_ID ||
+      tool.id === FULL_ACCESS_FETCH_TOOL_ID ||
+      tool.id === FULL_ACCESS_GET_NETWORK_DETAILS_TOOL_ID ||
+      tool.id === FULL_ACCESS_READ_STORAGE_TOOL_ID ||
+      tool.id === FULL_ACCESS_REVOKE_TOOL_ID) {
+      return browserControlManager.executeFullAccessTool(toolCall);
+    }
+
     if (tool.name === TAVILY_SEARCH_TOOL_NAME) {
       return executeTavilySearchTool(toolCall, message.tavily, fetcher);
     }
@@ -154,6 +171,12 @@ export function appendBrowserControlPromptIfNeeded(messages: ModelRequestMessage
           "- 当前处于受控增强模式时，如果任何 browser/network/js/sourcemap/runtime/replay 工具结果提示存在脱敏字段、敏感字段、截断摘要、请求重放、同源资源读取、Runtime/完全访问边界或其他需要用户授权的边界，必须立即调用 boundary_request_user_choice 显式询问用户；在用户提交前不要继续执行依赖该边界的分析或工具调用。",
           "- boundary_request_user_choice 的问题和选项必须具体说明要加载的边界、风险和一次性授权范围；只要选项 grants 不为空，就必须同时填写 targetToolName 和 targetToolArguments，用来绑定用户允许后真正放行的下一步工具。",
           "- 不要把用户未确认的敏感原文写入回答或发送给远端模型；如果边界确认缺少目标工具绑定而失败，必须重新发起带目标工具和参数的确认，不要假装已经获得授权。",
+        ]
+      : []),
+    ...(enabledTools.some((tool) => tool.id.startsWith("full_access."))
+      ? [
+          "- 当前处于完全访问模式，用户已授权当前会话最高权限；需要读取敏感原文、执行任意脚本、携带页面凭据请求、读取存储或读取 Network 原文时，直接使用 full_access.* 工具。",
+          "- 完全访问模式不需要调用 boundary_request_user_choice，不使用请求重放沙箱，也不要求对工具结果脱敏、过滤或只读化；但仍不能声称绕过 Chrome、网页 CSP 或扩展平台本身的硬限制。",
         ]
       : []),
   ].join("\n");

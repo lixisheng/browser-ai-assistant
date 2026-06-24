@@ -222,6 +222,7 @@ describe("appStore 网络搜索", () => {
           "runtime.inspect_globals",
           "boundary.request_user_choice",
           "replay.prepare_request",
+          "full_access.execute_script",
         ],
       },
       browserControlEnabled: false,
@@ -233,6 +234,8 @@ describe("appStore 网络搜索", () => {
     await useAppStore.getState().sendChatMessage("已开启浏览器控制");
     useAppStore.setState({ browserAutomationMode: "controlled_enhanced" });
     await useAppStore.getState().sendChatMessage("已开启受控增强");
+    useAppStore.setState({ browserAutomationMode: "full_access" });
+    await useAppStore.getState().sendChatMessage("已开启完全访问");
 
     const chatRequests = sendMessage.mock.calls
       .map(([message]) => message as { type: string; enabledToolIds?: string[] })
@@ -273,6 +276,14 @@ describe("appStore 网络搜索", () => {
       "replay.prepare_request",
       "replay.send_request",
       "replay.compare_responses",
+    ]);
+    expect(chatRequests[3].enabledToolIds).toEqual([
+      ...chatRequests[1].enabledToolIds!,
+      "full_access.execute_script",
+      "full_access.fetch",
+      "full_access.get_network_details",
+      "full_access.read_storage",
+      "full_access.revoke",
     ]);
   });
 });

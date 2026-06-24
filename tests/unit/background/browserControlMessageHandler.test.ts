@@ -502,6 +502,172 @@ describe("浏览器控制地基", () => {
     });
   });
 
+  it("完全访问模式会暴露 full_access 工具并在切回普通模式后立即失效", async () => {
+    const chromeMock = createChromeMock({
+      sendCommandResults: {
+        "Runtime.evaluate": { result: { value: { cookie: "sid=secret", password: "123456" } } },
+      },
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 7);
+    expect(manager.canExposeFullAccessTool()).toBe(false);
+
+    expect(manager.setAutomationMode("full_access")).toMatchObject({ ok: true });
+    expect(manager.canExposeFullAccessTool()).toBe(true);
+
+    const result = await manager.executeFullAccessTool(createNamedToolCall("full_access_execute_script", { script: "document.cookie" }));
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toContain("sid=secret");
+    expect(result.content).toContain("123456");
+
+    manager.setAutomationMode("normal_restricted");
+    expect(manager.canExposeFullAccessTool()).toBe(false);
+    await expect(manager.executeFullAccessTool(createNamedToolCall("full_access_execute_script", { script: "document.cookie" }))).resolves.toMatchObject({
+      isError: true,
+      content: "当前不是完全访问模式，已拒绝执行 full_access.* 工具。",
+    });
+  });
+
+  it("完全访问模式下普通 Network 详情附件也保持原文", async () => {
+    const chromeMock = createChromeMock({
+      sendCommandResults: {
+        "Network.getResponseBody": { body: "{\"token\":\"secret\",\"password\":\"123456\"}", base64Encoded: false },
+      },
+    });
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 7);
+    manager.setAutomationMode("full_access");
+    chromeMock.eventListeners.forEach((listener) => {
+      listener({ tabId: 7 }, "Network.requestWillBeSent", {
+        requestId: "req-raw",
+        type: "XHR",
+        request: {
+          url: "https://example.com/api/login?token=secret",
+          method: "POST",
+          headers: { Authorization: "Bearer secret" },
+          postData: "{\"password\":\"123456\"}",
+        },
+      });
+      listener({ tabId: 7 }, "Network.responseReceived", {
+        requestId: "req-raw",
+        type: "XHR",
+        response: {
+          status: 200,
+          statusText: "OK",
+          mimeType: "application/json",
+          headers: { "Set-Cookie": "sid=secret" },
+        },
+      });
+    });
+
+    const result = await manager.executeNetworkTool(createNamedToolCall("network_get_request_details", { requestIds: ["req-raw"] }));
+
+    expect(result.content).toContain("secret");
+    expect(result.content).toContain("123456");
+    expect(result.toolAttachments?.[0]).toMatchObject({
+      kind: "network",
+      redacted: false,
+      fullAccess: true,
+      requests: [expect.objectContaining({
+        url: "https://example.com/api/login?token=secret",
+        requestBody: "{\"password\":\"123456\"}",
+        responseBody: "{\"token\":\"secret\",\"password\":\"123456\"}",
+        redacted: false,
+      })],
+    });
+  });
+
+  it("完全访问模式下等待 Network 请求生成的附件也保持原文", async () => {
+    const chromeMock = createChromeMock();
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 7);
+    manager.setAutomationMode("full_access");
+    chromeMock.eventListeners.forEach((listener) => {
+      listener({ tabId: 7 }, "Network.requestWillBeSent", {
+        requestId: "req-wait",
+        type: "XHR",
+        request: {
+          url: "https://example.com/api/login?token=secret",
+          method: "POST",
+          headers: { Authorization: "Bearer secret" },
+          postData: "{\"password\":\"123456\"}",
+        },
+      });
+      listener({ tabId: 7 }, "Network.responseReceived", {
+        requestId: "req-wait",
+        type: "XHR",
+        response: {
+          status: 401,
+          statusText: "Unauthorized",
+          mimeType: "application/json",
+          headers: { "Set-Cookie": "sid=secret" },
+        },
+      });
+    });
+
+    const result = await manager.executeNetworkTool(createNamedToolCall("network_wait_for_requests", { urlIncludes: "/api/login" }));
+
+    expect(result.content).toContain("token=secret");
+    expect(result.toolAttachments?.[0]).toMatchObject({
+      kind: "network",
+      redacted: false,
+      fullAccess: true,
+      requests: [expect.objectContaining({
+        url: "https://example.com/api/login?token=secret",
+        requestHeaders: [expect.objectContaining({ name: "Authorization", value: "Bearer secret" })],
+        requestBody: "{\"password\":\"123456\"}",
+        redacted: false,
+      })],
+    });
+  });
+
+  it("完全访问模式下 JS 同源上下文扩展直接放行且不触发边界确认", async () => {
+    const chromeMock = createChromeMock();
+    const connection = new BrowserDebuggerConnection(chromeMock);
+    const manager = new BrowserControlManager(connection, chromeMock);
+
+    await manager.setEnabled(true, 7);
+    manager.setAutomationMode("full_access");
+    chromeMock.eventListeners.forEach((listener) => {
+      listener({ tabId: 7 }, "Network.requestWillBeSent", {
+        requestId: "script-1",
+        type: "Script",
+        request: {
+          url: "https://example.com/app.js",
+          method: "GET",
+          headers: {},
+        },
+      });
+      listener({ tabId: 7 }, "Network.responseReceived", {
+        requestId: "script-1",
+        type: "Script",
+        response: {
+          status: 200,
+          statusText: "OK",
+          mimeType: "application/javascript",
+          headers: { "Content-Type": "application/javascript" },
+        },
+      });
+    });
+
+    const result = await manager.executeJsSourceTool(createNamedToolCall("js_search_sources", {
+      keywords: ["api"],
+      urls: ["https://example.com/app.js"],
+    }));
+
+    expect(result.content).not.toContain("需要 allowSameOriginFetch=true");
+    expect(chromeMock.runtime.sendMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "browserControl.boundaryChoiceRequest" }),
+      expect.any(Function),
+    );
+  });
+
   it("受控增强确认 JS 上下文扩展后会立即重跑并启用同源补位", async () => {
     const chromeMock = createChromeMock();
     const connection = new BrowserDebuggerConnection(chromeMock);

@@ -12,8 +12,8 @@ import {
   type BrowserControlResponse,
 } from "../shared/browserControl";
 import type { ModelToolCall, ModelToolResult } from "../shared/models/types";
-import type { BrowserAutomationMode, ToolAuthorizationContext } from "../shared/toolAuthorization";
-import { NORMAL_TOOL_AUTHORIZATION_CONTEXT, createBoundaryGrantScopeKey, getOriginFromUrl, isControlledEnhancedAuthorized, isRuntimeReadonlyAuthorized } from "../shared/toolAuthorization";
+import type { BoundaryGrantContext, BrowserAutomationMode, ToolAuthorizationContext } from "../shared/toolAuthorization";
+import { NORMAL_TOOL_AUTHORIZATION_CONTEXT, createBoundaryGrantScopeKey, getOriginFromUrl, isControlledEnhancedAuthorized, isFullAccessAuthorized, isRuntimeReadonlyAuthorized } from "../shared/toolAuthorization";
 import {
   NETWORK_COMPARE_REQUESTS_TOOL_ID,
   NETWORK_COMPARE_REQUESTS_TOOL_NAME,
@@ -43,6 +43,7 @@ import { SourceMapToolExecutor } from "./browserControl/sourceMapToolExecutor";
 import { RuntimeReadToolExecutor } from "./browserControl/runtimeReadToolExecutor";
 import { BoundaryChoiceToolExecutor } from "./browserControl/boundaryChoiceToolExecutor";
 import { ReplayToolExecutor } from "./browserControl/replayToolExecutor";
+import { FullAccessToolExecutor } from "./browserControl/fullAccessToolExecutor";
 
 type Debuggee = chrome.debugger.Debuggee;
 type ChromeApi = typeof chrome;
@@ -663,6 +664,7 @@ export class BrowserControlManager {
   private readonly runtimeReadToolExecutor: RuntimeReadToolExecutor;
   private readonly boundaryChoiceToolExecutor: BoundaryChoiceToolExecutor;
   private readonly replayToolExecutor: ReplayToolExecutor;
+  private readonly fullAccessToolExecutor: FullAccessToolExecutor;
   private toolAuthorizationContext: ToolAuthorizationContext = NORMAL_TOOL_AUTHORIZATION_CONTEXT;
   private browserAutomationMode: BrowserAutomationMode = "normal_restricted";
   private activeBoundaryGrantScopeKey: string | undefined;
@@ -678,13 +680,13 @@ export class BrowserControlManager {
     this.jsSourceToolExecutor = new JsSourceToolExecutor({
       recorder: this.networkRecorder,
       getCurrentPageUrl: async () => (await this.getTargetTabInfo()).url,
-      getBoundaryGrant: () => this.getScopedBoundaryGrantContext(),
+      getBoundaryGrant: () => this.getAutomationBoundaryGrantContext(),
     });
     this.sourceMapToolExecutor = new SourceMapToolExecutor({
       recorder: this.networkRecorder,
       jsSourceIndex: this.jsSourceToolExecutor.getIndex(),
       getCurrentPageUrl: async () => (await this.getTargetTabInfo()).url,
-      getBoundaryGrant: () => this.getScopedBoundaryGrantContext(),
+      getBoundaryGrant: () => this.getAutomationBoundaryGrantContext(),
     });
     this.runtimeReadToolExecutor = new RuntimeReadToolExecutor(this.connection, () => this.getRuntimeToolAuthorizationContext());
     this.boundaryChoiceToolExecutor = new BoundaryChoiceToolExecutor(
@@ -696,11 +698,17 @@ export class BrowserControlManager {
       fetch,
       () => this.getReplayToolContext(),
     );
+    this.fullAccessToolExecutor = new FullAccessToolExecutor(
+      this.connection,
+      this.networkRecorder,
+      () => this.getFullAccessToolContext(),
+      () => this.clearAutomationModeState(),
+    );
     this.networkToolExecutor = new BrowserNetworkToolExecutor(this.networkRecorder, () => {
       this.jsSourceToolExecutor.clear();
       this.sourceMapToolExecutor.clear();
       this.clearAutomationTransientState();
-    }, () => this.getScopedBoundaryGrantContext());
+    }, () => this.getAutomationBoundaryGrantContext(), () => this.canExposeFullAccessTool());
     this.connection.installDetachListener((tabId, reason) => {
       if (this.suppressNextDetachTabId === tabId) {
         this.suppressNextDetachTabId = undefined;
@@ -836,11 +844,15 @@ export class BrowserControlManager {
       ok: true,
       attached: true,
       tabId: this.connection.attachedTabId,
-      message: mode === "controlled_enhanced" ? "受控增强模式已临时开启。" : "完全访问模式已进入规划占位，v1 暂不执行高权限动作。",
+      message: mode === "controlled_enhanced" ? "受控增强模式已临时开启。" : "完全访问模式已开启，当前会话将按最高权限执行。",
     };
   }
 
   async executeNetworkTool(toolCall: ModelToolCall): Promise<ModelToolResult> {
+    if (this.canExposeFullAccessTool() && isNetworkDetailLikeToolCall(toolCall)) {
+      return this.networkToolExecutor.execute(toolCall);
+    }
+
     const scopeKey = createBoundaryGrantScopeKey(toolCall);
     const hadGrantBefore = this.canRevealSensitiveNetworkResult(scopeKey);
     const initialResult = await this.withBoundaryGrantScope(scopeKey, () => this.networkToolExecutor.execute(toolCall));
@@ -940,6 +952,14 @@ export class BrowserControlManager {
       return replayResult;
     }
     return boundaryResult;
+  }
+
+  canExposeFullAccessTool(): boolean {
+    return this.canExposeNetworkTool() && this.fullAccessToolExecutor.canExpose();
+  }
+
+  executeFullAccessTool(toolCall: ModelToolCall): Promise<ModelToolResult> {
+    return this.fullAccessToolExecutor.execute(toolCall);
   }
 
   respondBoundaryChoice(requestId: string, response: { selectedChoiceIds: string[]; otherText?: string }): boolean {
@@ -1215,7 +1235,7 @@ export class BrowserControlManager {
     }
 
     this.toolAuthorizationContext = {
-      mode: this.browserAutomationMode === "controlled_enhanced" ? "controlled_enhanced" : "full_access_reserved",
+      mode: this.browserAutomationMode === "controlled_enhanced" ? "controlled_enhanced" : "full_access",
       tabId: this.connection.attachedTabId,
       origin: this.getCurrentOrigin(),
       createdAt: Date.now(),
@@ -1234,7 +1254,7 @@ export class BrowserControlManager {
     this.browserAutomationMode = "normal_restricted";
     this.boundaryChoiceToolExecutor.clear();
     this.replayToolExecutor.clear();
-    if (previous.mode === "runtime_readonly" || previous.mode === "controlled_enhanced" || previous.mode === "full_access_reserved") {
+    if (previous.mode === "runtime_readonly" || previous.mode === "controlled_enhanced" || previous.mode === "full_access") {
       this.notifyAutomationModeChanged("normal_restricted", previous.tabId);
     }
   }
@@ -1255,12 +1275,49 @@ export class BrowserControlManager {
     };
   }
 
+  private getFullAccessToolContext(): { tabId?: number; origin?: string; fullAccess: boolean } {
+    return {
+      tabId: this.connection.attachedTabId,
+      origin: this.getCurrentOrigin(),
+      fullAccess: this.browserAutomationMode === "full_access" &&
+        isFullAccessAuthorized(this.toolAuthorizationContext, this.connection.attachedTabId),
+    };
+  }
+
   private getScopedBoundaryGrantContext(): ReturnType<BoundaryChoiceToolExecutor["getCurrentGrantContext"]> {
     const grant = this.boundaryChoiceToolExecutor.getCurrentGrantContext();
     if (!grant || !this.activeBoundaryGrantScopeKey || grant.scopeKey !== this.activeBoundaryGrantScopeKey) {
       return undefined;
     }
     return grant;
+  }
+
+  private getAutomationBoundaryGrantContext(): BoundaryGrantContext | undefined {
+    if (this.canExposeFullAccessTool()) {
+      return this.createFullAccessGrantContext();
+    }
+
+    return this.getScopedBoundaryGrantContext();
+  }
+
+  private createFullAccessGrantContext(): BoundaryGrantContext {
+    return {
+      id: "full-access",
+      tabId: this.connection.attachedTabId ?? 0,
+      origin: this.getCurrentOrigin() ?? "",
+      toolCallId: "full-access",
+      scopeKey: "full-access",
+      grants: [
+        "include_sensitive_field_in_current_tool_result",
+        "write_sensitive_result_to_chat_once",
+        "expand_js_or_sourcemap_context",
+        "expand_runtime_summary_depth",
+        "send_single_confirmed_replay_request_without_credentials",
+      ],
+      selectedChoiceIds: ["full-access"],
+      createdAt: Date.now(),
+      expiresAt: Number.MAX_SAFE_INTEGER,
+    };
   }
 
   private async withBoundaryGrantScope<T>(scopeKey: string, action: () => Promise<T>): Promise<T> {

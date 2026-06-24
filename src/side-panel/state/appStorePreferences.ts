@@ -150,14 +150,19 @@ function normalizeUserEditableToolIds(value: unknown): string[] {
 
 export function resolveRuntimeEnabledToolIds(enabledToolIds: string[], browserControlEnabled: boolean, browserAutomationMode: BrowserAutomationMode = "normal_restricted"): string[] {
   const enhancedEnabled = browserAutomationMode === "controlled_enhanced";
+  const fullAccessEnabled = browserAutomationMode === "full_access";
   const registeredTools = getRegisteredModelTools();
   const browserToolIds = registeredTools
-    .filter((tool) => isBrowserAutomationToolId(tool.id) && (enhancedEnabled || !isControlledEnhancedToolId(tool.id)) && !tool.id.startsWith("full_access."))
+    .filter((tool) =>
+      isBrowserAutomationToolId(tool.id) &&
+      (enhancedEnabled || !isControlledEnhancedToolId(tool.id)) &&
+      (fullAccessEnabled || !tool.id.startsWith("full_access."))
+    )
     .map((tool) => tool.id);
   const baseIds = enabledToolIds.filter((toolId) =>
     (browserControlEnabled || !isBrowserAutomationToolId(toolId)) &&
     (enhancedEnabled || !isControlledEnhancedToolId(toolId)) &&
-    !toolId.startsWith("full_access.")
+    (fullAccessEnabled || !toolId.startsWith("full_access."))
   );
 
   if (!browserControlEnabled) {

@@ -1,6 +1,6 @@
 export type BrowserAutomationMode = "normal_restricted" | "controlled_enhanced" | "full_access";
 
-export type ToolAuthorizationMode = "normal" | "runtime_readonly" | "controlled_enhanced" | "full_access_reserved";
+export type ToolAuthorizationMode = "normal" | "runtime_readonly" | "controlled_enhanced" | "full_access";
 
 export type ToolRiskCapability =
   | "browser_control"
@@ -9,7 +9,7 @@ export type ToolRiskCapability =
   | "controlled_enhanced"
   | "request_replay"
   | "boundary_choice"
-  | "full_access_reserved";
+  | "full_access";
 
 export type BrowserAutomationGrant =
   | "include_sensitive_field_in_current_tool_result"
@@ -61,8 +61,20 @@ export function isRuntimeReadonlyAuthorized(context: ToolAuthorizationContext, t
   return context.tabId === tabId;
 }
 
-export function isUnsupportedReservedAuthorization(context: ToolAuthorizationContext): boolean {
-  return context.mode === "full_access_reserved";
+export function isFullAccessAuthorized(context: ToolAuthorizationContext, tabId: number | undefined, now = Date.now()): boolean {
+  if (typeof tabId !== "number") {
+    return false;
+  }
+
+  if (context.mode !== "full_access") {
+    return false;
+  }
+
+  if (context.expiresAt !== undefined && context.expiresAt <= now) {
+    return false;
+  }
+
+  return context.tabId === tabId;
 }
 
 export function isControlledEnhancedAuthorized(context: ToolAuthorizationContext, tabId: number | undefined, now = Date.now()): boolean {
