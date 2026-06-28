@@ -310,27 +310,29 @@ describe("S3 provider", () => {
       encrypted: true,
       payload: { ok: true },
     };
-    const fetcher = vi
-      .fn()
-      .mockResolvedValueOnce({
-        ok: true,
-        text: vi.fn().mockResolvedValue(`<?xml version="1.0" encoding="UTF-8"?>
+    const createTextResponse = (body: string) => ({ ok: true, text: vi.fn().mockResolvedValue(body) }) as unknown as Response;
+    const fetcher = vi.fn((input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.endsWith("/backups/work--1.json")) {
+        return Promise.resolve(createTextResponse(JSON.stringify(firstBackup)));
+      }
+      if (url.endsWith("/backups/home--2.json")) {
+        return Promise.resolve(createTextResponse(JSON.stringify(secondBackup)));
+      }
+      if (url.includes("continuation-token=next-token")) {
+        return Promise.resolve(createTextResponse(`<?xml version="1.0" encoding="UTF-8"?>
+<ListBucketResult>
+  <IsTruncated>false</IsTruncated>
+  <Contents><Key>backups/home--2.json</Key></Contents>
+</ListBucketResult>`));
+      }
+      return Promise.resolve(createTextResponse(`<?xml version="1.0" encoding="UTF-8"?>
 <ListBucketResult>
   <IsTruncated>true</IsTruncated>
   <NextContinuationToken>next-token</NextContinuationToken>
   <Contents><Key>backups/work--1.json</Key></Contents>
-</ListBucketResult>`),
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        text: vi.fn().mockResolvedValue(`<?xml version="1.0" encoding="UTF-8"?>
-<ListBucketResult>
-  <IsTruncated>false</IsTruncated>
-  <Contents><Key>backups/home--2.json</Key></Contents>
-</ListBucketResult>`),
-      })
-      .mockResolvedValueOnce({ ok: true, text: vi.fn().mockResolvedValue(JSON.stringify(firstBackup)) })
-      .mockResolvedValueOnce({ ok: true, text: vi.fn().mockResolvedValue(JSON.stringify(secondBackup)) });
+</ListBucketResult>`));
+    });
     const provider = createS3Provider(fetcher, {
       endpointUrl: "https://r2.example.com",
       accessKeyId: "AKIA_TEST",

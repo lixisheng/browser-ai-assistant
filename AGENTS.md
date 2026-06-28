@@ -227,6 +227,7 @@
 * 自动清理旧备份只能删除同一前缀下超过 `maxBackupCount` 的最早备份，不能影响其他前缀；修改保留策略必须覆盖跨前缀不删除的测试。
 * 手动恢复列表应展示当前备份目标下全部远程备份，允许选择不同前缀的备份恢复；恢复时仍必须校验 provider、备份格式、加密密钥和快照结构。
 * 任何新增持久化业务表或设置项都必须同步评估是否进入 `SyncDataSnapshot`，以及是否属于必须过滤的本地密钥或凭据。
+* 同步 provider 测试如果涉及并发读取多个远端备份，Mock 响应必须按请求 URL 或对象 key 匹配，不得用 `mockResolvedValueOnce` 假定并发请求顺序。
 
 ### 10.12 IndexedDB、状态仓库与验证边界
 
@@ -243,6 +244,7 @@
 * 本地可分发扩展目录统一通过 `npm run package:extension` 生成到 `artifacts/chrome-extension`；该命令必须先执行 `npm run build:extension`，再复制 `dist`、校验 HTML 引用的本地相对或根相对资源并写入 `build-info.json`。
 * 发布新版本时必须同步更新 `package.json`、`package-lock.json` 和 `public/manifest.json` 的版本号；若包含多项功能提交，应补充 `CHANGELOG.md` 发布范围与主要变化，并运行 `npm run check` 生成可验证的本地可分发扩展目录。
 * 发布大版本前必须先用 `git log origin/master..HEAD` 核对本地未推送提交范围，并在 `CHANGELOG.md` 中记录发布覆盖范围，避免遗漏本地已完成但尚未推送的功能与修复。
+* 发布小版本同样必须核对 `git log origin/master..HEAD`，并确保 `CHANGELOG.md` 发布范围、`package.json`、`package-lock.json` 和 `public/manifest.json` 的版本号一致。
 * HTML 资源引用校验必须先解析到打包目录内再检查存在性；遇到 `../` 或归一化后会跳出 `artifacts/chrome-extension` 的路径时，必须按缺失资源处理，不能读取项目其他目录来让校验通过。
 * 修改打包脚本、Vite 入口、manifest 运行时路径、HTML 资源引用校验或扩展加载目录文档时，必须运行 `npm run check:package`；该脚本应先执行打包脚本单元测试，再生成真实本地扩展目录，并纳入 `npm run check` 综合验证。
 * `artifacts/` 属于本地生成产物，必须加入 `.gitignore`，不得手动编辑或提交；需要复现问题时应重新运行打包命令生成。

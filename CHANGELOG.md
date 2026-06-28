@@ -1,5 +1,55 @@
 # 更新日志
 
+## v3.1.0 - 2026-06-28
+
+本版本继续强化浏览器自动化助手的任务编排能力，引入全新的 Playbook（任务策略）层，作为现有浏览器自动化工具系统与未来 Skill 生态之间的通用策略接口。Playbook 不安装工具、不提升权限、不绕过授权边界，只负责根据用户任务选择合适的自动化策略，并将选中的策略注入正式工具循环，帮助模型更稳定地完成页面阅读、多页面汇总、表单交互、现场诊断、Network/API 分析和源码/运行时分析等任务。
+
+同时，本版本新增 `browser.extract_content` 只读内容提取工具，支持复用页面提取规则、提取全文文本/HTML，以及按 CSS/XPath 提取局部文本或 HTML。该工具在普通受限浏览器控制模式下即可使用，适合页面阅读、结构化信息提取、页面调试和后续 Skill Playbook 编排复用。
+
+### 发布范围
+
+本次发布覆盖以下本地未推送提交：
+
+- `953286b`：新增浏览器自动化 Playbook 层与内容提取工具。
+- `007b9af`：更新 README 产品预览说明。
+
+### 新增
+
+- 新增浏览器自动化 Playbook 层，作为工具系统与未来 Skill 生态之间的任务策略接口。
+- 新增六个内置 Playbook：页面阅读与信息提取、多页面信息汇总、表单填写与页面交互、页面现场诊断、Network/API 分析、源码与运行时线索分析。
+- 新增发送前轻量 AI 预选链路，在满足浏览器自动化意图和工具暴露条件时选择合适 Playbook。
+- 新增系统设置页“任务策略”Tab，支持启用/禁用内置策略。
+- 支持查看每个任务策略的完整详情，包括策略提示、适用场景、推荐能力、风险等级和验证建议。
+- 新增 `browser.extract_content` 工具，支持按当前页面提取规则自动提取、提取全文可见文本、提取全文 HTML、按 CSS/XPath 选择器提取局部文本或 HTML。
+- 自动化报告支持记录本次命中的 Playbook 摘要。
+
+### 改进
+
+- 将浏览器自动化基础规则与 Playbook 策略注入拆分，避免把全部策略正文塞进正式请求。
+- Playbook 预选只保留结构化摘要，不保存预选 Prompt 或模型原始响应。
+- 收紧 Playbook 预选触发条件，避免普通问答频繁发起额外模型请求。
+- `browser.extract_content` 复用现有页面上下文提取链路，避免引入新的脚本执行通道。
+- `chat.send.extractionRules` 只作为当前工具执行上下文传入 background，不进入聊天正文、历史、导出或 Playbook 预选提示。
+- 更新 README 产品预览说明，补充当前产品能力展示。
+
+### 安全与边界
+
+- Playbook 不改变 `enabledToolIds`、工具注册表 allow-list、`shouldExposeTool`、运行态授权、完全访问开关或边界确认。
+- Playbook 不允许自动开启工具、切换授权模式或绕过 background 二次校验。
+- `browser.extract_content` 是只读工具，不执行模型自定义脚本，不读取 Cookie、Storage、Header、Network 原文或跨域 iframe。
+- `browser.extract_content` 的 CSS/XPath selector 会在 background 工具入口先做合法性校验。
+- `browser.extract_content` 返回的 URL 会执行脱敏，避免 `token`、`session`、`code`、`secret` 等敏感参数进入模型上下文、历史或导出。
+- 预选失败不会阻断正式聊天，只记录固定中文诊断摘要，不记录用户原文、候选完整 JSON 或模型原始响应。
+
+### 测试与验证
+
+- 补充 Playbook 注册表、设置归一化、启用过滤和触发判定测试。
+- 补充 Playbook AI 预选成功、失败、未知 ID、禁用 ID、畸形 JSON 和 Anthropic/OpenAI 普通 JSON 路径测试。
+- 补充工具循环、请求组装、Playbook 注入和工具权限边界测试。
+- 补充 `browser.extract_content` 参数校验、CSS/XPath 提取、全文提取、回退行为和 URL 脱敏测试。
+- 补充任务策略设置页展示、启用/禁用和详情查看测试。
+- 补充自动化报告 Playbook 摘要脱敏与导出测试。
+
 ## v3.0.0 - 2026-06-26
 
 本版本聚焦浏览器自动化与调试分析能力升级，将 Network 分析从 DevTools 页面迁移为基于 `chrome.debugger` 的后台采集，并补全 `network.*`、`js.*`、`sourcemap.*`、`runtime.*`、`replay.*`、`full_access.*` 以及页面观测、元素检查、截图、控制台采集等通用浏览器自动化工具。用户无需手动打开 DevTools，即可在开启浏览器控制后进行请求分析、源码检索、Source Map 映射、运行时只读分析和受控请求重放。
