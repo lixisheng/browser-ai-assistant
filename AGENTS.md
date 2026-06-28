@@ -245,6 +245,7 @@
 * 发布新版本时必须同步更新 `package.json`、`package-lock.json` 和 `public/manifest.json` 的版本号；若包含多项功能提交，应补充 `CHANGELOG.md` 发布范围与主要变化，并运行 `npm run check` 生成可验证的本地可分发扩展目录。
 * 发布大版本前必须先用 `git log origin/master..HEAD` 核对本地未推送提交范围，并在 `CHANGELOG.md` 中记录发布覆盖范围，避免遗漏本地已完成但尚未推送的功能与修复。
 * 发布小版本同样必须核对 `git log origin/master..HEAD`，并确保 `CHANGELOG.md` 发布范围、`package.json`、`package-lock.json` 和 `public/manifest.json` 的版本号一致。
+* 发布 GitHub Release 前必须确认对应版本 tag 不存在、GitHub CLI 已登录且目标分支已推送；Release 正文应与本次版本说明一致，避免本地变更日志和远端发布说明漂移。
 * HTML 资源引用校验必须先解析到打包目录内再检查存在性；遇到 `../` 或归一化后会跳出 `artifacts/chrome-extension` 的路径时，必须按缺失资源处理，不能读取项目其他目录来让校验通过。
 * 修改打包脚本、Vite 入口、manifest 运行时路径、HTML 资源引用校验或扩展加载目录文档时，必须运行 `npm run check:package`；该脚本应先执行打包脚本单元测试，再生成真实本地扩展目录，并纳入 `npm run check` 综合验证。
 * `artifacts/` 属于本地生成产物，必须加入 `.gitignore`，不得手动编辑或提交；需要复现问题时应重新运行打包命令生成。
