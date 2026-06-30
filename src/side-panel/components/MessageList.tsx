@@ -19,6 +19,8 @@ import { createChatMessageMarkdown } from "../utils/chatMarkdownExport";
 import { copyOrDownloadMessageImage, copyTextToClipboard } from "../utils/messageClipboard";
 import type { ChatImageAttachment, ChatMessage, ChatPromptInvocation, ChatToolAttachment, ChatToolCallRecord, ToolCallDisplayMode } from "../../shared/types";
 import { MarkdownCodeBlock, MarkdownCodePre } from "./MarkdownCodeBlock";
+import { MarkdownTableBlock } from "./MarkdownTableBlock";
+import { CopyMessageIcon, ExportImageIcon } from "./MessageActionIcons";
 import { PromptInlineEditor, PromptTokenContent } from "./PromptInlineEditor";
 import type { ChatRetryProgress } from "../state/appStore";
 
@@ -275,7 +277,11 @@ export function MessageList({
                 {message.role === "user" && message.promptInvocations?.length ? (
                   <PromptTokenLinks prompts={message.promptInvocations} ariaLabelPrefix="用户消息提示词" />
                 ) : null}
-                {hasVisibleContent ? <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ code: MarkdownCodeBlock, pre: MarkdownCodePre }}>{message.content}</ReactMarkdown> : null}
+                {hasVisibleContent ? (
+                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ code: MarkdownCodeBlock, pre: MarkdownCodePre, table: MarkdownTableBlock }}>
+                    {message.content}
+                  </ReactMarkdown>
+                ) : null}
               </div>
             ) : null}
             {message.role === "assistant" ? <ToolAttachmentList attachments={displayAttachments} onPreviewImage={setPreviewAttachment} /> : null}
@@ -1052,25 +1058,6 @@ function CancelEditIcon() {
     <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24">
       <path d="M7 7 17 17" />
       <path d="M17 7 7 17" />
-    </svg>
-  );
-}
-
-function CopyMessageIcon() {
-  return (
-    <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24">
-      <path d="M8 8h10v10H8Z" />
-      <path d="M6 16H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1" />
-    </svg>
-  );
-}
-
-function ExportImageIcon() {
-  return (
-    <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24">
-      <path d="M5 5h14v14H5Z" />
-      <path d="m8 15 2.8-3 2.2 2.3 1.4-1.5L18 17" />
-      <circle cx="9" cy="9.5" r="0.8" />
     </svg>
   );
 }

@@ -23,6 +23,8 @@ export function App() {
   const loadChatData = useAppStore((state) => state.loadChatData);
   const loadSyncSettings = useAppStore((state) => state.loadSyncSettings);
   const refreshPageContext = useAppStore((state) => state.refreshPageContext);
+  const createChatSession = useAppStore((state) => state.createChatSession);
+  const composerHasDraft = useAppStore((state) => state.composerHasDraft);
   const browserControlEnabled = useAppStore((state) => state.browserControlEnabled);
   const setBrowserControlEnabled = useAppStore((state) => state.setBrowserControlEnabled);
   const markBrowserControlDetached = useAppStore((state) => state.markBrowserControlDetached);
@@ -70,6 +72,18 @@ export function App() {
       <section className="app-header">
         <h1 className="app-title">Browser AI Assistant</h1>
         <div className="app-header-actions">
+          <button
+            className="ui-button-secondary app-header-icon-button"
+            type="button"
+            aria-label="新建对话"
+            title="新建对话"
+            onClick={() => void createChatSession({ preserveSelectedModel: composerHasDraft })}
+          >
+            <svg className="app-header-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 5v14" />
+              <path d="M5 12h14" />
+            </svg>
+          </button>
           <button
             className={
               browserControlEnabled

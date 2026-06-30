@@ -1036,10 +1036,8 @@ body {
   }
 
   .message-bubble table {
-    @apply my-2 block max-w-full overflow-x-auto rounded-md text-left text-xs;
-    width: fit-content;
+    @apply max-w-full text-left text-xs;
     border-collapse: collapse;
-    border: 1px solid var(--color-hairline);
   }
 
   .message-bubble th,
@@ -1054,6 +1052,71 @@ body {
     background: var(--color-surface-cream-strong);
     color: var(--color-body-strong);
     font-weight: 500;
+  }
+
+  .markdown-table-block {
+    @apply my-2 min-w-0 max-w-full text-left;
+    width: fit-content;
+    position: relative;
+    color: var(--color-body-strong);
+  }
+
+  .markdown-table-block-actions {
+    @apply ml-auto inline-flex shrink-0 items-center justify-end gap-1;
+  }
+
+  .markdown-table-block-icon-button {
+    @apply h-7 w-7;
+    background: transparent;
+    border-color: transparent;
+  }
+
+  .markdown-table-block-icon-button:hover {
+    background: color-mix(in srgb, var(--color-surface-soft) 80%, var(--color-canvas));
+  }
+
+  .markdown-table-block-copy-feedback {
+    @apply ml-1 text-xs;
+    color: var(--color-muted);
+  }
+
+  .markdown-table-block-copy-feedback-error {
+    color: var(--color-danger);
+  }
+
+  .markdown-table-block-scroller {
+    @apply max-w-full overflow-x-auto rounded-md;
+    background: color-mix(in srgb, var(--color-canvas) 94%, var(--color-surface-soft));
+    border: 1px solid var(--color-hairline);
+  }
+
+  .markdown-table-block table {
+    @apply text-left text-xs;
+    width: fit-content;
+    max-width: none;
+    border-collapse: collapse;
+  }
+
+  .markdown-table-block th,
+  .markdown-table-block td {
+    @apply px-2 py-1 align-top;
+    border: 1px solid var(--color-hairline);
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .markdown-table-block th {
+    background: var(--color-surface-cream-strong);
+    color: var(--color-body-strong);
+    font-weight: 500;
+  }
+
+  .markdown-table-block-header-content {
+    @apply flex min-w-0 items-center gap-2;
+  }
+
+  .markdown-table-block-header-text {
+    @apply min-w-0;
   }
 
   .message-bubble ul,

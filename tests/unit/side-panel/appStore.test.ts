@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAppStore } from "../../../src/side-panel/state/appStore";
+import { normalizeChatPreferenceOverrides } from "../../../src/side-panel/state/appStorePreferences";
 import { AUTOMATION_PLAYBOOK_SETTINGS_KEY } from "../../../src/shared/automationPlaybooks";
+import { getRegisteredModelTools } from "../../../src/shared/models/toolRegistry";
 import {
   clearDatabase,
   getAppSetting,
@@ -69,6 +71,17 @@ vi.mock("../../../src/shared/storage/repositories", async (importOriginal) => {
     }),
   };
 });
+
+function disableDefaultToolCalling() {
+  const state = useAppStore.getState();
+  useAppStore.setState({
+    chatPreferences: {
+      ...state.chatPreferences,
+      toolCallingEnabled: false,
+      enabledToolIds: [],
+    },
+  });
+}
 
 describe("appStore 网络搜索", () => {
   afterEach(async () => {
@@ -1124,6 +1137,7 @@ describe("appStore", () => {
     await useAppStore.getState().loadChannelConfig();
     await useAppStore.getState().loadChatData();
     await useAppStore.getState().refreshPageContext();
+    disableDefaultToolCalling();
     useAppStore.getState().setStreamMode(false);
 
     await useAppStore.getState().sendChatMessage("第一问");
@@ -1173,6 +1187,7 @@ describe("appStore", () => {
     await saveProviderModel(model);
     await useAppStore.getState().loadChannelConfig();
     await useAppStore.getState().loadChatData();
+    disableDefaultToolCalling();
     useAppStore.getState().setStreamMode(false);
 
     await useAppStore.getState().sendChatMessage("请结合页面输出建议", [], [promptInvocation]);
@@ -1225,6 +1240,7 @@ describe("appStore", () => {
     await useAppStore.getState().loadChannelConfig();
     await useAppStore.getState().loadChatData();
     await useAppStore.getState().refreshPageContext();
+    disableDefaultToolCalling();
     useAppStore.getState().setStreamMode(false);
 
     await useAppStore.getState().sendChatMessage("看图说明", [
@@ -1292,6 +1308,7 @@ describe("appStore", () => {
     await useAppStore.getState().loadChannelConfig();
     await useAppStore.getState().loadChatData();
     await useAppStore.getState().refreshPageContext();
+    disableDefaultToolCalling();
     useAppStore.getState().setStreamMode(false);
 
     await useAppStore.getState().sendChatMessage("", [
@@ -1345,6 +1362,7 @@ describe("appStore", () => {
     await useAppStore.getState().loadChannelConfig();
     await useAppStore.getState().loadChatData();
     await useAppStore.getState().refreshPageContext();
+    disableDefaultToolCalling();
     useAppStore.getState().setStreamMode(false);
 
     await useAppStore.getState().sendChatMessage("第一问");
@@ -1523,6 +1541,8 @@ describe("appStore", () => {
     expect(useAppStore.getState().chatPreferences.extractHtmlByDefault).toBe(false);
     expect(useAppStore.getState().chatPreferences.aiRequestRetryCount).toBe(5);
     expect(useAppStore.getState().chatPreferences.browserAutomationMaxToolIterations).toBe(32);
+    expect(useAppStore.getState().chatPreferences.toolCallingEnabled).toBe(true);
+    expect(useAppStore.getState().chatPreferences.enabledToolIds).toEqual(getRegisteredModelTools().map((tool) => tool.id));
     expect(useAppStore.getState().chatPreferences.toolCallDisplayMode).toBe("assistant_grouped");
     expect(useAppStore.getState().chatPreferences.showToolCallProcessInAssistantMode).toBe(false);
     expect(useAppStore.getState().browserControlEnabled).toBe(false);
@@ -1530,7 +1550,7 @@ describe("appStore", () => {
     expect(useAppStore.getState().contextMode).toBe("text");
   });
 
-  it("工具调用偏好旧数据缺失或脏数据时默认关闭并过滤非法工具 ID", async () => {
+  it("工具调用偏好旧数据缺失或脏数据时默认开启并过滤非法工具 ID", async () => {
     await saveAppSetting({
       key: "chatPreferences",
       value: {
@@ -1545,9 +1565,47 @@ describe("appStore", () => {
 
     await useAppStore.getState().loadChannelConfig();
 
-    expect(useAppStore.getState().chatPreferences.toolCallingEnabled).toBe(false);
+    expect(useAppStore.getState().chatPreferences.toolCallingEnabled).toBe(true);
     expect(useAppStore.getState().chatPreferences.enabledToolIds).toEqual(["page.read_context", "browser.take_snapshot"]);
     expect(useAppStore.getState().chatPreferences.showToolCallProcessInAssistantMode).toBe(false);
+  });
+
+  it("工具调用偏好旧数据显式空工具列表时保留用户关闭全部工具的选择", async () => {
+    await saveAppSetting({
+      key: "chatPreferences",
+      value: {
+        toolCallingEnabled: true,
+        enabledToolIds: [],
+      },
+      updatedAt: 2,
+    });
+
+    await useAppStore.getState().loadChannelConfig();
+
+    expect(useAppStore.getState().chatPreferences.toolCallingEnabled).toBe(true);
+    expect(useAppStore.getState().chatPreferences.enabledToolIds).toEqual([]);
+  });
+
+  it("工具调用偏好旧数据工具列表为 undefined 时按缺失字段默认全选", async () => {
+    await saveAppSetting({
+      key: "chatPreferences",
+      value: {
+        toolCallingEnabled: true,
+        enabledToolIds: undefined,
+      },
+      updatedAt: 2,
+    });
+
+    await useAppStore.getState().loadChannelConfig();
+
+    expect(useAppStore.getState().chatPreferences.toolCallingEnabled).toBe(true);
+    expect(useAppStore.getState().chatPreferences.enabledToolIds).toEqual(getRegisteredModelTools().map((tool) => tool.id));
+  });
+
+  it("会话级工具列表覆盖值为非法类型时忽略该覆盖", () => {
+    expect(normalizeChatPreferenceOverrides({ enabledToolIds: "page.read_context" as unknown as string[] }).enabledToolIds).toBeUndefined();
+    expect(normalizeChatPreferenceOverrides({ enabledToolIds: { id: "page.read_context" } as unknown as string[] }).enabledToolIds).toBeUndefined();
+    expect(normalizeChatPreferenceOverrides({ enabledToolIds: [] }).enabledToolIds).toEqual([]);
   });
 
   it("可以保存全局工具调用总开关和单工具启用列表", async () => {
@@ -2162,6 +2220,7 @@ describe("appStore", () => {
     await useAppStore.getState().loadChannelConfig();
     await useAppStore.getState().loadChatData();
     await useAppStore.getState().refreshPageContext();
+    disableDefaultToolCalling();
 
     expect(useAppStore.getState().streamMode).toBe(true);
     const sendPromise = useAppStore.getState().sendChatMessage("第一问");
@@ -2229,6 +2288,7 @@ describe("appStore", () => {
     await saveProviderModel(model);
     await useAppStore.getState().loadChannelConfig();
     await useAppStore.getState().loadChatData();
+    disableDefaultToolCalling();
 
     const sendPromise = useAppStore.getState().sendChatMessage("普通问题");
     await vi.waitFor(() => {
@@ -2282,6 +2342,7 @@ describe("appStore", () => {
     await useAppStore.getState().loadChannelConfig();
     await useAppStore.getState().loadChatData();
     await useAppStore.getState().refreshPageContext();
+    disableDefaultToolCalling();
 
     const sendPromise = useAppStore.getState().sendChatMessage("第一问");
     await vi.waitFor(() => {
@@ -2357,6 +2418,7 @@ describe("appStore", () => {
     await useAppStore.getState().loadChannelConfig();
     await useAppStore.getState().loadChatData();
     await useAppStore.getState().refreshPageContext();
+    disableDefaultToolCalling();
 
     const firstSendPromise = useAppStore.getState().sendChatMessage("第一问");
     await vi.waitFor(() => expect(portMessageListener).toBeTypeOf("function"));
@@ -2892,6 +2954,7 @@ describe("appStore", () => {
     await useAppStore.getState().loadChannelConfig();
     await useAppStore.getState().loadChatData();
     await useAppStore.getState().refreshPageContext();
+    disableDefaultToolCalling();
 
     const sendPromise = useAppStore.getState().sendChatMessage("第一问");
     await vi.waitFor(() => {
@@ -2960,6 +3023,7 @@ describe("appStore", () => {
     await useAppStore.getState().loadChannelConfig();
     await useAppStore.getState().loadChatData();
     await useAppStore.getState().refreshPageContext();
+    disableDefaultToolCalling();
 
     const sendPromise = useAppStore.getState().sendChatMessage("第一问");
     await vi.waitFor(() => {
@@ -4221,6 +4285,7 @@ describe("appStore", () => {
     await useAppStore.getState().loadChatData();
     await useAppStore.getState().refreshPageContext();
 
+    disableDefaultToolCalling();
     const sendPromise = useAppStore.getState().sendChatMessage("第一问");
     await vi.waitFor(() => {
       expect(portDisconnectListener).toBeTypeOf("function");
@@ -4583,6 +4648,7 @@ describe("appStore", () => {
     await saveModelProvider(provider);
     await saveProviderModel(model);
     await useAppStore.getState().loadChannelConfig();
+    disableDefaultToolCalling();
     useAppStore.getState().setStreamMode(true);
     await useAppStore.getState().enterPrivateMode();
 
@@ -4623,6 +4689,7 @@ describe("appStore", () => {
     await saveModelProvider(provider);
     await saveProviderModel(model);
     await useAppStore.getState().loadChannelConfig();
+    disableDefaultToolCalling();
     useAppStore.getState().setStreamMode(true);
     await useAppStore.getState().enterPrivateMode();
 
@@ -4722,6 +4789,7 @@ describe("appStore", () => {
     await saveModelProvider(provider);
     await saveProviderModel(model);
     await useAppStore.getState().loadChannelConfig();
+    disableDefaultToolCalling();
     await useAppStore.getState().enterPrivateMode();
 
     const sendPromise = useAppStore.getState().sendChatMessage("流式隐私问题");

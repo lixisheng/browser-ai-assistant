@@ -98,6 +98,10 @@ function createChatSession(partial: Partial<ChatSession>): ChatSession {
   };
 }
 
+function getSessionListNewChatButton(): HTMLElement {
+  return within(screen.getByLabelText("历史会话")).getByRole("button", { name: "新对话" });
+}
+
 function createDataTransfer() {
   const values = new Map<string, string>();
   return {
@@ -303,6 +307,22 @@ describe("App", () => {
     render(<App />);
 
     expect(screen.getByRole("heading", { name: "Browser AI Assistant" })).toBeInTheDocument();
+  });
+
+  it("顶部操作区提供新建对话入口并复用会话创建行为", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    act(() => {
+      useAppStore.setState({ composerHasDraft: true });
+    });
+
+    const header = screen.getByRole("heading", { name: "Browser AI Assistant" }).closest(".app-header");
+    const headerActions = header?.querySelector(".app-header-actions");
+    const newChatButton = within(headerActions as HTMLElement).getByRole("button", { name: "新建对话" });
+    await user.click(newChatButton);
+
+    await waitFor(() => expect(useAppStore.getState().chatSessions[0]?.title).toBe("新对话"));
+    expect(useAppStore.getState().activeSessionId).toBe(useAppStore.getState().chatSessions[0]?.id);
   });
 
   it("会话任务状态通过边框类名展示且不渲染可见文案", async () => {
@@ -559,7 +579,7 @@ describe("App", () => {
       expect(portMessageListener).toBeTypeOf("function");
     });
     const firstSessionButton = await screen.findByRole("button", { name: "第一问" });
-    await user.click(screen.getByRole("button", { name: "新对话" }));
+    await user.click(getSessionListNewChatButton());
 
     expect(firstSessionButton.closest(".session-item")).toHaveClass("session-item-running");
 
@@ -631,7 +651,7 @@ describe("App", () => {
       expect(portMessageListener).toBeTypeOf("function");
     });
     const firstSessionButton = await screen.findByRole("button", { name: "第一问" });
-    await user.click(screen.getByRole("button", { name: "新对话" }));
+    await user.click(getSessionListNewChatButton());
     expect(firstSessionButton.closest(".session-item")).toHaveClass("session-item-running");
 
     await user.click(firstSessionButton);
@@ -707,13 +727,13 @@ describe("App", () => {
       expect(portMessageListener).toBeTypeOf("function");
     });
     const firstSessionButton = await screen.findByRole("button", { name: "第一问" });
-    await user.click(screen.getByRole("button", { name: "新对话" }));
+    await user.click(getSessionListNewChatButton());
     expect(firstSessionButton.closest(".session-item")).toHaveClass("session-item-running");
 
     await user.click(firstSessionButton);
     expect(firstSessionButton.closest(".session-item")).not.toHaveClass("session-item-running");
 
-    const secondSessionButton = screen
+    const secondSessionButton = within(screen.getByLabelText("历史会话"))
       .getAllByRole("button", { name: "新对话" })
       .find((button) => button.closest(".session-item"));
     expect(secondSessionButton).toBeDefined();
@@ -1019,7 +1039,7 @@ describe("App", () => {
     );
 
     render(<App />);
-    await user.click(await screen.findByRole("button", { name: "新对话" }));
+    await user.click(getSessionListNewChatButton());
     await user.click(screen.getByRole("button", { name: "进入隐私模式" }));
     await user.type(screen.getByRole("textbox", { name: "对话输入" }), "隐私问题");
     await user.click(screen.getByRole("button", { name: "发送" }));
@@ -1077,7 +1097,7 @@ describe("App", () => {
     );
 
     render(<App />);
-    await user.click(await screen.findByRole("button", { name: "新对话" }));
+    await user.click(getSessionListNewChatButton());
     await user.click(screen.getByRole("button", { name: "进入隐私模式" }));
     await user.type(screen.getByRole("textbox", { name: "对话输入" }), "隐私问题");
     await user.click(screen.getByRole("button", { name: "发送" }));
@@ -1303,10 +1323,10 @@ describe("App", () => {
 
     await user.click(screen.getByRole("checkbox", { name: "启用工具调用" }));
 
-    expect(updateChatPreferences).toHaveBeenCalledWith({ toolCallingEnabled: true });
+    expect(updateChatPreferences).toHaveBeenCalledWith({ toolCallingEnabled: false });
   });
 
-  it("聊天偏好工具列表支持按分类筛选并批量启用当前可用工具", async () => {
+  it("聊天偏好工具列表支持按分类筛选并批量启用运行态未满足的默认工具", async () => {
     const user = userEvent.setup();
     const updateChatPreferences = vi.fn(async () => undefined);
     registeredModelToolsMock.tools = [
@@ -1333,7 +1353,7 @@ describe("App", () => {
       },
     ];
     useAppStore.setState({
-      browserControlEnabled: true,
+      browserControlEnabled: false,
       chatPreferences: {
         ...useAppStore.getState().chatPreferences,
         toolCallingEnabled: true,
@@ -1346,11 +1366,21 @@ describe("App", () => {
 
     await user.click(screen.getByRole("button", { name: "设置" }));
     await user.click(screen.getByRole("tab", { name: "聊天偏好" }));
+    act(() => {
+      useAppStore.setState((state) => ({
+        chatPreferences: {
+          ...state.chatPreferences,
+          toolCallingEnabled: true,
+          enabledToolIds: [],
+        },
+      }));
+    });
     await user.selectOptions(screen.getByRole("combobox", { name: "工具能力筛选" }), "observe_page");
     await user.selectOptions(screen.getByRole("combobox", { name: "工具运行要求筛选" }), "browser_control");
     await user.selectOptions(screen.getByRole("combobox", { name: "工具风险筛选" }), "low");
 
     expect(screen.getByRole("checkbox", { name: "启用工具 take_snapshot" })).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "启用工具 take_snapshot" })).toBeEnabled();
     expect(screen.queryByRole("checkbox", { name: "启用工具 click" })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "启用筛选结果" }));
@@ -4020,7 +4050,7 @@ describe("App", () => {
 
     const appendContextSwitch = screen.getByRole("switch", { name: "拼接上下文" });
     const streamSwitch = screen.getByRole("switch", { name: "流式响应" });
-    const toolCallingButton = screen.getByRole("button", { name: "工具调用：已关闭" });
+    const toolCallingButton = screen.getByRole("button", { name: "工具调用：已启用" });
     const contextSwitch = screen.getByRole("switch", { name: "提取模式" });
     const contextStrip = document.querySelector(".context-strip");
 
@@ -4029,7 +4059,7 @@ describe("App", () => {
     expect(contextStrip?.contains(appendContextSwitch)).toBe(false);
     expect(appendContextSwitch.nextElementSibling).toBe(contextSwitch);
     expect(streamSwitch).toHaveAttribute("aria-checked", "true");
-    expect(toolCallingButton).toHaveAttribute("aria-pressed", "false");
+    expect(toolCallingButton).toHaveAttribute("aria-pressed", "true");
     expect(toolCallingButton).not.toBeDisabled();
     expect(contextSwitch).toHaveAttribute("aria-checked", "false");
     expect(contextSwitch).toHaveAttribute("title", "提取文本");
@@ -4043,7 +4073,7 @@ describe("App", () => {
 
     expect(screen.getByRole("switch", { name: "拼接上下文" })).toHaveAttribute("aria-checked", "false");
     expect(screen.getByRole("switch", { name: "流式响应" })).toHaveAttribute("aria-checked", "false");
-    expect(screen.getByRole("button", { name: "工具调用：已关闭" })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: "工具调用：已启用" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("switch", { name: "提取模式" })).toHaveAttribute("aria-checked", "true");
     expect(screen.getByRole("switch", { name: "提取模式" })).toHaveAttribute("title", "提取所有");
   });
@@ -4374,7 +4404,7 @@ describe("App", () => {
 
     render(<App />);
 
-    const toolCallingButton = screen.getByRole("button", { name: "工具调用：已关闭" });
+    const toolCallingButton = screen.getByRole("button", { name: "工具调用：已启用" });
     expect(toolCallingButton).not.toBeDisabled();
 
     await user.click(toolCallingButton);
@@ -4397,7 +4427,7 @@ describe("App", () => {
     Object.defineProperty(window, "innerWidth", { configurable: true, value: 500 });
     render(<App />);
 
-    const toolCallingButton = screen.getByRole("button", { name: "工具调用：已关闭" });
+    const toolCallingButton = screen.getByRole("button", { name: "工具调用：已启用" });
     vi.spyOn(toolCallingButton, "getBoundingClientRect").mockReturnValue({
       x: 260,
       y: 400,
@@ -4595,11 +4625,24 @@ describe("App", () => {
     render(<App />);
 
     expect(await screen.findByRole("table")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "复制表格 Markdown" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "复制表格图片" })).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "阶段" })).toBeInTheDocument();
     expect(screen.getByRole("cell", { name: "合并到 main" })).toBeInTheDocument();
     const styles = readFileSync(resolve(process.cwd(), "src/side-panel/styles.css"), "utf8");
-    const tableRule = styles.match(/\.message-bubble table \{[\s\S]*?\}/)?.[0] ?? "";
-    expect(tableRule).toContain("max-w-full");
+    const tableBlockRule = styles.match(/\.markdown-table-block \{[\s\S]*?\}/)?.[0] ?? "";
+    const tableActionsRule = styles.match(/\.markdown-table-block-actions \{[\s\S]*?\}/)?.[0] ?? "";
+    const tableScrollerRule = styles.match(/\.markdown-table-block-scroller \{[\s\S]*?\}/)?.[0] ?? "";
+    const tableRule = styles.match(/\.markdown-table-block table \{[\s\S]*?\}/)?.[0] ?? "";
+    const tableHeaderContentRule = styles.match(/\.markdown-table-block-header-content \{[\s\S]*?\}/)?.[0] ?? "";
+    expect(tableBlockRule).toContain("width: fit-content;");
+    expect(tableBlockRule).toContain("position: relative;");
+    expect(styles).not.toContain(".markdown-table-block-toolbar");
+    expect(tableActionsRule).toContain("ml-auto");
+    expect(tableActionsRule).toContain("justify-end");
+    expect(tableActionsRule).not.toContain("position: absolute;");
+    expect(tableHeaderContentRule).toContain("flex");
+    expect(tableScrollerRule).toContain("max-w-full");
     expect(tableRule).toContain("width: fit-content;");
   });
 
@@ -4687,7 +4730,7 @@ describe("App", () => {
     expect(archiveBottom).toHaveClass("shrink-0");
     expect(archiveBottom?.parentElement).not.toHaveClass("session-list-scroll");
 
-    await user.click(screen.getByRole("button", { name: "新对话" }));
+    await user.click(getSessionListNewChatButton());
     expect(await screen.findByText("新对话")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "删 新对话" })).not.toBeInTheDocument();
 

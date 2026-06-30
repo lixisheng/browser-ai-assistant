@@ -8,22 +8,26 @@ import type {
   SendShortcut,
 } from "../../shared/types";
 
-export const DEFAULT_CHAT_PREFERENCES: ChatPreferenceValues = {
-  systemPrompt: "你是网页助手",
-  aiRequestRetryCount: DEFAULT_MODEL_REQUEST_RETRY_COUNT,
-  browserAutomationMaxToolIterations: 32,
-  toolCallingEnabled: false,
-  enabledToolIds: [],
-  toolCallDisplayMode: "assistant_grouped",
-  showToolCallProcessInAssistantMode: false,
-  temperature: 0.7,
-  maxTokens: 1024,
-  topK: undefined,
-  sendShortcut: "enter",
-  historyDrawerDefaultOpen: true,
-  injectPageContextByDefault: true,
-  extractHtmlByDefault: false,
-};
+export function createDefaultChatPreferences(): ChatPreferenceValues {
+  return {
+    systemPrompt: "你是网页助手",
+    aiRequestRetryCount: DEFAULT_MODEL_REQUEST_RETRY_COUNT,
+    browserAutomationMaxToolIterations: 32,
+    toolCallingEnabled: true,
+    enabledToolIds: getRegisteredModelTools().map((tool) => tool.id),
+    toolCallDisplayMode: "assistant_grouped",
+    showToolCallProcessInAssistantMode: false,
+    temperature: 0.7,
+    maxTokens: 1024,
+    topK: undefined,
+    sendShortcut: "enter",
+    historyDrawerDefaultOpen: true,
+    injectPageContextByDefault: true,
+    extractHtmlByDefault: false,
+  };
+}
+
+export const DEFAULT_CHAT_PREFERENCES: ChatPreferenceValues = createDefaultChatPreferences();
 
 export type EffectiveChatPreferences = Required<
   Pick<
@@ -40,30 +44,32 @@ export type EffectiveChatPreferences = Required<
   Pick<ChatSessionPreferenceOverrides, "topK">;
 
 export function normalizeChatPreferences(value?: Partial<ChatPreferenceValues>): ChatPreferenceValues {
+  const defaults = createDefaultChatPreferences();
+  const hasEnabledToolIds = Array.isArray(value?.enabledToolIds);
   return {
     systemPrompt:
       typeof value?.systemPrompt === "string" && value.systemPrompt.trim()
         ? value.systemPrompt.trim()
-        : DEFAULT_CHAT_PREFERENCES.systemPrompt,
-    aiRequestRetryCount: normalizeModelRequestRetryCount(value?.aiRequestRetryCount, DEFAULT_CHAT_PREFERENCES.aiRequestRetryCount),
+        : defaults.systemPrompt,
+    aiRequestRetryCount: normalizeModelRequestRetryCount(value?.aiRequestRetryCount, defaults.aiRequestRetryCount),
     browserAutomationMaxToolIterations: normalizeIntegerWithoutRange(
       value?.browserAutomationMaxToolIterations,
-      DEFAULT_CHAT_PREFERENCES.browserAutomationMaxToolIterations,
+      defaults.browserAutomationMaxToolIterations,
     ),
-    toolCallingEnabled: normalizeBoolean(value?.toolCallingEnabled, DEFAULT_CHAT_PREFERENCES.toolCallingEnabled),
-    enabledToolIds: normalizeUserEditableToolIds(value?.enabledToolIds),
+    toolCallingEnabled: normalizeBoolean(value?.toolCallingEnabled, defaults.toolCallingEnabled),
+    enabledToolIds: hasEnabledToolIds ? normalizeUserEditableToolIds(value?.enabledToolIds) : defaults.enabledToolIds,
     toolCallDisplayMode: normalizeToolCallDisplayMode(value?.toolCallDisplayMode),
     showToolCallProcessInAssistantMode: normalizeBoolean(
       value?.showToolCallProcessInAssistantMode,
-      DEFAULT_CHAT_PREFERENCES.showToolCallProcessInAssistantMode,
+      defaults.showToolCallProcessInAssistantMode,
     ),
-    temperature: normalizeNumber(value?.temperature, DEFAULT_CHAT_PREFERENCES.temperature, 0, 2),
-    maxTokens: Math.round(normalizeNumber(value?.maxTokens, DEFAULT_CHAT_PREFERENCES.maxTokens, 1, 200_000)),
+    temperature: normalizeNumber(value?.temperature, defaults.temperature, 0, 2),
+    maxTokens: Math.round(normalizeNumber(value?.maxTokens, defaults.maxTokens, 1, 200_000)),
     topK: normalizeOptionalInteger(value?.topK, 1, 1_000),
     sendShortcut: normalizeSendShortcut(value?.sendShortcut),
-    historyDrawerDefaultOpen: normalizeBoolean(value?.historyDrawerDefaultOpen, DEFAULT_CHAT_PREFERENCES.historyDrawerDefaultOpen),
-    injectPageContextByDefault: normalizeBoolean(value?.injectPageContextByDefault, DEFAULT_CHAT_PREFERENCES.injectPageContextByDefault),
-    extractHtmlByDefault: normalizeBoolean(value?.extractHtmlByDefault, DEFAULT_CHAT_PREFERENCES.extractHtmlByDefault),
+    historyDrawerDefaultOpen: normalizeBoolean(value?.historyDrawerDefaultOpen, defaults.historyDrawerDefaultOpen),
+    injectPageContextByDefault: normalizeBoolean(value?.injectPageContextByDefault, defaults.injectPageContextByDefault),
+    extractHtmlByDefault: normalizeBoolean(value?.extractHtmlByDefault, defaults.extractHtmlByDefault),
   };
 }
 
@@ -72,11 +78,11 @@ export function resolveDefaultContextMode(preferences: ChatPreferenceValues): Pa
 }
 
 function normalizeSendShortcut(value: unknown): SendShortcut {
-  return isSendShortcutValue(value) ? value : DEFAULT_CHAT_PREFERENCES.sendShortcut;
+  return isSendShortcutValue(value) ? value : "enter";
 }
 
 function normalizeToolCallDisplayMode(value: unknown): ChatPreferenceValues["toolCallDisplayMode"] {
-  return value === "compact" || value === "assistant_grouped" ? value : DEFAULT_CHAT_PREFERENCES.toolCallDisplayMode;
+  return value === "compact" || value === "assistant_grouped" ? value : "assistant_grouped";
 }
 
 function isSendShortcutValue(value: unknown): value is SendShortcut {
@@ -101,7 +107,7 @@ export function normalizeChatPreferenceOverrides(value?: ChatSessionPreferenceOv
   if (value?.toolCallingEnabled !== undefined) {
     overrides.toolCallingEnabled = normalizeBoolean(value.toolCallingEnabled, DEFAULT_CHAT_PREFERENCES.toolCallingEnabled);
   }
-  if (value?.enabledToolIds !== undefined) {
+  if (Array.isArray(value?.enabledToolIds)) {
     overrides.enabledToolIds = normalizeUserEditableToolIds(value.enabledToolIds);
   }
   if (value?.temperature !== undefined) {

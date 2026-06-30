@@ -1,13 +1,11 @@
 import { useState } from "react";
 import {
   MODEL_TOOL_CAPABILITY_VALUES,
-  MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID,
   MODEL_TOOL_RISK_VALUES,
   MODEL_TOOL_RUNTIME_VALUES,
   filterModelToolsByClassification,
   getModelToolGroups,
   getRegisteredModelTools,
-  isToolRuntimeAvailable,
 } from "../../../shared/models/toolRegistry";
 import type { ModelToolCapability, ModelToolRisk, ModelToolRuntimeRequirement } from "../../../shared/models/types";
 import type { ChatPreferenceValues, SendShortcut } from "../../../shared/types";
@@ -53,8 +51,6 @@ export function ChatPreferenceSettings() {
   const [capabilityFilter, setCapabilityFilter] = useState<ModelToolCapability | "">("");
   const [riskFilter, setRiskFilter] = useState<ModelToolRisk | "">("");
   const chatPreferences = useAppStore((state) => state.chatPreferences);
-  const browserControlEnabled = useAppStore((state) => state.browserControlEnabled);
-  const browserAutomationMode = useAppStore((state) => state.browserAutomationMode);
   const updateChatPreferences = useAppStore((state) => state.updateChatPreferences);
   const registeredTools = getRegisteredModelTools();
   const filteredTools = filterModelToolsByClassification(registeredTools, {
@@ -67,19 +63,13 @@ export function ChatPreferenceSettings() {
     void updateChatPreferences({ systemPrompt });
   });
   const handleToolToggle = (toolId: string, checked: boolean) => {
-    const tool = registeredTools.find((item) => item.id === toolId);
-    if (tool && !isToolRuntimeAvailable(tool, browserControlEnabled, browserAutomationMode)) {
-      return;
-    }
     const nextToolIds = checked ? [...chatPreferences.enabledToolIds, toolId] : chatPreferences.enabledToolIds.filter((id) => id !== toolId);
     void updateChatPreferences({ enabledToolIds: Array.from(new Set(nextToolIds)) });
   };
-  const runtimeAvailableFilteredToolIds = filteredTools
-    .filter((tool) => isToolRuntimeAvailable(tool, browserControlEnabled, browserAutomationMode))
-    .map((tool) => tool.id);
+  const filteredToolIds = filteredTools.map((tool) => tool.id);
   const handleEnableFilteredTools = () => {
     void updateChatPreferences({
-      enabledToolIds: Array.from(new Set([...chatPreferences.enabledToolIds, ...runtimeAvailableFilteredToolIds])),
+      enabledToolIds: Array.from(new Set([...chatPreferences.enabledToolIds, ...filteredToolIds])),
     });
   };
   const handleDisableFilteredTools = () => {
@@ -150,7 +140,7 @@ export function ChatPreferenceSettings() {
           </span>
           <span className="chat-preference-switch-label">启用工具调用</span>
         </label>
-        <p className="ui-muted text-xs">启用工具后，工具决策阶段使用非流式请求；最终回复仍跟随流式响应开关。</p>
+        <p className="ui-muted text-xs">这里设置新对话默认启用的工具；实际发送时仍会根据当前会话选择、浏览器控制状态和自动化模式过滤。</p>
         <div className="chat-preference-tool-filter-grid">
           <label className="chat-preference-field">
             能力
@@ -204,18 +194,13 @@ export function ChatPreferenceSettings() {
             {registeredToolGroups.map((group) => (
               <div key={group.id} className="chat-preference-tool-group">
                 <div className="chat-preference-tool-group-title">{group.label}</div>
-                {group.id === MODEL_TOOL_GROUP_BROWSER_AUTOMATION_ID && !browserControlEnabled ? (
-                  <p className="ui-muted text-xs">需开启浏览器控制后才能启用本组工具。</p>
-                ) : null}
                 {group.tools.map((tool) => {
-                  const runtimeAvailable = isToolRuntimeAvailable(tool, browserControlEnabled, browserAutomationMode);
                   return (
                     <label key={tool.id} className="chat-preference-network-type-chip">
                       <input
                         type="checkbox"
                         aria-label={`启用工具 ${tool.name}`}
-                        checked={runtimeAvailable && chatPreferences.enabledToolIds.includes(tool.id)}
-                        disabled={!chatPreferences.toolCallingEnabled || !runtimeAvailable}
+                        checked={chatPreferences.enabledToolIds.includes(tool.id)}
                         onChange={(event) => handleToolToggle(tool.id, event.target.checked)}
                       />
                       <span>{tool.name}</span>
